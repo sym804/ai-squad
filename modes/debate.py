@@ -21,6 +21,11 @@ SYSTEM_PROMPT = (
 )
 
 
+def _strip_consensus(text: str) -> str:
+    """응답에서 CONSENSUS 태그를 제거."""
+    return CONSENSUS_PATTERN.sub('', text).strip()
+
+
 def _parse_consensus(text: str) -> dict | None:
     """Extract consensus JSON from agent response."""
     match = CONSENSUS_PATTERN.search(text)
@@ -94,9 +99,13 @@ class DebateMode:
 
             round_consensuses = []
             for agent, response in zip(shuffled, responses):
-                self._post(channel, thread_ts, agent.format_message(response))
+                self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))
                 history.append({"name": agent.name, "text": response})
-                round_consensuses.append(_parse_consensus(response))
+                round_consensuses.append({
+                    "agent_name": agent.name,
+                    "agent_emoji": agent.emoji,
+                    "consensus": _parse_consensus(response),
+                })
 
             # 타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
             for agent, response in zip(shuffled, responses):
@@ -114,29 +123,29 @@ class DebateMode:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:
                         pass
-                    self._post(channel, thread_ts, backup.format_message(backup_response))
+                    self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
                     history.append({"name": backup.name, "text": backup_response})
-                    round_consensuses.append(_parse_consensus(backup_response))
+                    round_consensuses.append({
+                        "agent_name": backup.name,
+                        "agent_emoji": backup.emoji,
+                        "consensus": _parse_consensus(backup_response),
+                    })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
                     self._replace_timed_out(agent, channel, thread_ts)
 
             agrees = [
-                c for c in round_consensuses
-                if c is not None and c.get("agree") is True
+                r for r in round_consensuses
+                if r["consensus"] is not None and r["consensus"].get("agree") is True
             ]
 
             if len(agrees) >= 3:
-                self._broadcast(
-                    channel, thread_ts,
-                    f"🏛️ *추가 토론 전원 합의 (라운드 {round_num})*\n질문: {question}\n결론: {agrees[0].get('summary', '')}",
-                )
+                self._broadcast(channel, thread_ts,
+                    self._build_conclusion("추가 토론 전원 합의", round_num, question, round_consensuses))
                 return
 
             if len(agrees) >= 2 and self._is_stalemate(history):
-                self._broadcast(
-                    channel, thread_ts,
-                    f"🏛️ *추가 토론 다수 합의 (라운드 {round_num}, {len(agrees)}/3)*\n질문: {question}\n결론: {agrees[0].get('summary', '')}",
-                )
+                self._broadcast(channel, thread_ts,
+                    self._build_conclusion(f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question, round_consensuses))
                 return
 
             # 라운드 사이 사용자 메시지 수집
@@ -146,11 +155,8 @@ class DebateMode:
                     history.append({"name": "사용자", "text": um})
 
         # 최대 라운드 도달
-        final_summary = self._pick_majority_summary(round_consensuses)
-        self._broadcast(
-            channel, thread_ts,
-            f"🏛️ *추가 토론 최대 라운드 도달*\n질문: {question}\n결론: {final_summary}",
-        )
+        self._broadcast(channel, thread_ts,
+            self._build_conclusion("추가 토론 최대 라운드 도달", MAX_DEBATE_ROUNDS, question, round_consensuses))
 
     def _build_followup_prompt(self, original_topic: str, question: str, history: list[dict], round_num: int) -> str:
         recent = history[-15:] if len(history) > 15 else history
@@ -286,9 +292,13 @@ class DebateMode:
                 pass
 
             for agent, response in zip(shuffled, responses):
-                self._post(channel, thread_ts, agent.format_message(response))
+                self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))
                 history.append({"name": agent.name, "text": response})
-                round_consensuses.append(_parse_consensus(response))
+                round_consensuses.append({
+                    "agent_name": agent.name,
+                    "agent_emoji": agent.emoji,
+                    "consensus": _parse_consensus(response),
+                })
 
             # 타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
             for agent, response in zip(shuffled, responses):
@@ -306,44 +316,38 @@ class DebateMode:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:
                         pass
-                    self._post(channel, thread_ts, backup.format_message(backup_response))
+                    self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
                     history.append({"name": backup.name, "text": backup_response})
-                    round_consensuses.append(_parse_consensus(backup_response))
+                    round_consensuses.append({
+                        "agent_name": backup.name,
+                        "agent_emoji": backup.emoji,
+                        "consensus": _parse_consensus(backup_response),
+                    })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
                     self._replace_timed_out(agent, channel, thread_ts)
 
             # Evaluate consensus
-            print(f"[DEBUG] Round {round_num} consensuses: {round_consensuses}")
             agrees = [
-                c for c in round_consensuses
-                if c is not None and c.get("agree") is True
+                r for r in round_consensuses
+                if r["consensus"] is not None and r["consensus"].get("agree") is True
             ]
-            print(f"[DEBUG] Agrees count: {len(agrees)}")
+            print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)}")
 
             # 3개 전원 합의 → 즉시 종료
             if len(agrees) >= 3:
-                final_summary = agrees[0].get("summary", "합의 도달")
-                self._broadcast(
-                    channel, thread_ts,
-                    f"🏛️ *전원 합의 도달 (라운드 {round_num})*\n주제: {topic}\n결론: {final_summary}",
-                )
+                self._broadcast(channel, thread_ts,
+                    self._build_conclusion("전원 합의 도달", round_num, topic, round_consensuses))
                 return
 
-            # 2개 동의 + 교착 상태 감지 (같은 의견 2라운드 연속) → 다수결 종료
+            # 2개 동의 + 교착 상태 → 다수결 종료
             if len(agrees) >= 2 and self._is_stalemate(history):
-                final_summary = agrees[0].get("summary", "다수 합의 도달")
-                self._broadcast(
-                    channel, thread_ts,
-                    f"🏛️ *다수 합의 (교착 상태, 라운드 {round_num}, {len(agrees)}/3 동의)*\n주제: {topic}\n결론: {final_summary}",
-                )
+                self._broadcast(channel, thread_ts,
+                    self._build_conclusion(f"다수 합의 (교착 상태, {len(agrees)}/3 동의)", round_num, topic, round_consensuses))
                 return
         else:
-            # Max rounds exhausted - force stop with majority
-            final_summary = self._pick_majority_summary(round_consensuses)
-            self._broadcast(
-                channel, thread_ts,
-                f"🏛️ *최대 라운드({MAX_DEBATE_ROUNDS}) 도달*\n주제: {topic}\n결론: {final_summary}",
-            )
+            # Max rounds exhausted
+            self._broadcast(channel, thread_ts,
+                self._build_conclusion(f"최대 라운드({MAX_DEBATE_ROUNDS}) 도달", MAX_DEBATE_ROUNDS, topic, round_consensuses))
 
     def _build_prompt(
         self, topic: str, history: list[dict], round_num: int
@@ -379,16 +383,25 @@ class DebateMode:
         return overlap >= 2  # 3개 중 2개 이상 같은 내용이면 교착
 
     @staticmethod
-    def _pick_majority_summary(consensuses: list[dict | None]) -> str:
-        """Pick the best summary from the last round's consensuses."""
-        summaries = [
-            c.get("summary", "")
-            for c in consensuses
-            if c is not None and c.get("summary")
-        ]
-        if summaries:
-            return summaries[0]
-        return "합의에 도달하지 못했습니다."
+    def _build_conclusion(title: str, round_num: int, topic: str, round_consensuses: list[dict]) -> str:
+        """각 에이전트 요약을 포함한 결론 메시지 생성."""
+        lines = [f"🏛️ *{title} (라운드 {round_num})*", f"주제: {topic}", ""]
+
+        # 각 에이전트 요약
+        lines.append("📋 *각 에이전트 요약:*")
+        for r in round_consensuses:
+            c = r.get("consensus")
+            if c and c.get("summary"):
+                lines.append(f"{r['agent_emoji']} {r['agent_name']}: {c['summary']}")
+            else:
+                lines.append(f"{r['agent_emoji']} {r['agent_name']}: (요약 없음)")
+
+        # 대표 결론 (agree한 것 중 첫 번째)
+        agreed = [r for r in round_consensuses if r.get("consensus") and r["consensus"].get("agree")]
+        if agreed:
+            lines.append(f"\n💡 *결론:* {agreed[0]['consensus']['summary']}")
+
+        return "\n".join(lines)
 
     def _fetch_user_messages(self, channel: str, thread_ts: str) -> list[str]:
         """스레드에서 사용자(봇이 아닌)의 메시지를 가져온다."""

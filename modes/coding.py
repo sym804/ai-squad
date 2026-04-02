@@ -1,8 +1,14 @@
 import asyncio
 import random
 import datetime
+import re
 
 from agents import ClaudeAgent, CodexAgent, GeminiAgent, ClaudeBackupAgent, CodexBackupAgent
+
+_CONSENSUS_RE = re.compile(r"<!--CONSENSUS:.*?-->", re.DOTALL)
+
+def _strip_consensus(text: str) -> str:
+    return _CONSENSUS_RE.sub('', text).strip()
 
 MAX_FIX_ROUNDS = 3
 
