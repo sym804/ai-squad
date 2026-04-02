@@ -44,7 +44,9 @@ client = WebClient(token=SLACK_BOT_TOKEN)
 bot_process = None
 bot_user_id = None
 auto_restart = True
+manual_stop = False  # 수동 종료 시 크래시 알림 방지
 crash_times = []
+handled_ts = set()  # 이미 처리한 메시지 timestamp
 
 
 def get_bot_user_id():
@@ -86,14 +88,17 @@ def start_bot():
 
 def stop_bot():
     """실행 중인 봇을 종료합니다."""
-    global bot_process, auto_restart
+    global bot_process, auto_restart, manual_stop
     auto_restart = False
+    manual_stop = True
     if bot_process and bot_process.poll() is None:
         bot_process.terminate()
         try:
             bot_process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             bot_process.kill()
+        # poll 잔여 exit code 소비
+        bot_process.poll()
         msg = "🛑 Bot 종료됨"
         print(f"[WATCHDOG] {msg}")
         return msg
@@ -102,9 +107,12 @@ def stop_bot():
 
 def restart_bot():
     """봇을 재시작합니다."""
+    global manual_stop
+    manual_stop = True
     stop_bot()
     time.sleep(2)
     auto_restart = True
+    manual_stop = False
     return start_bot()
 
 
@@ -118,7 +126,7 @@ def bot_status():
 
 def check_bot_health():
     """봇 프로세스가 죽었는지 확인하고, 필요 시 재시작합니다."""
-    global bot_process, crash_times
+    global bot_process, crash_times, manual_stop
 
     if bot_process is None:
         return
@@ -127,34 +135,30 @@ def check_bot_health():
     if exit_code is None:
         return  # 정상 실행 중
 
+    # 수동 종료/재시작 중이면 크래시로 처리하지 않음
+    if manual_stop:
+        return
+
     now = time.time()
     crash_times.append(now)
-    # 오래된 크래시 기록 정리
     crash_times = [t for t in crash_times if now - t < RAPID_CRASH_WINDOW]
 
     ts = datetime.now().strftime("%H:%M:%S")
 
     if len(crash_times) >= MAX_RAPID_CRASHES:
-        msg = (
-            f"🚨 *Bot 반복 크래시 감지* ({ts})\n"
-            f"{RAPID_CRASH_WINDOW}초 안에 {len(crash_times)}번 크래시.\n"
-            f"자동 재시작을 중단합니다.\n"
-            f"`!bot start` 로 수동 시작하세요."
+        notify(
+            f"🚨 *Bot 반복 크래시* ({ts}) - {len(crash_times)}회/{RAPID_CRASH_WINDOW}초\n"
+            f"자동 재시작 중단. `!bot start`로 수동 시작하세요."
         )
-        notify(msg)
         print(f"[WATCHDOG] 반복 크래시 - 자동 재시작 중단")
         crash_times.clear()
         return
 
     if auto_restart:
-        notify(
-            f"⚠️ *Bot 크래시 감지* ({ts}, exit code: {exit_code})\n"
-            f"{RESTART_DELAY}초 후 자동 재시작합니다..."
-        )
         print(f"[WATCHDOG] 크래시 감지 (exit: {exit_code}), {RESTART_DELAY}초 후 재시작")
         time.sleep(RESTART_DELAY)
         result = start_bot()
-        notify(result)
+        notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\n{result}")
 
 
 def poll_commands():
@@ -179,25 +183,16 @@ def poll_commands():
         if msg.get("bot_id") or msg.get("user") == bot_user_id:
             continue
 
-        # 이미 처리된 메시지인지 확인 (리액션으로 마킹)
-        reactions = msg.get("reactions", [])
-        already_handled = any(
-            r.get("name") == "white_check_mark"
-            and bot_user_id in r.get("users", [])
-            for r in reactions
-        )
-        if already_handled:
+        # 이미 처리한 메시지 스킵
+        if msg["ts"] in handled_ts:
             continue
 
-        # 리액션으로 처리 완료 마킹
-        try:
-            client.reactions_add(
-                channel=WATCHDOG_CHANNEL_ID,
-                timestamp=msg["ts"],
-                name="white_check_mark",
-            )
-        except Exception:
-            pass
+        handled_ts.add(msg["ts"])
+
+        # 오래된 ts 정리 (100개 초과 시)
+        if len(handled_ts) > 100:
+            handled_ts.clear()
+            handled_ts.add(msg["ts"])
 
         parts = text.split()
         cmd = parts[1] if len(parts) > 1 else "help"
@@ -205,15 +200,12 @@ def poll_commands():
         if cmd == "status":
             notify(bot_status())
         elif cmd == "restart":
-            notify("🔄 재시작 중...")
             result = restart_bot()
-            notify(result)
+            notify(f"🔄 재시작 완료 — {result}")
         elif cmd == "stop":
-            result = stop_bot()
-            notify(result)
+            notify(stop_bot())
         elif cmd == "start":
-            result = start_bot()
-            notify(result)
+            notify(start_bot())
         else:
             notify(
                 "*사용 가능한 명령어:*\n"
@@ -232,6 +224,15 @@ def main():
     print("=" * 50)
 
     get_bot_user_id()
+
+    # 기존 !bot 메시지를 handled로 등록 (과거 명령 무시)
+    try:
+        resp = client.conversations_history(channel=WATCHDOG_CHANNEL_ID, limit=20)
+        for msg in resp.get("messages", []):
+            if msg.get("text", "").strip().lower().startswith("!bot"):
+                handled_ts.add(msg["ts"])
+    except Exception:
+        pass
 
     # 봇 자동 시작
     result = start_bot()

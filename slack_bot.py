@@ -57,6 +57,10 @@ def handle_message(event, say, client):
     channel = event.get("channel")
     text = event.get("text", "")
     ts = event.get("ts")
+
+    # watchdog 명령어 무시
+    if text.strip().lower().startswith("!bot"):
+        return
     thread_ts = event.get("thread_ts")
 
     # 스레드 답글 → 추가 토론/질문
