@@ -1,0 +1,841 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI Squad - Slack Multi-Agent Bot</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+KR:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg-primary:#0d0f14;
+  --bg-secondary:#131620;
+  --bg-card:#181c28;
+  --bg-card-hover:#1e2333;
+  --border:#2a2f42;
+  --border-glow:#3d4466;
+  --text-primary:#e8ecf4;
+  --text-secondary:#8b92a8;
+  --text-muted:#5c6380;
+  --accent-purple:#7c5cfc;
+  --accent-blue:#4a9eff;
+  --accent-green:#36d399;
+  --accent-orange:#f59e0b;
+  --accent-red:#f43f5e;
+  --accent-cyan:#22d3ee;
+  --claude-color:#e8956a;
+  --codex-color:#7ee787;
+  --gemini-color:#79b8ff;
+  --gradient-hero:linear-gradient(135deg, #7c5cfc 0%, #4a9eff 50%, #22d3ee 100%);
+  --gradient-card:linear-gradient(135deg, rgba(124,92,252,0.06) 0%, rgba(74,158,255,0.06) 100%);
+  --shadow-card:0 4px 24px rgba(0,0,0,0.3);
+  --shadow-glow:0 0 40px rgba(124,92,252,0.15);
+}
+html{scroll-behavior:smooth}
+body{
+  font-family:'Noto Sans KR','Inter',sans-serif;
+  background:var(--bg-primary);
+  color:var(--text-primary);
+  line-height:1.7;
+  overflow-x:hidden;
+}
+::selection{background:rgba(124,92,252,0.3)}
+
+/* Animated BG */
+.bg-grid{
+  position:fixed;inset:0;z-index:0;pointer-events:none;
+  background-image:
+    linear-gradient(rgba(124,92,252,0.03) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(124,92,252,0.03) 1px, transparent 1px);
+  background-size:60px 60px;
+}
+.bg-orbs{position:fixed;inset:0;z-index:0;pointer-events:none;overflow:hidden}
+.bg-orbs .orb{
+  position:absolute;border-radius:50%;filter:blur(80px);opacity:0.15;
+  animation:orbFloat 20s ease-in-out infinite;
+}
+.bg-orbs .orb:nth-child(1){width:500px;height:500px;background:var(--accent-purple);top:-10%;left:-5%;animation-delay:0s}
+.bg-orbs .orb:nth-child(2){width:400px;height:400px;background:var(--accent-blue);top:40%;right:-10%;animation-delay:-7s}
+.bg-orbs .orb:nth-child(3){width:350px;height:350px;background:var(--accent-cyan);bottom:-5%;left:30%;animation-delay:-14s}
+@keyframes orbFloat{
+  0%,100%{transform:translate(0,0) scale(1)}
+  33%{transform:translate(40px,-30px) scale(1.05)}
+  66%{transform:translate(-20px,20px) scale(0.95)}
+}
+
+/* Layout */
+.container{max-width:1200px;margin:0 auto;padding:0 24px;position:relative;z-index:1}
+section{padding:100px 0}
+
+/* Nav */
+nav{
+  position:fixed;top:0;left:0;right:0;z-index:100;
+  background:rgba(13,15,20,0.85);backdrop-filter:blur(20px);
+  border-bottom:1px solid var(--border);
+  transition:all 0.3s ease;
+}
+nav .container{display:flex;align-items:center;justify-content:space-between;height:64px}
+.nav-logo{
+  font-weight:800;font-size:1.2rem;
+  background:var(--gradient-hero);-webkit-background-clip:text;-webkit-text-fill-color:transparent;
+  display:flex;align-items:center;gap:10px;
+}
+.nav-logo .logo-icon{
+  width:32px;height:32px;border-radius:8px;
+  background:var(--gradient-hero);
+  display:flex;align-items:center;justify-content:center;
+  -webkit-text-fill-color:#fff;font-size:14px;font-weight:700;
+}
+.nav-links{display:flex;gap:28px;list-style:none}
+.nav-links a{
+  color:var(--text-secondary);text-decoration:none;font-size:0.9rem;font-weight:500;
+  transition:color 0.2s;position:relative;
+}
+.nav-links a:hover{color:var(--text-primary)}
+.nav-links a::after{
+  content:'';position:absolute;bottom:-4px;left:0;width:0;height:2px;
+  background:var(--gradient-hero);transition:width 0.3s;
+}
+.nav-links a:hover::after{width:100%}
+
+/* Hero */
+.hero{
+  min-height:100vh;display:flex;align-items:center;justify-content:center;
+  text-align:center;padding-top:64px;position:relative;
+}
+.hero-content{max-width:800px}
+.hero-badge{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:6px 16px;border-radius:50px;
+  background:rgba(124,92,252,0.1);border:1px solid rgba(124,92,252,0.3);
+  color:var(--accent-purple);font-size:0.85rem;font-weight:500;
+  margin-bottom:32px;
+}
+.hero-badge .dot{width:6px;height:6px;border-radius:50%;background:var(--accent-green);animation:pulse 2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:0.4}}
+.hero h1{
+  font-size:clamp(2.8rem,6vw,4.5rem);font-weight:900;line-height:1.1;
+  margin-bottom:24px;letter-spacing:-0.02em;
+}
+.hero h1 .gradient-text{
+  background:var(--gradient-hero);-webkit-background-clip:text;-webkit-text-fill-color:transparent;
+}
+.hero p{font-size:1.2rem;color:var(--text-secondary);max-width:600px;margin:0 auto 40px;line-height:1.8}
+.hero-agents{
+  display:flex;justify-content:center;gap:24px;margin-top:48px;
+}
+.agent-chip{
+  display:flex;align-items:center;gap:10px;
+  padding:12px 24px;border-radius:12px;
+  background:var(--bg-card);border:1px solid var(--border);
+  transition:all 0.3s;cursor:default;
+}
+.agent-chip:hover{border-color:var(--border-glow);transform:translateY(-2px);box-shadow:var(--shadow-glow)}
+.agent-chip .agent-dot{width:10px;height:10px;border-radius:50%}
+.agent-chip .agent-name{font-weight:600;font-size:0.95rem}
+.agent-chip .agent-role{font-size:0.8rem;color:var(--text-muted)}
+
+/* Section Headers */
+.section-header{text-align:center;margin-bottom:64px}
+.section-tag{
+  display:inline-block;padding:4px 14px;border-radius:6px;
+  background:rgba(124,92,252,0.1);color:var(--accent-purple);
+  font-size:0.8rem;font-weight:600;text-transform:uppercase;letter-spacing:0.1em;
+  margin-bottom:16px;
+}
+.section-header h2{font-size:2.4rem;font-weight:800;margin-bottom:12px;letter-spacing:-0.01em}
+.section-header p{color:var(--text-secondary);font-size:1.05rem;max-width:600px;margin:0 auto}
+
+/* Cards */
+.card{
+  background:var(--bg-card);border:1px solid var(--border);border-radius:16px;
+  padding:32px;transition:all 0.3s;position:relative;overflow:hidden;
+}
+.card::before{
+  content:'';position:absolute;inset:0;
+  background:var(--gradient-card);opacity:0;transition:opacity 0.3s;
+}
+.card:hover{border-color:var(--border-glow);transform:translateY(-4px);box-shadow:var(--shadow-card)}
+.card:hover::before{opacity:1}
+.card>*{position:relative;z-index:1}
+
+/* Overview Grid */
+.overview-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:24px}
+.overview-card .card-icon{
+  width:48px;height:48px;border-radius:12px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.4rem;margin-bottom:20px;
+}
+.overview-card h3{font-size:1.15rem;font-weight:700;margin-bottom:8px}
+.overview-card p{color:var(--text-secondary);font-size:0.9rem;line-height:1.7}
+
+/* Architecture */
+.arch-container{display:grid;grid-template-columns:1fr 1fr;gap:40px;align-items:start}
+.arch-diagram{
+  background:var(--bg-card);border:1px solid var(--border);border-radius:16px;
+  padding:32px;font-family:'JetBrains Mono',monospace;font-size:0.82rem;
+  color:var(--text-secondary);line-height:1.9;white-space:pre;overflow-x:auto;
+}
+.arch-diagram .highlight{color:var(--accent-purple);font-weight:600}
+.arch-diagram .file{color:var(--accent-blue)}
+.arch-diagram .comment{color:var(--text-muted)}
+.arch-stack{display:flex;flex-direction:column;gap:16px}
+.tech-pill{
+  display:inline-flex;align-items:center;gap:8px;
+  padding:10px 20px;border-radius:10px;
+  background:var(--bg-card);border:1px solid var(--border);
+  font-size:0.9rem;font-weight:500;
+}
+.tech-pill .tech-icon{font-size:1.1rem}
+
+/* Flow */
+.flow-section{position:relative}
+.flow-tabs{display:flex;justify-content:center;gap:8px;margin-bottom:48px}
+.flow-tab{
+  padding:10px 24px;border-radius:10px;border:1px solid var(--border);
+  background:transparent;color:var(--text-secondary);
+  font-size:0.9rem;font-weight:600;cursor:pointer;transition:all 0.3s;
+  font-family:'Noto Sans KR','Inter',sans-serif;
+}
+.flow-tab.active{background:var(--accent-purple);color:#fff;border-color:var(--accent-purple)}
+.flow-tab:hover:not(.active){border-color:var(--border-glow);color:var(--text-primary)}
+.flow-content{display:none}
+.flow-content.active{display:block}
+
+/* Timeline */
+.timeline{position:relative;max-width:700px;margin:0 auto}
+.timeline::before{
+  content:'';position:absolute;left:24px;top:0;bottom:0;width:2px;
+  background:linear-gradient(to bottom, var(--accent-purple), var(--accent-blue), var(--accent-cyan));
+}
+.timeline-item{
+  position:relative;padding-left:64px;margin-bottom:32px;
+}
+.timeline-item:last-child{margin-bottom:0}
+.timeline-dot{
+  position:absolute;left:15px;top:4px;width:20px;height:20px;
+  border-radius:50%;border:3px solid var(--bg-primary);
+  z-index:2;
+}
+.timeline-item .step-num{
+  font-size:0.75rem;color:var(--text-muted);font-weight:600;margin-bottom:4px;
+  text-transform:uppercase;letter-spacing:0.1em;
+}
+.timeline-item h4{font-size:1.05rem;font-weight:700;margin-bottom:6px}
+.timeline-item p{color:var(--text-secondary);font-size:0.9rem;line-height:1.7}
+.timeline-item .agent-tag{
+  display:inline-block;padding:2px 10px;border-radius:6px;font-size:0.75rem;font-weight:600;margin-right:6px;margin-top:8px;
+}
+
+/* Features Grid */
+.features-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:24px}
+.feature-card{display:flex;gap:16px;align-items:flex-start}
+.feature-icon{
+  flex-shrink:0;width:44px;height:44px;border-radius:10px;
+  display:flex;align-items:center;justify-content:center;
+  font-size:1.2rem;
+}
+.feature-card h3{font-size:1rem;font-weight:700;margin-bottom:4px}
+.feature-card p{color:var(--text-secondary);font-size:0.88rem;line-height:1.6}
+
+/* Slack Preview */
+.slack-preview{
+  max-width:700px;margin:48px auto 0;
+  background:#1a1d21;border-radius:12px;border:1px solid #333;
+  overflow:hidden;font-family:'Inter','Noto Sans KR',sans-serif;
+}
+.slack-header{
+  padding:12px 20px;border-bottom:1px solid #333;
+  display:flex;align-items:center;gap:8px;
+  font-weight:600;font-size:0.95rem;color:#d1d2d3;
+}
+.slack-header .hash{color:#ababad;font-weight:400}
+.slack-messages{padding:16px 20px}
+.slack-msg{display:flex;gap:12px;margin-bottom:16px}
+.slack-msg:last-child{margin-bottom:0}
+.slack-avatar{
+  width:36px;height:36px;border-radius:8px;flex-shrink:0;
+  display:flex;align-items:center;justify-content:center;
+  font-weight:700;font-size:0.75rem;color:#fff;
+}
+.slack-msg-body{flex:1;min-width:0}
+.slack-msg-header{display:flex;align-items:baseline;gap:8px;margin-bottom:2px}
+.slack-msg-name{font-weight:700;font-size:0.9rem;color:#d1d2d3}
+.slack-msg-time{font-size:0.75rem;color:#616061}
+.slack-msg-text{font-size:0.88rem;color:#d1d2d3;line-height:1.6}
+.slack-msg-text code{
+  background:#2d2d2d;padding:1px 5px;border-radius:3px;
+  font-family:'JetBrains Mono',monospace;font-size:0.82rem;color:#e06c75;
+}
+.slack-consensus{
+  margin-top:12px;padding:10px 14px;border-radius:8px;
+  background:rgba(54,211,153,0.08);border-left:3px solid var(--accent-green);
+  font-size:0.85rem;color:var(--accent-green);
+}
+.slack-typing{
+  padding:8px 20px 14px;font-size:0.8rem;color:#616061;
+  display:flex;align-items:center;gap:6px;
+}
+.typing-dots span{
+  display:inline-block;width:4px;height:4px;border-radius:50%;
+  background:#616061;animation:typingBounce 1.4s ease-in-out infinite;
+}
+.typing-dots span:nth-child(2){animation-delay:0.2s}
+.typing-dots span:nth-child(3){animation-delay:0.4s}
+@keyframes typingBounce{0%,60%,100%{transform:translateY(0)}30%{transform:translateY(-4px)}}
+
+/* Backup Section */
+.backup-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:20px;margin-top:40px}
+.backup-card{text-align:center;padding:24px 16px}
+.backup-card .backup-emoji{font-size:2rem;margin-bottom:12px}
+.backup-card h4{font-size:0.95rem;font-weight:700;margin-bottom:6px}
+.backup-card p{font-size:0.82rem;color:var(--text-secondary);line-height:1.6}
+.backup-card .backup-badge{
+  display:inline-block;margin-top:8px;padding:3px 10px;border-radius:6px;
+  font-size:0.75rem;font-weight:600;
+}
+
+/* Footer */
+footer{
+  border-top:1px solid var(--border);padding:40px 0;text-align:center;
+  color:var(--text-muted);font-size:0.85rem;
+}
+footer a{color:var(--accent-purple);text-decoration:none}
+footer a:hover{text-decoration:underline}
+.footer-links{display:flex;justify-content:center;gap:24px;margin-bottom:16px}
+
+/* Responsive */
+@media(max-width:900px){
+  .overview-grid,.features-grid{grid-template-columns:1fr}
+  .arch-container{grid-template-columns:1fr}
+  .hero-agents{flex-wrap:wrap}
+  .backup-grid{grid-template-columns:1fr}
+}
+@media(max-width:600px){
+  section{padding:60px 0}
+  .hero h1{font-size:2.2rem}
+  .nav-links{display:none}
+  .flow-tabs{flex-wrap:wrap}
+}
+
+/* Scroll Animation */
+.reveal{opacity:0;transform:translateY(30px);transition:all 0.7s cubic-bezier(0.16,1,0.3,1)}
+.reveal.visible{opacity:1;transform:translateY(0)}
+</style>
+</head>
+<body>
+
+<div class="bg-grid"></div>
+<div class="bg-orbs">
+  <div class="orb"></div>
+  <div class="orb"></div>
+  <div class="orb"></div>
+</div>
+
+<!-- Nav -->
+<nav>
+  <div class="container">
+    <div class="nav-logo">
+      <div class="logo-icon">AI</div>
+      AI Squad
+    </div>
+    <ul class="nav-links">
+      <li><a href="#overview">Overview</a></li>
+      <li><a href="#architecture">Architecture</a></li>
+      <li><a href="#features">Features</a></li>
+      <li><a href="#flow">Flow</a></li>
+      <li><a href="#preview">Preview</a></li>
+    </ul>
+  </div>
+</nav>
+
+<!-- Hero -->
+<section class="hero">
+  <div class="hero-content">
+    <div class="hero-badge">
+      <span class="dot"></span>
+      Private Project
+    </div>
+    <h1>
+      3개의 AI가<br>
+      <span class="gradient-text">Slack에서 협업한다</span>
+    </h1>
+    <p>
+      Claude Code, Codex CLI, Gemini CLI가 자유 토론하고 역할 분담 코딩을 수행하는
+      Slack 멀티 에이전트 봇. API 비용 없이, CLI 기반으로 동작합니다.
+    </p>
+    <div class="hero-agents">
+      <div class="agent-chip">
+        <div class="agent-dot" style="background:var(--claude-color)"></div>
+        <div>
+          <div class="agent-name">Claude Code</div>
+          <div class="agent-role">기획 + 풀스택 개발</div>
+        </div>
+      </div>
+      <div class="agent-chip">
+        <div class="agent-dot" style="background:var(--codex-color)"></div>
+        <div>
+          <div class="agent-name">Codex CLI</div>
+          <div class="agent-role">리뷰 + 테스트 리더</div>
+        </div>
+      </div>
+      <div class="agent-chip">
+        <div class="agent-dot" style="background:var(--gemini-color)"></div>
+        <div>
+          <div class="agent-name">Gemini CLI</div>
+          <div class="agent-role">토론 + 테스트 참여</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Overview -->
+<section id="overview">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-tag">Overview</div>
+      <h2>프로젝트 개요</h2>
+      <p>Slack 메시지 하나로 3개 AI의 집단 지성을 활용하세요</p>
+    </div>
+    <div class="overview-grid">
+      <div class="card overview-card reveal">
+        <div class="card-icon" style="background:rgba(124,92,252,0.12);color:var(--accent-purple)">&#x1f4ac;</div>
+        <h3>토론 모드</h3>
+        <p><code>#ai-협업</code> 채널에 질문하면 3개 AI가 자유 토론을 시작합니다. 합의에 도달하면 자동으로 결론을 요약합니다.</p>
+      </div>
+      <div class="card overview-card reveal">
+        <div class="card-icon" style="background:rgba(54,211,153,0.12);color:var(--accent-green)">&#x1f4bb;</div>
+        <h3>코딩 모드</h3>
+        <p><code>#ai-코딩</code> 채널에 요청하면 Claude가 기획/개발, Codex가 리뷰/테스트 리더, 전원이 테스트에 참여합니다.</p>
+      </div>
+      <div class="card overview-card reveal">
+        <div class="card-icon" style="background:rgba(74,158,255,0.12);color:var(--accent-blue)">&#x1f310;</div>
+        <h3>Bridge 모드</h3>
+        <p><code>#ai-stockradar</code> <code>#ai-tc_manager</code> 채널에서 프로젝트 폴더에 직접 CLI를 연결합니다. <code>codex:</code> 접두어로 Codex도 호출 가능.</p>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:center;gap:32px;margin-top:40px;flex-wrap:wrap" class="reveal">
+      <div class="card" style="padding:20px 32px;text-align:center;min-width:140px"><div style="font-size:1.8rem;font-weight:800;color:var(--accent-purple)">3,100+</div><div style="font-size:0.85rem;color:var(--text-secondary)">Lines of Code</div></div>
+      <div class="card" style="padding:20px 32px;text-align:center;min-width:140px"><div style="font-size:1.8rem;font-weight:800;color:var(--accent-green)">53</div><div style="font-size:0.85rem;color:var(--text-secondary)">Tests (All Pass)</div></div>
+      <div class="card" style="padding:20px 32px;text-align:center;min-width:140px"><div style="font-size:1.8rem;font-weight:800;color:var(--accent-blue)">4</div><div style="font-size:0.85rem;color:var(--text-secondary)">Slack Channels</div></div>
+      <div class="card" style="padding:20px 32px;text-align:center;min-width:140px"><div style="font-size:1.8rem;font-weight:800;color:var(--accent-orange)">22</div><div style="font-size:0.85rem;color:var(--text-secondary)">Python Files</div></div>
+    </div>
+  </div>
+</section>
+
+<!-- Architecture -->
+<section id="architecture" style="background:var(--bg-secondary)">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-tag">Architecture</div>
+      <h2>시스템 구조</h2>
+      <p>Python + slack-bolt (Socket Mode) 기반의 간결한 아키텍처</p>
+    </div>
+    <div class="arch-container reveal">
+      <div class="arch-diagram"><span class="highlight">slack-multi-agent/</span>
+├── <span class="file">slack_bot.py</span>        <span class="comment"># Socket Mode 이벤트 수신, 채널별 라우팅</span>
+├── <span class="file">watchdog.py</span>         <span class="comment"># 크래시 감지, 자동 재시작, 원격 제어</span>
+├── <span class="file">cancel.py</span>           <span class="comment"># 작업 취소 + 프로세스 관리</span>
+├── <span class="highlight">agents/</span>
+│   ├── <span class="file">base.py</span>         <span class="comment"># Agent 공통 (subprocess, 타임아웃)</span>
+│   ├── <span class="file">claude.py</span>       <span class="comment"># Claude Code (stream-json, 토큰 추적)</span>
+│   ├── <span class="file">codex.py</span>        <span class="comment"># Codex CLI (노이즈 필터, exec 모드)</span>
+│   ├── <span class="file">gemini.py</span>       <span class="comment"># Gemini CLI (YOLO 모드, quota 재시도)</span>
+│   ├── <span class="file">claude_backup.py</span> <span class="comment"># Claude-B (다른 관점 답변)</span>
+│   └── <span class="file">codex_backup.py</span>  <span class="comment"># Codex-B (비판적 리뷰)</span>
+├── <span class="highlight">modes/</span>
+│   ├── <span class="file">debate.py</span>       <span class="comment"># 토론 (합의 감지, 라운드, 교착 감지)</span>
+│   ├── <span class="file">coding.py</span>       <span class="comment"># 코딩 (파이프라인 + 병렬 모드)</span>
+│   └── <span class="file">bridge.py</span>       <span class="comment"># Bridge (폴더별 CLI 직접 연결)</span>
+├── <span class="highlight">tests/</span>            <span class="comment"># 53개 테스트 (합의, 교체, 통합)</span>
+├── <span class="file">config.py</span>           <span class="comment"># 환경 변수, 타임아웃 설정</span>
+└── <span class="file">requirements.txt</span>    <span class="comment"># slack-bolt, python-dotenv</span></div>
+      <div class="arch-stack">
+        <div class="card" style="padding:24px">
+          <h3 style="font-size:1rem;margin-bottom:16px;font-weight:700">Tech Stack</h3>
+          <div style="display:flex;flex-wrap:wrap;gap:10px">
+            <div class="tech-pill"><span class="tech-icon">&#x1f40d;</span> Python 3.11+</div>
+            <div class="tech-pill"><span class="tech-icon">&#x26a1;</span> slack-bolt</div>
+            <div class="tech-pill"><span class="tech-icon">&#x1f50c;</span> Socket Mode</div>
+            <div class="tech-pill"><span class="tech-icon">&#x1f4e6;</span> subprocess</div>
+          </div>
+        </div>
+        <div class="card" style="padding:24px">
+          <h3 style="font-size:1rem;margin-bottom:16px;font-weight:700">CLI 호출 방식</h3>
+          <div style="font-family:'JetBrains Mono',monospace;font-size:0.8rem;color:var(--text-secondary);background:var(--bg-primary);padding:16px;border-radius:10px;line-height:2">
+            <span style="color:var(--claude-color)"># Claude (stream-json + 토큰 추적)</span><br>
+            type <span style="color:var(--accent-green)">"tmp.txt"</span> | claude -p --output-format stream-json<br><br>
+            <span style="color:var(--codex-color)"># Codex (full-auto + 노이즈 필터)</span><br>
+            type <span style="color:var(--accent-green)">"tmp.txt"</span> | codex exec --full-auto<br><br>
+            <span style="color:var(--gemini-color)"># Gemini (YOLO 모드 + quota 재시도)</span><br>
+            type <span style="color:var(--accent-green)">"tmp.txt"</span> | gemini -y -p <span style="color:var(--accent-green)">""</span>
+          </div>
+        </div>
+        <div class="card" style="padding:24px">
+          <h3 style="font-size:1rem;margin-bottom:16px;font-weight:700">핵심 포인트</h3>
+          <ul style="list-style:none;font-size:0.9rem;color:var(--text-secondary);display:flex;flex-direction:column;gap:8px">
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> 서버/ngrok 불필요 (Socket Mode)</li>
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> API 비용 Zero (CLI 기반)</li>
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> PC/맥북 어디서든 Slack으로 사용</li>
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> 타임아웃 120초(토론) / 300초(코딩)</li>
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> Watchdog 크래시 자동 복구</li>
+            <li style="display:flex;align-items:center;gap:8px"><span style="color:var(--accent-green)">&#x2713;</span> 53개 자동화 테스트</li>
+          </ul>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Features -->
+<section id="features">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-tag">Features</div>
+      <h2>주요 기능</h2>
+      <p>멀티 에이전트 시스템의 핵심 기능들</p>
+    </div>
+    <div class="features-grid">
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(124,92,252,0.12);color:var(--accent-purple)">&#x1f91d;</div>
+        <div>
+          <h3>자동 합의 감지</h3>
+          <p>전원 합의 시 즉시 종료, 5라운드 이상에서 다수 합의 시 조기 종료. 최대 10라운드 후 다수결로 결론 도출.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(74,158,255,0.12);color:var(--accent-blue)">&#x1f504;</div>
+        <div>
+          <h3>라운드별 랜덤 순서</h3>
+          <p>매 라운드마다 발언 순서를 랜덤으로 셔플하여 특정 AI의 편향을 방지하고 다양한 토론 흐름을 생성합니다.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(54,211,153,0.12);color:var(--accent-green)">&#x1f9f5;</div>
+        <div>
+          <h3>스레드 추가 질문</h3>
+          <p>스레드에 추가 질문 시 원본 주제를 포함한 맥락 기반 추가 토론을 진행하며, 합의에 도달할 때까지 계속됩니다.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(245,158,11,0.12);color:var(--accent-orange)">&#x1f6e1;</div>
+        <div>
+          <h3>타임아웃 백업 에이전트</h3>
+          <p>Claude 타임아웃 시 Codex-B(&#x1f7e4;), Codex/Gemini 타임아웃 시 Claude-B(&#x1f7e1;)가 다른 관점으로 자동 대체 답변.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(244,63,94,0.12);color:var(--accent-red)">&#x1f50d;</div>
+        <div>
+          <h3>교착 상태 감지</h3>
+          <p>토론이 교착 상태에 빠지면 이를 자동으로 감지하고 새로운 관점을 주입하여 논의를 진전시킵니다.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(34,211,238,0.12);color:var(--accent-cyan)">&#x1f4cb;</div>
+        <div>
+          <h3>이전 합의 자동 참조</h3>
+          <p>당일 이전 토론의 합의 결론을 자동으로 참조하여 맥락이 이어지는 연속적인 토론이 가능합니다.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(232,149,106,0.12);color:var(--claude-color)">&#x1f6a8;</div>
+        <div>
+          <h3>병렬 실행 모드</h3>
+          <p>메시지에 에이전트 이름을 지정하면 동시 병렬 실행. 완료 후 Codex가 최종 보고서를 작성합니다.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(126,231,135,0.12);color:var(--codex-color)">&#x1f6d1;</div>
+        <div>
+          <h3>!stop 강제 중단</h3>
+          <p>스레드에서 <code>!stop</code> → 해당 작업만 취소. 채널 최상위 → 전체 작업 취소. subprocess도 즉시 kill.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(74,158,255,0.12);color:var(--accent-blue)">&#x1f6a8;</div>
+        <div>
+          <h3>Watchdog 크래시 복구</h3>
+          <p>봇 프로세스 감시 + 크래시 시 5초 후 자동 재시작 + Slack 알림. <code>!bot status/restart</code>로 원격 제어.</p>
+        </div>
+      </div>
+      <div class="card feature-card reveal">
+        <div class="feature-icon" style="background:rgba(245,158,11,0.12);color:var(--accent-orange)">&#x1f4ca;</div>
+        <div>
+          <h3>실시간 진행 표시</h3>
+          <p>15초마다 경과 시간 + 작업 미리보기를 업데이트. Claude는 토큰 사용량(입력/캐시/출력 + USD)도 표시.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Flow -->
+<section id="flow" style="background:var(--bg-secondary)">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-tag">Flow</div>
+      <h2>워크플로우</h2>
+      <p>토론, 코딩, Bridge 세 가지 모드의 상세 흐름</p>
+    </div>
+    <div class="flow-tabs reveal">
+      <button class="flow-tab active" data-flow="debate">&#x1f4ac; 토론 모드</button>
+      <button class="flow-tab" data-flow="coding">&#x1f4bb; 코딩 모드</button>
+      <button class="flow-tab" data-flow="bridge">&#x1f310; Bridge 모드</button>
+    </div>
+
+    <!-- Debate Flow -->
+    <div class="flow-content active" id="flow-debate">
+      <div class="timeline reveal">
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-purple)"></div>
+          <div class="step-num">Step 1</div>
+          <h4>사용자가 #ai-협업에 메시지 작성</h4>
+          <p>토론 주제를 채널에 입력하면 봇이 스레드를 생성하고 토론 시작을 안내합니다.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-blue)"></div>
+          <div class="step-num">Step 2</div>
+          <h4>3개 AI에게 질문 전달</h4>
+          <p>각 AI에게 비동기로 질문을 전달하고, 이전 답변들을 컨텍스트로 포함합니다. 매 라운드마다 순서를 랜덤 셔플합니다.</p>
+          <div>
+            <span class="agent-tag" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">Claude</span>
+            <span class="agent-tag" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">Codex</span>
+            <span class="agent-tag" style="background:rgba(121,184,255,0.15);color:var(--gemini-color)">Gemini</span>
+          </div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-cyan)"></div>
+          <div class="step-num">Step 3</div>
+          <h4>스레드에서 자유 토론 진행</h4>
+          <p>각 AI가 [Claude], [Codex], [Gemini] 이름으로 스레드에 답변합니다. 이전 응답을 참고하여 반론, 동의, 보충 의견을 제시합니다.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-green)"></div>
+          <div class="step-num">Step 4</div>
+          <h4>합의 감지 및 결론 도출</h4>
+          <p>각 응답에 포함된 합의 메타데이터를 파싱하여 전원 합의(즉시 종료), 다수 합의(5라운드+), 최대 라운드 도달 시 다수결로 결론을 도출합니다.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-orange)"></div>
+          <div class="step-num">Step 5</div>
+          <h4>결론 요약 포스팅</h4>
+          <p>합의된 결론을 채널(스레드 밖)에 요약 포스팅합니다. 이 결론은 당일 이후 토론에서 자동으로 참조됩니다.</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- Coding Flow -->
+    <div class="flow-content" id="flow-coding">
+      <div class="timeline reveal">
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--claude-color)"></div>
+          <div class="step-num">Phase 1 — 기획 + 개발</div>
+          <h4>Claude가 설계하고 코드를 작성</h4>
+          <p>사용자의 요청을 분석하여 기획, 설계, 코드 작성을 수행하고 스레드에 결과를 포스팅합니다.</p>
+          <span class="agent-tag" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">Claude &#x2192; 기획 + 개발</span>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--codex-color)"></div>
+          <div class="step-num">Phase 2 — 코드 리뷰</div>
+          <h4>Codex가 코드를 리뷰</h4>
+          <p>Claude가 작성한 코드를 Codex가 리뷰하고, 개선점이나 버그를 지적합니다.</p>
+          <span class="agent-tag" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">Codex &#x2192; 코드 리뷰</span>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-cyan)"></div>
+          <div class="step-num">Phase 3 — 테스트</div>
+          <h4>전원 참여 테스트</h4>
+          <p>Codex가 테스트 리더로서 테스트를 설계/작성하고, Claude와 Gemini도 테스트에 참여합니다.</p>
+          <div>
+            <span class="agent-tag" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">Codex &#x2192; 테스트 리더</span>
+            <span class="agent-tag" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">Claude &#x2192; 테스트</span>
+            <span class="agent-tag" style="background:rgba(121,184,255,0.15);color:var(--gemini-color)">Gemini &#x2192; 테스트</span>
+          </div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-orange)"></div>
+          <div class="step-num">Phase 4 — 이슈 수정 (선택)</div>
+          <h4>이슈 발견 시 반복 수정</h4>
+          <p>테스트에서 이슈가 발견되면 Claude에게 수정을 요청합니다. 최대 3회까지 반복 가능합니다.</p>
+          <span class="agent-tag" style="background:rgba(245,158,11,0.15);color:var(--accent-orange)">최대 3회 반복</span>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-green)"></div>
+          <div class="step-num">Complete</div>
+          <h4>Codex 최종 보고서</h4>
+          <p>Codex가 전체 결과를 취합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작성합니다.</p>
+          <span class="agent-tag" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">Codex &#x2192; 최종 보고서</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Bridge Flow -->
+    <div class="flow-content" id="flow-bridge">
+      <div class="timeline reveal">
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-purple)"></div>
+          <div class="step-num">Step 1</div>
+          <h4>프로젝트 채널에 메시지 작성</h4>
+          <p><code>#ai-stockradar</code> 또는 <code>#ai-tc_manager</code>에 메시지를 보내면 해당 프로젝트 폴더에서 CLI가 실행됩니다.</p>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--claude-color)"></div>
+          <div class="step-num">Step 2</div>
+          <h4>Claude Code 또는 Codex 실행</h4>
+          <p>기본은 <code>claude --continue -p</code>로 멀티턴 대화. <code>codex:</code> 접두어를 붙이면 Codex CLI로 전환됩니다.</p>
+          <div>
+            <span class="agent-tag" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">기본: Claude</span>
+            <span class="agent-tag" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">codex: Codex</span>
+          </div>
+        </div>
+        <div class="timeline-item">
+          <div class="timeline-dot" style="background:var(--accent-green)"></div>
+          <div class="step-num">Step 3</div>
+          <h4>스레드에 응답 게시</h4>
+          <p>CLI 결과가 스레드에 포스팅됩니다. 4000자 초과 시 자동 분할. 스레드에서 추가 대화도 가능합니다.</p>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Slack Preview -->
+<section id="preview">
+  <div class="container">
+    <div class="section-header reveal">
+      <div class="section-tag">Preview</div>
+      <h2>실제 Slack 미리보기</h2>
+      <p>AI Squad가 토론하는 모습을 확인해 보세요</p>
+    </div>
+    <div class="slack-preview reveal">
+      <div class="slack-header">
+        <span class="hash">#</span> ai-협업
+      </div>
+      <div class="slack-messages">
+        <div class="slack-msg">
+          <div class="slack-avatar" style="background:#4a154b">U</div>
+          <div class="slack-msg-body">
+            <div class="slack-msg-header">
+              <span class="slack-msg-name">사용자</span>
+              <span class="slack-msg-time">오후 2:30</span>
+            </div>
+            <div class="slack-msg-text">React vs Vue.js 중 신규 프로젝트에 뭐가 더 나을까?</div>
+          </div>
+        </div>
+        <div class="slack-msg">
+          <div class="slack-avatar" style="background:var(--claude-color)">C</div>
+          <div class="slack-msg-body">
+            <div class="slack-msg-header">
+              <span class="slack-msg-name" style="color:var(--claude-color)">[Claude]</span>
+              <span class="slack-msg-time">오후 2:31</span>
+            </div>
+            <div class="slack-msg-text">팀 규모와 프로젝트 특성에 따라 다르지만, 대규모 팀이라면 React의 생태계와 커뮤니티 지원이 큰 장점입니다. TypeScript 통합도 훌륭하고요.</div>
+          </div>
+        </div>
+        <div class="slack-msg">
+          <div class="slack-avatar" style="background:var(--codex-color);color:#1a1d21">X</div>
+          <div class="slack-msg-body">
+            <div class="slack-msg-header">
+              <span class="slack-msg-name" style="color:var(--codex-color)">[Codex]</span>
+              <span class="slack-msg-time">오후 2:32</span>
+            </div>
+            <div class="slack-msg-text">동의하면서도 Vue의 학습 곡선을 고려해야 합니다. 소규모 팀이나 빠른 프로토타이핑에는 Vue의 <code>Composition API</code>가 더 직관적일 수 있어요.</div>
+          </div>
+        </div>
+        <div class="slack-msg">
+          <div class="slack-avatar" style="background:var(--gemini-color);color:#1a1d21">G</div>
+          <div class="slack-msg-body">
+            <div class="slack-msg-header">
+              <span class="slack-msg-name" style="color:var(--gemini-color)">[Gemini]</span>
+              <span class="slack-msg-time">오후 2:33</span>
+            </div>
+            <div class="slack-msg-text">두 분 의견에 공감합니다. 결국 "팀 경험 + 프로젝트 규모"가 결정 요인이라는 점에서 합의할 수 있을 것 같습니다.</div>
+            <div class="slack-consensus">&#x2705; 전원 합의 도달 &#x2014; "프레임워크 선택은 팀 규모와 경험에 따라 결정. 대규모=React, 소규모/빠른개발=Vue 추천."</div>
+          </div>
+        </div>
+      </div>
+      <div class="slack-typing">
+        <span class="typing-dots"><span></span><span></span><span></span></span>
+        AI Squad 토론 종료 &#x2014; 결론이 채널에 포스팅되었습니다
+      </div>
+    </div>
+
+    <!-- Backup Agents -->
+    <div class="section-header reveal" style="margin-top:80px;margin-bottom:32px">
+      <h2 style="font-size:1.8rem">백업 에이전트 시스템</h2>
+      <p>타임아웃 발생 시 자동으로 백업 에이전트가 투입됩니다</p>
+    </div>
+    <div class="backup-grid reveal">
+      <div class="card backup-card">
+        <div class="backup-emoji">&#x1f7e4;</div>
+        <h4>Claude 타임아웃</h4>
+        <p>Codex가 백업 에이전트(Codex-B)로 자동 투입되어 다른 관점에서 답변합니다</p>
+        <span class="backup-badge" style="background:rgba(126,231,135,0.15);color:var(--codex-color)">Codex-B &#x1f7e4;</span>
+      </div>
+      <div class="card backup-card">
+        <div class="backup-emoji">&#x1f7e1;</div>
+        <h4>Codex 타임아웃</h4>
+        <p>Claude가 백업 에이전트(Claude-B)로 자동 투입되어 다른 관점에서 답변합니다</p>
+        <span class="backup-badge" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">Claude-B &#x1f7e1;</span>
+      </div>
+      <div class="card backup-card">
+        <div class="backup-emoji">&#x1f7e1;</div>
+        <h4>Gemini 타임아웃</h4>
+        <p>Claude가 백업 에이전트(Claude-B)로 자동 투입되어 다른 관점에서 답변합니다</p>
+        <span class="backup-badge" style="background:rgba(232,149,106,0.15);color:var(--claude-color)">Claude-B &#x1f7e1;</span>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- Footer -->
+<footer>
+  <div class="container">
+    <div class="footer-links">
+      <a href="https://github.com/sym804/ai-squad" target="_blank">GitHub (Private)</a>
+      <span style="color:var(--border)">|</span>
+      <span>Python + slack-bolt</span>
+      <span style="color:var(--border)">|</span>
+      <span>Socket Mode</span>
+    </div>
+    <p>AI Squad &mdash; 3개 AI의 집단 지성을 Slack에서. Built with &#x2764;&#xfe0f; in 2026.</p>
+  </div>
+</footer>
+
+<script>
+// Flow tabs
+document.querySelectorAll('.flow-tab').forEach(tab => {
+  tab.addEventListener('click', () => {
+    document.querySelectorAll('.flow-tab').forEach(t => t.classList.remove('active'));
+    document.querySelectorAll('.flow-content').forEach(c => c.classList.remove('active'));
+    tab.classList.add('active');
+    document.getElementById('flow-' + tab.dataset.flow).classList.add('active');
+  });
+});
+
+// Scroll reveal
+const observer = new IntersectionObserver((entries) => {
+  entries.forEach(entry => {
+    if (entry.isIntersecting) {
+      entry.target.classList.add('visible');
+    }
+  });
+}, { threshold: 0.1, rootMargin: '0px 0px -50px 0px' });
+
+document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
+
+// Smooth nav background on scroll
+const nav = document.querySelector('nav');
+window.addEventListener('scroll', () => {
+  if (window.scrollY > 100) {
+    nav.style.borderBottomColor = 'var(--border-glow)';
+  } else {
+    nav.style.borderBottomColor = 'var(--border)';
+  }
+});
+</script>
+</body>
+</html>

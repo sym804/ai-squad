@@ -1,0 +1,1160 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Slack에서 AI 3명이 토론하는 시스템 만들기 - Claude, Codex, Gemini 멀티 에이전트</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500&family=Noto+Sans+KR:wght@300;400;500;700;900&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --bg: #ffffff;
+    --bg-surface: #f5f6f8;
+    --bg-code: #f5f5f5;
+    --bg-card: #ffffff;
+    --border: #e0e3e8;
+    --text: #1a1a2e;
+    --text-muted: #4a5568;
+    --text-dim: #718096;
+    --accent-orange: #ea580c;
+    --accent-green: #16a34a;
+    --accent-blue: #2563eb;
+    --accent-purple: #7c3aed;
+    --accent-yellow: #ca8a04;
+    --accent-red: #dc2626;
+    --accent-cyan: #0891b2;
+    --radius: 12px;
+  }
+
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  html {
+    scroll-behavior: smooth;
+    font-size: 17px;
+  }
+
+  body {
+    font-family: 'Noto Sans KR', -apple-system, BlinkMacSystemFont, sans-serif;
+    background: var(--bg);
+    color: var(--text);
+    line-height: 1.85;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Hero ── */
+  .hero {
+    position: relative;
+    padding: 100px 0 80px;
+    text-align: center;
+    overflow: hidden;
+  }
+  .hero::before {
+    content: '';
+    position: absolute;
+    inset: 0;
+    background:
+      radial-gradient(ellipse 600px 400px at 30% 20%, rgba(234,88,12,.06), transparent),
+      radial-gradient(ellipse 500px 350px at 70% 60%, rgba(37,99,235,.05), transparent),
+      radial-gradient(ellipse 400px 300px at 50% 80%, rgba(22,163,74,.04), transparent);
+    pointer-events: none;
+  }
+  .hero-label {
+    display: inline-block;
+    background: rgba(234,88,12,.08);
+    color: var(--accent-orange);
+    font-size: .8rem;
+    font-weight: 500;
+    padding: 6px 16px;
+    border-radius: 999px;
+    border: 1px solid rgba(234,88,12,.2);
+    margin-bottom: 28px;
+    letter-spacing: .02em;
+  }
+  .hero h1 {
+    font-size: clamp(2rem, 5vw, 3rem);
+    font-weight: 900;
+    line-height: 1.3;
+    max-width: 780px;
+    margin: 0 auto 20px;
+    background: linear-gradient(135deg, #1a1a2e 0%, #4a5568 100%);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+  }
+  .hero-sub {
+    color: var(--text-muted);
+    font-size: 1.1rem;
+    max-width: 560px;
+    margin: 0 auto 40px;
+    font-weight: 300;
+  }
+  .hero-agents {
+    display: flex;
+    justify-content: center;
+    gap: 32px;
+    flex-wrap: wrap;
+  }
+  .hero-agent {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-size: .95rem;
+    font-weight: 500;
+  }
+  .dot {
+    width: 12px; height: 12px;
+    border-radius: 50%;
+    display: inline-block;
+  }
+  .dot-claude { background: var(--accent-orange); box-shadow: 0 0 6px rgba(234,88,12,.3); }
+  .dot-codex  { background: var(--accent-green);  box-shadow: 0 0 6px rgba(22,163,74,.3); }
+  .dot-gemini { background: var(--accent-blue);   box-shadow: 0 0 6px rgba(37,99,235,.3); }
+
+  /* ── Layout ── */
+  .container {
+    max-width: 820px;
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  /* ── TOC ── */
+  .toc {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 28px 32px;
+    margin-bottom: 64px;
+  }
+  .toc h2 {
+    font-size: 1rem;
+    font-weight: 700;
+    margin-bottom: 16px;
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: .08em;
+  }
+  .toc ol {
+    list-style: none;
+    counter-reset: toc-counter;
+  }
+  .toc li {
+    counter-increment: toc-counter;
+    margin-bottom: 8px;
+  }
+  .toc li::before {
+    content: counter(toc-counter, decimal-leading-zero) ".";
+    color: var(--text-dim);
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .85rem;
+    margin-right: 10px;
+  }
+  .toc a {
+    color: var(--text);
+    text-decoration: none;
+    border-bottom: 1px solid transparent;
+    transition: border-color .2s;
+  }
+  .toc a:hover {
+    border-bottom-color: var(--accent-orange);
+    color: #1a1a2e;
+  }
+
+  /* ── Sections ── */
+  section { margin-bottom: 72px; }
+
+  h2.section-title {
+    font-size: 1.65rem;
+    font-weight: 700;
+    margin-bottom: 24px;
+    padding-bottom: 12px;
+    border-bottom: 2px solid var(--border);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  h2.section-title .num {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .9rem;
+    color: var(--accent-orange);
+    background: rgba(234,88,12,.08);
+    padding: 4px 10px;
+    border-radius: 6px;
+    font-weight: 500;
+  }
+
+  h3 {
+    font-size: 1.15rem;
+    font-weight: 700;
+    margin: 32px 0 12px;
+    color: #1a1a2e;
+  }
+
+  p { margin-bottom: 18px; }
+  ul, ol { margin-bottom: 18px; padding-left: 24px; }
+  li { margin-bottom: 6px; }
+
+  strong { color: #1a1a2e; font-weight: 700; }
+
+  a { color: var(--accent-cyan); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+
+  /* ── Code ── */
+  pre {
+    background: var(--bg-code);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 20px 24px;
+    overflow-x: auto;
+    margin-bottom: 24px;
+    position: relative;
+  }
+  pre .lang-badge {
+    position: absolute;
+    top: 10px; right: 14px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .7rem;
+    color: var(--text-dim);
+    text-transform: uppercase;
+    letter-spacing: .06em;
+  }
+  code {
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .88rem;
+    line-height: 1.7;
+  }
+  p code, li code {
+    background: var(--bg-code);
+    padding: 2px 7px;
+    border-radius: 5px;
+    font-size: .85rem;
+    color: var(--accent-purple);
+    border: 1px solid var(--border);
+  }
+
+  /* syntax highlighting - minimal */
+  .kw { color: var(--accent-purple); }
+  .fn { color: var(--accent-blue); }
+  .st { color: var(--accent-green); }
+  .cm { color: var(--text-dim); font-style: italic; }
+  .op { color: var(--accent-orange); }
+  .nb { color: var(--accent-cyan); }
+
+  /* ── Diagram / Card ── */
+  .arch-diagram {
+    background: var(--bg-surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 32px;
+    margin-bottom: 24px;
+    font-family: 'JetBrains Mono', monospace;
+    font-size: .82rem;
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    color: var(--text-muted);
+  }
+
+  .card {
+    background: var(--bg-card);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    padding: 24px 28px;
+    margin-bottom: 20px;
+  }
+  .card-title {
+    font-weight: 700;
+    font-size: 1rem;
+    margin-bottom: 10px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  /* ── Slack mock ── */
+  .slack-mock {
+    background: #ffffff;
+    border: 1px solid #e0e3e8;
+    border-radius: var(--radius);
+    padding: 0;
+    margin-bottom: 24px;
+    overflow: hidden;
+  }
+  .slack-mock-header {
+    background: #f5f6f8;
+    padding: 10px 18px;
+    border-bottom: 1px solid #e0e3e8;
+    font-size: .8rem;
+    color: #4a5568;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+  }
+  .slack-mock-body {
+    padding: 16px 18px;
+  }
+  .slack-msg {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 14px;
+  }
+  .slack-msg:last-child { margin-bottom: 0; }
+  .slack-avatar {
+    width: 36px; height: 36px;
+    border-radius: 6px;
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 1.1rem;
+  }
+  .slack-avatar-claude { background: #fef3e2; }
+  .slack-avatar-codex  { background: #ecfdf5; }
+  .slack-avatar-gemini { background: #eff6ff; }
+  .slack-avatar-bot    { background: #f3f0ff; }
+  .slack-avatar-user   { background: #f1f5f9; }
+  .slack-name {
+    font-weight: 700;
+    font-size: .85rem;
+    margin-bottom: 2px;
+  }
+  .slack-name-claude { color: var(--accent-orange); }
+  .slack-name-codex  { color: var(--accent-green); }
+  .slack-name-gemini { color: var(--accent-blue); }
+  .slack-name-bot    { color: var(--accent-purple); }
+  .slack-name-user   { color: #333; }
+  .slack-time {
+    font-size: .72rem;
+    color: #999;
+    margin-left: 8px;
+    font-weight: 400;
+  }
+  .slack-text {
+    font-size: .88rem;
+    color: #374151;
+    line-height: 1.55;
+  }
+
+  /* ── Flow ── */
+  .flow-steps {
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    margin-bottom: 24px;
+  }
+  .flow-step {
+    display: flex;
+    gap: 16px;
+    align-items: flex-start;
+  }
+  .flow-line {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    width: 32px;
+    flex-shrink: 0;
+  }
+  .flow-dot {
+    width: 14px; height: 14px;
+    border-radius: 50%;
+    border: 2px solid var(--accent-orange);
+    background: #ffffff;
+    z-index: 1;
+    flex-shrink: 0;
+  }
+  .flow-connector {
+    width: 2px;
+    flex: 1;
+    min-height: 24px;
+    background: var(--border);
+  }
+  .flow-content {
+    padding-bottom: 20px;
+  }
+  .flow-content h4 {
+    font-size: .95rem;
+    font-weight: 700;
+    color: #1a1a2e;
+    margin-bottom: 4px;
+  }
+  .flow-content p {
+    font-size: .9rem;
+    color: var(--text-muted);
+    margin-bottom: 0;
+  }
+
+  /* ── Tag ── */
+  .tag {
+    display: inline-block;
+    font-size: .72rem;
+    font-weight: 500;
+    padding: 3px 10px;
+    border-radius: 999px;
+    margin-right: 6px;
+  }
+  .tag-orange { background: rgba(234,88,12,.1); color: var(--accent-orange); }
+  .tag-green  { background: rgba(22,163,74,.1);  color: var(--accent-green); }
+  .tag-blue   { background: rgba(37,99,235,.1);  color: var(--accent-blue); }
+  .tag-red    { background: rgba(220,38,38,.1);   color: var(--accent-red); }
+  .tag-purple { background: rgba(124,58,237,.1); color: var(--accent-purple); }
+  .tag-yellow { background: rgba(202,138,4,.1);  color: var(--accent-yellow); }
+
+  /* ── Table ── */
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-bottom: 24px;
+    font-size: .9rem;
+  }
+  th, td {
+    padding: 12px 16px;
+    text-align: left;
+    border-bottom: 1px solid var(--border);
+  }
+  th {
+    font-weight: 700;
+    color: var(--text-muted);
+    font-size: .8rem;
+    text-transform: uppercase;
+    letter-spacing: .04em;
+  }
+
+  /* ── Callout ── */
+  .callout {
+    border-left: 3px solid var(--accent-orange);
+    background: rgba(234,88,12,.05);
+    padding: 16px 20px;
+    border-radius: 0 var(--radius) var(--radius) 0;
+    margin-bottom: 24px;
+  }
+  .callout-blue {
+    border-left-color: var(--accent-blue);
+    background: rgba(37,99,235,.05);
+  }
+  .callout-green {
+    border-left-color: var(--accent-green);
+    background: rgba(22,163,74,.05);
+  }
+  .callout-red {
+    border-left-color: var(--accent-red);
+    background: rgba(220,38,38,.05);
+  }
+
+  /* ── Footer ── */
+  footer {
+    border-top: 1px solid var(--border);
+    padding: 40px 0;
+    text-align: center;
+    color: var(--text-dim);
+    font-size: .85rem;
+  }
+
+  /* ── Responsive ── */
+  @media (max-width: 640px) {
+    html { font-size: 15px; }
+    .hero { padding: 60px 0 50px; }
+    .hero-agents { gap: 16px; }
+    .container { padding: 0 16px; }
+    pre { padding: 14px 16px; }
+    .arch-diagram { padding: 18px; font-size: .72rem; }
+  }
+</style>
+</head>
+<body>
+
+<!-- ════════ HERO ════════ -->
+<header class="hero">
+  <div class="container">
+    <div class="hero-label">Side Project / Multi-Agent System</div>
+    <h1>Slack에서 AI 3명이 토론하는 시스템 만들기</h1>
+    <p class="hero-sub">Claude, Codex, Gemini 세 CLI를 subprocess로 동시 호출하여 자유 토론과 역할 분담 코딩을 수행하는 멀티 에이전트 봇</p>
+    <div class="hero-agents">
+      <span class="hero-agent"><span class="dot dot-claude"></span> Claude</span>
+      <span class="hero-agent"><span class="dot dot-codex"></span> Codex</span>
+      <span class="hero-agent"><span class="dot dot-gemini"></span> Gemini</span>
+    </div>
+  </div>
+</header>
+
+<main class="container">
+
+<!-- ════════ TOC ════════ -->
+<nav class="toc">
+  <h2>Table of Contents</h2>
+  <ol>
+    <li><a href="#why">왜 만들었는가</a></li>
+    <li><a href="#architecture">시스템 구조</a></li>
+    <li><a href="#debate">토론 모드 상세</a></li>
+    <li><a href="#coding">코딩 모드 상세</a></li>
+    <li><a href="#backup">타임아웃 백업 시스템</a></li>
+    <li><a href="#thread">스레드 추가 토론</a></li>
+    <li><a href="#issues">개발 과정에서 겪은 이슈</a></li>
+    <li><a href="#examples">실제 사용 예시</a></li>
+  </ol>
+</nav>
+
+<!-- ════════ 1. WHY ════════ -->
+<section id="why">
+  <h2 class="section-title"><span class="num">01</span> 왜 만들었는가</h2>
+
+  <p>개발하다 보면 하나의 AI 답변만으로는 확신이 안 설 때가 있다. ChatGPT에게 물어보고, Claude에게도 물어보고, Gemini에게도 물어보고... 탭을 3개 열어서 같은 질문을 복붙하는 자신을 발견했다.</p>
+
+  <div class="callout">
+    <strong>핵심 동기:</strong> "여러 AI의 관점을 동시에 듣고, 서로 반박하게 만들면 더 정제된 결론을 얻을 수 있지 않을까?"
+  </div>
+
+  <p>그래서 세운 원칙은 두 가지였다.</p>
+
+  <ul>
+    <li><strong>API 비용 0원</strong> &mdash; 이미 구독 중인 Claude Code CLI, Codex CLI, Gemini CLI를 subprocess로 호출. API 키도 필요 없고, 토큰 비용도 없다.</li>
+    <li><strong>Slack 기반</strong> &mdash; 이미 매일 쓰는 Slack에서 동작하면 별도 UI를 만들 필요가 없다. 스레드가 자연스러운 토론 구조를 제공한다.</li>
+  </ul>
+
+  <p>결과적으로 Slack 채널에 메시지 하나 쓰면 3개 AI가 스레드에서 자유 토론을 시작하고, 합의에 도달하면 결론을 채널에 공지해주는 시스템이 만들어졌다.</p>
+</section>
+
+<!-- ════════ 2. ARCHITECTURE ════════ -->
+<section id="architecture">
+  <h2 class="section-title"><span class="num">02</span> 시스템 구조</h2>
+
+  <h3>전체 아키텍처</h3>
+
+  <div class="arch-diagram">
+Slack Workspace
+ +-- #ai-debate ──> DebateMode (자유 토론 + 합의 감지)
+ |                    +-- ClaudeAgent  ──> <span style="color:var(--accent-orange)">claude -p</span>
+ |                    +-- CodexAgent   ──> <span style="color:var(--accent-green)">codex exec</span>
+ |                    +-- GeminiAgent  ──> <span style="color:var(--accent-blue)">gemini -p</span>
+ |
+ +-- #ai-coding ──> CodingMode (기획 > 리뷰 > 테스트)
+                      +-- Phase 1: Claude (기획+코드)
+                      +-- Phase 2: Codex  (리뷰)
+                      +-- Phase 3: All    (테스트)
+                      +-- Fix Loop: Codex 판정 > Claude 수정
+
+<span style="color:var(--text-dim)">───────────────────────────────────────────</span>
+slack_bot.py       Socket Mode 이벤트 수신 + 채널 라우팅
+agents/base.py     AgentBase (subprocess + timeout + temp file)
+agents/claude.py   type prompt.txt | claude -p
+agents/codex.py    type prompt.txt | codex exec
+agents/gemini.py   type prompt.txt | gemini -p ""
+modes/debate.py    토론 로직 (라운드, 합의, 교착)
+modes/coding.py    코딩 파이프라인 (3 phase + fix loop)</div>
+
+  <h3>Socket Mode 선택 이유</h3>
+  <p>일반적인 Slack Bot은 HTTP 엔드포인트를 열어서 Events API를 받는다. 하지만 이 프로젝트는 <strong>로컬 PC에서 CLI를 호출</strong>해야 하므로 서버가 필요 없는 <strong>Socket Mode</strong>가 적합하다. WebSocket으로 Slack과 직접 통신하기 때문에 ngrok도 필요 없다.</p>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># slack_bot.py - 핵심 구조</span>
+<span class="kw">from</span> slack_bolt <span class="kw">import</span> App
+<span class="kw">from</span> slack_bolt.adapter.socket_mode <span class="kw">import</span> SocketModeHandler
+
+app = App(token=SLACK_BOT_TOKEN)
+
+<span class="op">@</span>app.<span class="fn">event</span>(<span class="st">"message"</span>)
+<span class="kw">def</span> <span class="fn">handle_message</span>(event, say, client):
+    channel = event.get(<span class="st">"channel"</span>)
+    <span class="kw">if</span> channel == DEBATE_CHANNEL_ID:
+        mode = DebateMode(client)
+        threading.Thread(target=_run_async, args=(mode.start(...),)).start()
+    <span class="kw">elif</span> channel == CODING_CHANNEL_ID:
+        mode = CodingMode(client)
+        threading.Thread(target=_run_async, args=(mode.start(...),)).start()
+
+handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+handler.start()</code></pre>
+
+  <h3>에이전트 CLI 호출 방식</h3>
+  <p>각 에이전트는 프롬프트를 임시 파일에 쓰고, <code>type</code> 명령으로 파이프하여 CLI에 전달한다. 한글 인코딩 문제를 피하기 위해 <code>PYTHONIOENCODING=utf-8</code> 환경 변수를 설정한다.</p>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># agents/base.py - 공통 인터페이스</span>
+<span class="kw">class</span> <span class="fn">AgentBase</span>:
+    <span class="kw">async def</span> <span class="fn">ask</span>(self, prompt: <span class="nb">str</span>) -> <span class="nb">str</span>:
+        result = <span class="kw">await</span> asyncio.wait_for(
+            self._run_cli(prompt),
+            timeout=CLI_TIMEOUT  <span class="cm"># 120초</span>
+        )
+        <span class="kw">return</span> result
+
+    <span class="op">@</span><span class="nb">staticmethod</span>
+    <span class="kw">def</span> <span class="fn">_write_temp</span>(prompt):
+        tmp = tempfile.NamedTemporaryFile(
+            mode=<span class="st">"w"</span>, suffix=<span class="st">".txt"</span>,
+            delete=<span class="nb">False</span>, encoding=<span class="st">"utf-8"</span>
+        )
+        tmp.write(prompt)
+        tmp.close()
+        <span class="kw">return</span> tmp.name</code></pre>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># agents/claude.py</span>
+proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
+    <span class="st">f'type "{tmp}" | claude -p'</span>,
+    stdout=asyncio.subprocess.PIPE,
+    stderr=asyncio.subprocess.PIPE,
+    env=self._make_env(),
+)
+
+<span class="cm"># agents/codex.py</span>
+<span class="st">f'type "{tmp}" | codex exec --skip-git-repo-check'</span>
+
+<span class="cm"># agents/gemini.py</span>
+<span class="st">f'type "{tmp}" | gemini -p ""'</span></code></pre>
+</section>
+
+<!-- ════════ 3. DEBATE ════════ -->
+<section id="debate">
+  <h2 class="section-title"><span class="num">03</span> 토론 모드 상세</h2>
+
+  <h3>토론 흐름</h3>
+
+  <div class="flow-steps">
+    <div class="flow-step">
+      <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+      <div class="flow-content">
+        <h4>사용자가 #ai-debate에 메시지 작성</h4>
+        <p>Slack 이벤트 수신 &rarr; DebateMode.start() 호출</p>
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+      <div class="flow-content">
+        <h4>스레드 생성 + "토론을 시작합니다"</h4>
+        <p>당일 이전 토론 합의 결론을 자동으로 컨텍스트에 포함</p>
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+      <div class="flow-content">
+        <h4>3개 AI에게 동시 질문 (asyncio.gather)</h4>
+        <p>매 라운드마다 발언 순서를 랜덤 셔플</p>
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-line"><div class="flow-dot"></div><div class="flow-connector"></div></div>
+      <div class="flow-content">
+        <h4>합의 감지 &rarr; 종료 또는 다음 라운드</h4>
+        <p>전원 합의, 교착 상태 + 다수 합의, 최대 라운드 도달 중 하나</p>
+      </div>
+    </div>
+    <div class="flow-step">
+      <div class="flow-line"><div class="flow-dot" style="border-color: var(--accent-green);"></div></div>
+      <div class="flow-content">
+        <h4>결론을 채널(스레드 밖)에 broadcast</h4>
+        <p>reply_broadcast=True로 채널 타임라인에도 노출</p>
+      </div>
+    </div>
+  </div>
+
+  <h3>합의 감지 알고리즘</h3>
+  <p>각 AI는 응답 마지막에 숨겨진 HTML 코멘트 형태의 합의 JSON을 포함한다.</p>
+
+<pre><code><span class="lang-badge">prompt</span>답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:
+<span class="st">&lt;!--CONSENSUS:{"agree": true/false, "summary": "결론 요약 (1~3줄)"}--&gt;</span></code></pre>
+
+  <p>이 JSON을 정규식으로 파싱한다.</p>
+
+<pre><code><span class="lang-badge">python</span>CONSENSUS_PATTERN = re.compile(<span class="st">r"&lt;!--CONSENSUS:(.*?)--&gt;"</span>, re.DOTALL)
+
+<span class="kw">def</span> <span class="fn">_parse_consensus</span>(text):
+    match = CONSENSUS_PATTERN.search(text)
+    <span class="kw">if</span> <span class="kw">not</span> match:
+        <span class="kw">return</span> <span class="nb">None</span>
+    <span class="kw">return</span> json.loads(match.group(<span class="nb">1</span>).strip())</code></pre>
+
+  <h3>종료 조건 (3단계)</h3>
+
+  <table>
+    <thead>
+      <tr>
+        <th>조건</th>
+        <th>설명</th>
+        <th>결과</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-green">전원 합의</span></td>
+        <td>3개 AI 모두 <code>agree: true</code></td>
+        <td>즉시 종료</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-yellow">교착 + 다수</span></td>
+        <td>2개 동의 + 최근 2라운드 반복 감지</td>
+        <td>다수결 종료</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-red">최대 라운드</span></td>
+        <td>10라운드 도달</td>
+        <td>강제 종료 + 다수결</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>교착 상태 감지</h3>
+  <p>최근 2라운드(6개 메시지)의 앞 100자를 비교하여, 3개 중 2개 이상이 동일하면 교착 상태로 판정한다.</p>
+
+<pre><code><span class="lang-badge">python</span><span class="op">@</span><span class="nb">staticmethod</span>
+<span class="kw">def</span> <span class="fn">_is_stalemate</span>(history):
+    ai_msgs = [h <span class="kw">for</span> h <span class="kw">in</span> history <span class="kw">if</span> h[<span class="st">"name"</span>] != <span class="st">"사용자"</span>]
+    <span class="kw">if</span> <span class="nb">len</span>(ai_msgs) < <span class="nb">6</span>:
+        <span class="kw">return</span> <span class="nb">False</span>
+    recent = <span class="nb">set</span>(m[<span class="st">"text"</span>][:<span class="nb">100</span>] <span class="kw">for</span> m <span class="kw">in</span> ai_msgs[-<span class="nb">3</span>:])
+    prev   = <span class="nb">set</span>(m[<span class="st">"text"</span>][:<span class="nb">100</span>] <span class="kw">for</span> m <span class="kw">in</span> ai_msgs[-<span class="nb">6</span>:-<span class="nb">3</span>])
+    overlap = <span class="nb">len</span>(recent & prev)
+    <span class="kw">return</span> overlap >= <span class="nb">2</span></code></pre>
+
+  <h3>라운드 관리</h3>
+  <ul>
+    <li>매 라운드마다 <strong>발언 순서를 랜덤 셔플</strong>하여 특정 AI가 항상 먼저 말하는 편향을 방지</li>
+    <li>"생각 중..." 메시지를 표시했다가 응답 후 삭제하여 UX 개선</li>
+    <li>라운드 시작 전 <strong>스레드에서 사용자 메시지를 수집</strong>하여 히스토리에 반영 &mdash; 토론 중간에 사용자가 개입 가능</li>
+    <li>이전 발언은 최근 10개만 프롬프트에 포함하여 컨텍스트 오버플로 방지</li>
+  </ul>
+</section>
+
+<!-- ════════ 4. CODING ════════ -->
+<section id="coding">
+  <h2 class="section-title"><span class="num">04</span> 코딩 모드 상세</h2>
+
+  <p>#ai-coding 채널에 코딩 요청을 쓰면 3개 AI가 역할을 분담하여 소프트웨어 개발 파이프라인을 실행한다.</p>
+
+  <div class="card">
+    <div class="card-title"><span class="dot dot-claude"></span> Phase 1: 기획 + 설계 + 코드 작성</div>
+    <p style="margin-bottom:0;color:var(--text-muted)">Claude가 요청을 분석하고, 설계부터 완성된 코드까지 작성한다. 당일 이전 작업 결론이 있으면 컨텍스트에 자동 포함된다.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="dot dot-codex"></span> Phase 2: 코드 리뷰</div>
+    <p style="margin-bottom:0;color:var(--text-muted)">Codex가 Claude의 코드를 리뷰한다. 버그, 보안 이슈, 개선 사항을 찾아 스레드에 게시한다.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title">
+      <span class="dot dot-codex"></span>
+      <span class="dot dot-claude"></span>
+      <span class="dot dot-gemini"></span>
+      Phase 3: 테스트 작성 (전원 참여)
+    </div>
+    <p style="margin-bottom:0;color:var(--text-muted)">
+      Codex가 테스트 리더로 전략 수립, Claude가 엣지 케이스 테스트, Gemini가 추가 테스트를 <strong>동시에 (asyncio.gather)</strong> 작성한다.
+    </p>
+  </div>
+
+  <div class="card" style="border-color: rgba(249,115,22,.3);">
+    <div class="card-title" style="color: var(--accent-orange);">Fix Loop (최대 3회)</div>
+    <p style="margin-bottom:0;color:var(--text-muted)">Codex가 코드+테스트를 분석하여 이슈가 있으면 Claude에게 수정 요청. "이슈 없음"이 나올 때까지 최대 3회 반복한다.</p>
+  </div>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># modes/coding.py - Fix Loop 핵심</span>
+<span class="kw">for</span> fix_round <span class="kw">in</span> <span class="nb">range</span>(<span class="nb">1</span>, MAX_FIX_ROUNDS + <span class="nb">1</span>):
+    issues_found = <span class="kw">await</span> self.codex.ask(
+        <span class="st">f"코드와 테스트를 분석하여 이슈가 있는지 판단..."</span>
+    )
+    <span class="kw">if</span> <span class="st">"이슈 없음"</span> <span class="kw">in</span> issues_found:
+        self._post(channel, thread_ts, <span class="st">"이슈 없음 - 수정 불필요"</span>)
+        <span class="kw">break</span>
+    <span class="cm"># Claude에게 수정 요청</span>
+    current_code = <span class="kw">await</span> self.claude.ask(
+        <span class="st">f"이슈를 반영하여 코드를 수정해 주세요..."</span>
+    )</code></pre>
+</section>
+
+<!-- ════════ 5. BACKUP ════════ -->
+<section id="backup">
+  <h2 class="section-title"><span class="num">05</span> 타임아웃 백업 시스템</h2>
+
+  <p>��� 에이전트에게 <strong>120초(토론) / 300초(코딩) 타임아웃</strong>이 설정되어 있다. 응답하지 못하면 자동으로 백업 에이전트가 투입된다. 코딩 모드는 도구 호출 중에도 60초 단위로 프로세스 생존을 확인하고, 전체 600초까지 대기한다. 핵심은 백업 에이전트가 <strong>다른 관점</strong>을 갖도록 설계된 것이다.</p>
+
+  <table>
+    <thead>
+      <tr>
+        <th>원본 에이전트</th>
+        <th>백업 에이전트</th>
+        <th>사용 CLI</th>
+        <th>관점 차별화</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td><span class="tag tag-orange">Claude</span></td>
+        <td><span class="tag tag-yellow">Codex-B</span></td>
+        <td>codex exec</td>
+        <td>비판적 시각, 반대 사례</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-green">Codex</span></td>
+        <td><span class="tag tag-purple">Claude-B</span></td>
+        <td>claude -p</td>
+        <td>실용적 대안, 다른 각도</td>
+      </tr>
+      <tr>
+        <td><span class="tag tag-blue">Gemini</span></td>
+        <td><span class="tag tag-purple">Claude-B</span></td>
+        <td>claude -p</td>
+        <td>실용적 대안, 다른 각도</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <p>백업 에이전트의 시스템 프롬프트에 관점 차별화 지시를 포함한다.</p>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># agents/claude_backup.py</span>
+<span class="kw">class</span> <span class="fn">ClaudeBackupAgent</span>(AgentBase):
+    name = <span class="st">"Claude-B"</span>
+    emoji = <span class="st">"&#x1f7e1;"</span>
+
+    PERSPECTIVE = (
+        <span class="st">"당신은 대체 투입된 에이전트입니다. "</span>
+        <span class="st">"기존 Claude와는 반드시 다른 관점에서 답변하세요. "</span>
+        <span class="st">"비판적 시각, 반대 사례, 실용적 대안 등에서 "</span>
+        <span class="st">"논의를 풍부하게 만드세요."</span>
+    )</code></pre>
+
+  <div class="callout callout-blue">
+    <strong>교체 지속:</strong> 한 번 타임아웃되면 해당 라운드뿐 아니라 <strong>이후 모든 라운드</strong>에서도 백업 에이전트가 유지된다. <code>_replace_timed_out()</code> 메서드가 <code>self.agents</code> 리스트를 직접 수정한다.
+  </div>
+</section>
+
+<!-- ════════ 6. THREAD ════════ -->
+<section id="thread">
+  <h2 class="section-title"><span class="num">06</span> 스레드 추가 토론</h2>
+
+  <p>토론이 끝난 후에도 스레드에 추가 질문을 쓰면, <strong>원래 주제의 맥락을 유지</strong>한 채로 추가 토론이 시작된다.</p>
+
+  <div class="slack-mock">
+    <div class="slack-mock-header">
+      <span>#</span> ai-debate &mdash; Thread
+    </div>
+    <div class="slack-mock-body">
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-user">&#x1f464;</div>
+        <div>
+          <div class="slack-name slack-name-user">User <span class="slack-time">10:30 AM</span></div>
+          <div class="slack-text">리액트 입문 책 추천해줘. 2025년 기준 가장 좋은 책은?</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-bot">&#x1f916;</div>
+        <div>
+          <div class="slack-name slack-name-bot">AI Squad <span class="slack-time">10:30 AM</span></div>
+          <div class="slack-text"><strong>토론을 시작합니다</strong><br>주제: 리액트 입문 책 추천해줘...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-claude">&#x1f7e0;</div>
+        <div>
+          <div class="slack-name slack-name-claude">Claude <span class="slack-time">10:31 AM</span></div>
+          <div class="slack-text">React 공식 문서가 가장 훌륭한 입문 자료이지만, 체계적 학습을 원한다면...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-codex">&#x1f7e2;</div>
+        <div>
+          <div class="slack-name slack-name-codex">Codex <span class="slack-time">10:31 AM</span></div>
+          <div class="slack-text">실무 중심이라면 "Learning React" (O'Reilly, 2nd Edition)을 추천합니다...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-gemini">&#x1f535;</div>
+        <div>
+          <div class="slack-name slack-name-gemini">Gemini <span class="slack-time">10:31 AM</span></div>
+          <div class="slack-text">한국어 자료를 원한다면 김민준 저 "리액트를 다루는 기술"이...</div>
+        </div>
+      </div>
+      <div class="slack-msg" style="border-top: 1px solid #e0e3e8; padding-top: 14px; margin-top: 14px;">
+        <div class="slack-avatar slack-avatar-user">&#x1f464;</div>
+        <div>
+          <div class="slack-name slack-name-user">User <span class="slack-time">10:45 AM</span></div>
+          <div class="slack-text">TypeScript 기반으로 배울 수 있는 책 위주로 다시 추천해줘</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-bot">&#x1f916;</div>
+        <div>
+          <div class="slack-name slack-name-bot">AI Squad <span class="slack-time">10:45 AM</span></div>
+          <div class="slack-text">&#x1f4ac; <strong>추가 토론 시작</strong><br>질문: TypeScript 기반으로 배울 수 있는 책 위주로...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <p>내부적으로 <code>followup()</code> 메서드가 호출되면:</p>
+
+  <ol>
+    <li><code>_fetch_original_topic()</code> &mdash; 스레드의 첫 메시지(원래 주제)를 가져온다</li>
+    <li><code>_fetch_thread_history()</code> &mdash; 스레드 전체 대화를 히스토리로 변환한다</li>
+    <li>프롬프트에 <code>[원래 토론 주제]</code>와 <code>[사용자 추가 질문]</code>을 모두 포함시킨다</li>
+    <li>합의에 도달할 때까지 동일한 라운드 로직을 실행한다</li>
+  </ol>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># 스레드 답글 감지 - slack_bot.py</span>
+<span class="kw">if</span> thread_ts <span class="kw">and</span> thread_ts != ts:
+    <span class="cm"># 스레드 내 답글 → followup 호출</span>
+    mode = DebateMode(client)
+    threading.Thread(
+        target=_run_async,
+        args=(mode.followup(channel, thread_ts, text),)
+    ).start()</code></pre>
+</section>
+
+<!-- ════════ 7. ISSUES ════════ -->
+<section id="issues">
+  <h2 class="section-title"><span class="num">07</span> 개발 과정에서 겪은 이슈</h2>
+
+  <div class="card">
+    <div class="card-title"><span class="tag tag-red">Issue</span> Windows에서 CLI 호출 방식</div>
+    <p style="color:var(--text-muted);margin-bottom:12px;">처음에는 <code>subprocess.run()</code>으로 직접 호출했지만, Windows에서 긴 프롬프트를 인자로 전달하면 명령줄 길이 제한(8191자)에 걸렸다.</p>
+    <p style="color:var(--text-muted);margin-bottom:12px;"><strong>해결:</strong> 프롬프트를 임시 파일(<code>.txt</code>)에 저장한 후 <code>type prompt.txt | claude -p</code> 형태로 stdin 파이프로 전달. Windows의 <code>type</code> 명령은 Unix의 <code>cat</code>에 해당한다.</p>
+    <p style="margin-bottom:0;color:var(--text-muted);"><strong>추가:</strong> <code>asyncio.create_subprocess_exec()</code>가 아닌 <code>create_subprocess_shell()</code>을 사용해야 파이프(<code>|</code>)가 동작한다. <code>exec</code>은 셸 없이 프로그램을 직접 실행하기 때문이다.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="tag tag-red">Issue</span> 한글 인코딩</div>
+    <p style="color:var(--text-muted);margin-bottom:12px;">Windows 기본 인코딩은 <code>cp949</code>인데, AI 응답에 유니코드가 포함되면 <code>UnicodeDecodeError</code>가 발생했다.</p>
+    <p style="margin-bottom:0;color:var(--text-muted);"><strong>해결:</strong> 환경 변수에 <code>PYTHONIOENCODING=utf-8</code>을 설정하고, <code>stdout.decode("utf-8", errors="replace")</code>로 디코딩 실패 시 대체 문자를 사용.</p>
+  </div>
+
+<pre><code><span class="lang-badge">python</span><span class="cm"># agents/base.py</span>
+<span class="op">@</span><span class="nb">staticmethod</span>
+<span class="kw">def</span> <span class="fn">_make_env</span>():
+    env = os.environ.copy()
+    env[<span class="st">"PYTHONIOENCODING"</span>] = <span class="st">"utf-8"</span>
+    <span class="kw">return</span> env</code></pre>
+
+  <div class="card">
+    <div class="card-title"><span class="tag tag-red">Issue</span> Slack 이벤트 수신 + 비동기 처리</div>
+    <p style="color:var(--text-muted);margin-bottom:12px;">Slack Bolt의 이벤트 핸들러는 동기 함수인데, AI 호출은 <code>async</code>이다. 핸들러 안에서 <code>await</code>를 쓸 수 없고, <code>asyncio.run()</code>을 쓰면 이벤트 루프 충돌이 발생한다.</p>
+    <p style="margin-bottom:0;color:var(--text-muted);"><strong>해결:</strong> <code>threading.Thread</code>로 별도 스레드를 만들고, 그 안에서 <code>asyncio.new_event_loop()</code>로 새 이벤트 루프를 생성하여 코루틴을 실행. 에러가 나면 Slack에 에러 메시지를 전송하는 예외 핸들링도 포함.</p>
+  </div>
+
+<pre><code><span class="lang-badge">python</span><span class="kw">def</span> <span class="fn">_run_async</span>(coro, client=<span class="nb">None</span>, channel=<span class="nb">None</span>, thread_ts=<span class="nb">None</span>):
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    <span class="kw">try</span>:
+        loop.run_until_complete(coro)
+    <span class="kw">except</span> Exception <span class="kw">as</span> e:
+        <span class="cm"># Slack에 에러 알림</span>
+        <span class="kw">if</span> client <span class="kw">and</span> channel <span class="kw">and</span> thread_ts:
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=<span class="st">f"오류 발생\n{str(e)[:500]}"</span>
+            )
+    <span class="kw">finally</span>:
+        loop.close()</code></pre>
+
+  <div class="card">
+    <div class="card-title"><span class="tag tag-red">Issue</span> 봇 자신의 메시지 무한 루프</div>
+    <p style="color:var(--text-muted);margin-bottom:0;">봇이 스레드에 메시지를 쓰면 <code>message</code> 이벤트가 다시 발생하여 자기 자신에게 응답하는 무한 루프가 생긴다. <code>event.get("bot_id")</code>와 <code>event.get("subtype")</code>을 체크하여 필터링.</p>
+  </div>
+
+  <div class="card">
+    <div class="card-title"><span class="tag tag-red">Issue</span> Gemini CLI의 빈 프롬프트 인자</div>
+    <p style="color:var(--text-muted);margin-bottom:0;">Gemini CLI는 <code>gemini -p</code> 뒤에 인자가 반드시 필요했다. stdin으로 프롬프트를 전달하더라도 <code>-p ""</code> (빈 문자열)을 붙여야 정상 동작. 이 quirk를 발견하는 데 시간이 걸렸다.</p>
+  </div>
+</section>
+
+<!-- ════════ 8. EXAMPLES ════════ -->
+<section id="examples">
+  <h2 class="section-title"><span class="num">08</span> 실제 사용 예시</h2>
+
+  <h3>예시 1: 리액트 책 추천 토론</h3>
+
+  <div class="slack-mock">
+    <div class="slack-mock-header"><span>#</span> ai-debate</div>
+    <div class="slack-mock-body">
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-user">&#x1f464;</div>
+        <div>
+          <div class="slack-name slack-name-user">User</div>
+          <div class="slack-text">리액트 입문 책 추천해줘. 2025년 기준 가장 좋은 책 3권은?</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-claude">&#x1f7e0;</div>
+        <div>
+          <div class="slack-name slack-name-claude">Claude</div>
+          <div class="slack-text">React 공식 문서(react.dev)가 이미 교과서 수준으로 리뉴얼되어, 별도 입문서 없이도 충분합니다. 그래도 책을 원한다면 "The Road to React" (Robin Wieruch)가 최신 React 18+ 패턴을 잘 반영합니다. Hooks 중심 설명이 특히 좋습니다.</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-codex">&#x1f7e2;</div>
+        <div>
+          <div class="slack-name slack-name-codex">Codex</div>
+          <div class="slack-text">Claude의 의견에 동의하면서도, 실무 프로젝트 기반 학습을 원한다면 "Fullstack React" (Accomazzo 외)도 추천합니다. 다만 이 책은 Class 컴포넌트 비중이 있으므로 Hooks 위주인 최신판을 확인하세요.</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-gemini">&#x1f535;</div>
+        <div>
+          <div class="slack-name slack-name-gemini">Gemini</div>
+          <div class="slack-text">한국어 자료를 선호한다면 김민준 저 "리액트를 다루는 기술" 개정판을 추천합니다. 다만 2025년 기준으로 일부 내용이 레거시일 수 있으므로 공식 문서와 병행하는 것을 권합니다.</div>
+        </div>
+      </div>
+      <div class="slack-msg" style="border-top: 1px solid #e0e3e8; padding-top: 14px; margin-top: 14px;">
+        <div class="slack-avatar slack-avatar-bot">&#x1f3db;</div>
+        <div>
+          <div class="slack-name slack-name-bot" style="color: var(--accent-green);">전원 합의 도달 (라운드 2)</div>
+          <div class="slack-text">결론: React 공식 문서(react.dev)를 최우선으로, 보조 교재로 "The Road to React"와 한국어 자료 "리액트를 다루는 기술" 개정판 추천. Hooks/함수형 컴포넌트 중심 학습 권장.</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <h3>예시 2: StockRadar 웹사이트 평가</h3>
+
+  <div class="slack-mock">
+    <div class="slack-mock-header"><span>#</span> ai-debate</div>
+    <div class="slack-mock-body">
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-user">&#x1f464;</div>
+        <div>
+          <div class="slack-name slack-name-user">User</div>
+          <div class="slack-text">stockradar 웹사이트(주식 분석 대시보드)의 UI/UX를 평가해줘. 개선할 점은?</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-claude">&#x1f7e0;</div>
+        <div>
+          <div class="slack-name slack-name-claude">Claude</div>
+          <div class="slack-text">데이터 밀도가 높은 대시보드에서 정보 계층 구조(hierarchy)가 중요합니다. 핵심 지표(PER, ROE 등)를 상단에 카드형으로 배치하고, 상세 데이터는 드릴다운 구조로 분리하는 것을 제안합니다...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-codex">&#x1f7e2;</div>
+        <div>
+          <div class="slack-name slack-name-codex">Codex</div>
+          <div class="slack-text">기술적 관점에서 API 응답에 TTL 캐시를 적용하고, 차트 렌더링을 가상화(virtualization)하면 대용량 종목 목록에서도 60fps를 유지할 수 있습니다. Lighthouse 점수도 확인해보세요...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-gemini">&#x1f535;</div>
+        <div>
+          <div class="slack-name slack-name-gemini">Gemini</div>
+          <div class="slack-text">모바일 반응형이 약한 것 같습니다. 주식 투자자 중 모바일 사용자 비율이 높으므로, 핵심 지표만 보여주는 모바일 전용 뷰를 별도로 설계하는 것을 추천합니다...</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div class="callout callout-green">
+    <strong>핵심 가치:</strong> 같은 질문이라도 Claude는 UX 설계 관점에서, Codex는 성능/기술 관점에서, Gemini는 사용자 행동 관점에서 답변한다. 한 번의 질문으로 세 가지 관점을 동시에 얻을 수 있다.
+  </div>
+
+  <h3>예시 3: 코딩 모드 - 유틸리티 함수 개발</h3>
+
+  <div class="slack-mock">
+    <div class="slack-mock-header"><span>#</span> ai-coding</div>
+    <div class="slack-mock-body">
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-user">&#x1f464;</div>
+        <div>
+          <div class="slack-name slack-name-user">User</div>
+          <div class="slack-text">Python으로 CSV 파일을 읽어서 주식 데이터를 정규화하는 유틸리티 함수 만들어줘</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-bot">&#x1f916;</div>
+        <div>
+          <div class="slack-name slack-name-bot">AI Squad</div>
+          <div class="slack-text"><strong>코딩 모드 시작</strong> &#x1f4bb;<br>
+            &bull; <strong>Claude</strong> -- 기획 + 설계 + 코드 작성<br>
+            &bull; <strong>Codex</strong> -- 코드 리뷰<br>
+            &bull; <strong>Codex (리더) / Claude / Gemini</strong> -- 테스트 작성</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-bot">&#x1f916;</div>
+        <div>
+          <div class="slack-name slack-name-bot">AI Squad</div>
+          <div class="slack-text">&#x2501;&#x2501;&#x2501; Phase 1: 기획 + 설계 + 코드 작성 (Claude) &#x2501;&#x2501;&#x2501;</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-claude">&#x1f7e0;</div>
+        <div>
+          <div class="slack-name slack-name-claude">Claude</div>
+          <div class="slack-text"><code>normalize_stock_data(filepath, method='minmax')</code> 함수를 설계했습니다. Z-score와 Min-Max 두 가지 정규화 방법을 지원하며...</div>
+        </div>
+      </div>
+      <div class="slack-msg">
+        <div class="slack-avatar slack-avatar-codex">&#x1f7e2;</div>
+        <div>
+          <div class="slack-name slack-name-codex">Codex <span class="slack-time">[코드 리뷰]</span></div>
+          <div class="slack-text">전반적으로 깔끔하지만, 빈 CSV 파일 처리와 NaN 값이 있을 때의 예외 처리가 빠져 있습니다. 타입 힌트도 추가하면 좋겠습니다.</div>
+        </div>
+      </div>
+      <div class="slack-msg" style="border-top: 1px solid #e0e3e8; padding-top: 14px; margin-top: 14px;">
+        <div class="slack-avatar slack-avatar-bot">&#x1f916;</div>
+        <div>
+          <div class="slack-name slack-name-bot" style="color: var(--accent-green);">&#x2705; 코딩 모드 완료</div>
+          <div class="slack-text">Claude -- 기획/설계/코드 작성 + 이슈 수정<br>Codex -- 코드 리뷰 + 테스트 리더<br>Gemini -- 테스트 작성</div>
+        </div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<!-- ════════ 09. BRIDGE + WATCHDOG ════════ -->
+<section>
+  <h2 class="section-title"><span class="num">09</span> Bridge 모드 + Watchdog</h2>
+
+  <p>v1.2.0에서 추가된 <strong>Bridge 모드</strong>는 Slack 채널을 특정 프로젝트 폴더의 CLI에 직접 연결한다. <code>#ai-stockradar</code>에 메시지를 보내면 해당 프로젝트 폴더에서 Claude Code가 실행되고, <code>codex:</code> 접두어를 붙이면 Codex CLI로 전환된다.</p>
+
+  <p><strong>Watchdog</strong>는 봇 프로세스를 15초마다 감시한다. 크래시 시 5초 후 자동 재시작하고, 모든 채널에 알림을 보낸다. <code>!bot status/restart/stop</code>으로 원격 제어도 가능하다. 60초 안에 5번 이상 반복 크래시하면 자동 재시작을 중단하고 수동 개입을 요청한다.</p>
+
+  <p>또한 <code>!stop</code> 명령으로 작업을 강제 중단할 수 있다. 스레드에서 실행하면 해당 작업만, 채널 최상위에서 실행하면 해당 채널의 모든 작업을 취소한다.</p>
+</section>
+
+<!-- ════════ CLOSING ════════ -->
+<section>
+  <h2 class="section-title"><span class="num">10</span> 마치며</h2>
+
+  <p>처음에는 "AI 3개가 싸우면 재밌겠다" 정도로 시작했는데, 실제로 써보니 의외로 실용적이었다. 특히 기술 선택, 아키텍처 설계, 코드 리뷰 같은 주제에서 <strong>한쪽으로 치우치지 않는 균형 잡힌 의견</strong>을 빠르게 얻을 수 있었다.</p>
+
+  <p>전체 코드는 Python 파일 22개, 총 3,100줄 이상이다. 초기에는 500줄 미만이었지만, 병렬 실행, Bridge 모드, Watchdog, 노이즈 필터, 53개 테스트가 추가되며 성장했다. 복잡한 프레임워크 없이 <code>slack-bolt</code>와 <code>asyncio</code>만으로 충분했다.</p>
+
+  <div class="callout">
+    <strong>GitHub:</strong> <a href="https://github.com/sym804/ai-squad" target="_blank" rel="noopener">github.com/sym804/ai-squad</a>
+  </div>
+
+  <table>
+    <thead>
+      <tr>
+        <th>항목</th>
+        <th>내용</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>언어</td>
+        <td>Python 3.11+</td>
+      </tr>
+      <tr>
+        <td>의존성</td>
+        <td>slack-bolt, python-dotenv</td>
+      </tr>
+      <tr>
+        <td>AI CLI</td>
+        <td>Claude Code, Codex, Gemini (각각 로그인 필요)</td>
+      </tr>
+      <tr>
+        <td>Slack</td>
+        <td>Socket Mode (서버 불필요)</td>
+      </tr>
+      <tr>
+        <td>코드 규모</td>
+        <td>~3,100 LOC, 파일 22개, 테스트 53개</td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+</main>
+
+<footer>
+  <div class="container">
+    <p>Built with Claude Code CLI, Codex CLI, Gemini CLI &mdash; No API costs</p>
+    <p style="margin-top: 8px; color: var(--text-dim);">2026-04-04 (updated)</p>
+  </div>
+</footer>
+
+</body>
+</html>
