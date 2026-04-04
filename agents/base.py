@@ -138,6 +138,9 @@ class AgentBase:
 
     def format_message(self, response: str) -> str:
         usage = getattr(self, 'last_usage', '')
+        # 3000자 초과 시 앞뒤만 표시
+        if len(response) > 3000:
+            response = response[:1500] + "\n\n... *(중간 생략)* ...\n\n" + response[-1500:]
         msg = f"{self.emoji} *[{self.name}]*\n{response}"
         if usage:
             msg += f"\n{usage}"

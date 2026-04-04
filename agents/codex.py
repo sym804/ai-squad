@@ -4,7 +4,7 @@ import re
 from agents.base import AgentBase
 
 # Codex CLI 헤더/노이즈 패턴
-_CODEX_NOISE = [
+_CODEX_NOISE_STARTS = [
     "Reading prompt from stdin...",
     "OpenAI Codex v",
     "--------",
@@ -15,14 +15,30 @@ _CODEX_NOISE = [
     "sandbox:",
     "reasoning effort:",
     "reasoning sum",
+    "session id:",
+]
+
+_CODEX_NOISE_CONTAINS = [
+    "codex_core::tools::router",
+    "WindowsPowerShell",
+    "Get-Content -Encoding",
+    "Select-String -Path",
+    "CategoryInfo",
+    "FullyQualifiedErrorId",
 ]
 
 
 def _clean_codex_output(text: str) -> str:
-    """Codex CLI 헤더 노이즈 제거."""
+    """Codex CLI 헤더 및 실행 로그 노이즈 제거."""
     lines = []
     for line in text.split('\n'):
-        if any(line.strip().startswith(noise) for noise in _CODEX_NOISE):
+        stripped = line.strip()
+        if any(stripped.startswith(noise) for noise in _CODEX_NOISE_STARTS):
+            continue
+        if any(noise in line for noise in _CODEX_NOISE_CONTAINS):
+            continue
+        # 디렉토리 목록 (d-----  또는 -a---- 패턴)
+        if stripped.startswith(("d-----", "d-r---", "d--hsl", "-a----")):
             continue
         lines.append(line)
     return '\n'.join(lines).strip()
