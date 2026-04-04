@@ -27,7 +27,7 @@ if sys.platform == "win32":
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
-load_dotenv()
+load_dotenv(override=True)
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 WATCHDOG_CHANNEL_ID = os.environ.get(
@@ -39,6 +39,7 @@ POLL_INTERVAL = 15  # 초마다 채널 폴링
 RESTART_DELAY = 5   # 크래시 후 재시작 대기 (초)
 MAX_RAPID_CRASHES = 5  # 연속 빠른 크래시 허용 횟수
 RAPID_CRASH_WINDOW = 60  # 이 시간(초) 안에 MAX_RAPID_CRASHES번 죽으면 중단
+
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 bot_process = None
@@ -216,7 +217,40 @@ def poll_commands():
             )
 
 
+def acquire_lock():
+    """중복 실행 방지 — lockfile로 PID 확인."""
+    lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
+    if os.path.exists(lock_path):
+        try:
+            with open(lock_path, "r") as f:
+                old_pid = int(f.read().strip())
+            # 해당 PID가 살아있는지 확인
+            import ctypes
+            kernel32 = ctypes.windll.kernel32
+            handle = kernel32.OpenProcess(0x1000, False, old_pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            if handle:
+                kernel32.CloseHandle(handle)
+                print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
+                sys.exit(0)
+        except (ValueError, OSError):
+            pass
+    # 새 lockfile 작성
+    with open(lock_path, "w") as f:
+        f.write(str(os.getpid()))
+    return lock_path
+
+
+def release_lock(lock_path):
+    """lockfile 제거."""
+    try:
+        os.unlink(lock_path)
+    except OSError:
+        pass
+
+
 def main():
+    lock_path = acquire_lock()
+
     print("=" * 50)
     print("Watchdog 시작")
     print(f"  감시 채널: {WATCHDOG_CHANNEL_ID}")
@@ -247,6 +281,8 @@ def main():
         print("\n[WATCHDOG] 종료 중...")
         stop_bot()
         notify("🐕 Watchdog 종료됨")
+    finally:
+        release_lock(lock_path)
 
 
 if __name__ == "__main__":

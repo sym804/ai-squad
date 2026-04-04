@@ -11,9 +11,10 @@ import threading
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID
+from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS
 from modes.debate import DebateMode
 from modes.coding import CodingMode
+from modes.bridge import BridgeMode
 
 
 app = App(token=SLACK_BOT_TOKEN)
@@ -79,6 +80,13 @@ def handle_message(event, say, client):
                 args=(mode.followup(channel, thread_ts, text), client, channel, thread_ts),
                 daemon=True,
             ).start()
+        elif channel in BRIDGE_CHANNELS:
+            mode = BridgeMode(client, BRIDGE_CHANNELS[channel])
+            threading.Thread(
+                target=_run_async,
+                args=(mode.followup(channel, thread_ts, text), client, channel, thread_ts),
+                daemon=True,
+            ).start()
         return
 
     # 최상위 메시지 처리
@@ -98,12 +106,22 @@ def handle_message(event, say, client):
             daemon=True,
         ).start()
 
+    elif channel in BRIDGE_CHANNELS:
+        mode = BridgeMode(client, BRIDGE_CHANNELS[channel])
+        threading.Thread(
+            target=_run_async,
+            args=(mode.handle(channel, ts, text), client, channel, ts),
+            daemon=True,
+        ).start()
+
 
 if __name__ == "__main__":
     print("=" * 50)
     print("Slack Multi-Agent Bot 시작")
     print(f"  Debate Channel : {DEBATE_CHANNEL_ID}")
     print(f"  Coding Channel : {CODING_CHANNEL_ID}")
+    for ch_id, work_dir in BRIDGE_CHANNELS.items():
+        print(f"  Bridge Channel : {ch_id} → {work_dir}")
     print("=" * 50)
 
     handler = SocketModeHandler(app, SLACK_APP_TOKEN)

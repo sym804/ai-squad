@@ -54,15 +54,15 @@ class DebateMode:
         """에이전트에 맞는 백업을 반환."""
         return self._backup_map.get(agent.name)
 
-    def _replace_timed_out(self, agent, channel, thread_ts):
-        """타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
+    def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
+        """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
         if agent.name in self._replaced:
             return
         backup = self._get_backup(agent)
         if not backup:
             return
         self._post(channel, thread_ts,
-            f"⚠️ *{agent.name} 타임아웃 → 이후 라운드부터 {backup.name} 교체*")
+            f"⚠️ *{agent.name} {reason} → 이후 라운드부터 {backup.name} 교체*")
         self.agents = [backup if a is agent else a for a in self.agents]
         self._replaced.add(agent.name)
 
@@ -107,13 +107,14 @@ class DebateMode:
                     "consensus": _parse_consensus(response),
                 })
 
-            # 타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
+            # 오류/타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
             for agent, response in zip(shuffled, responses):
-                if getattr(agent, 'timed_out', False):
+                if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
                     if not backup:
                         continue
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} 타임아웃 → {backup.name} 대체 투입*")
+                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
                     thinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -131,7 +132,7 @@ class DebateMode:
                         "consensus": _parse_consensus(backup_response),
                     })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
-                    self._replace_timed_out(agent, channel, thread_ts)
+                    self._replace_agent(agent, channel, thread_ts, reason)
 
             agrees = [
                 r for r in round_consensuses
@@ -300,13 +301,14 @@ class DebateMode:
                     "consensus": _parse_consensus(response),
                 })
 
-            # 타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
+            # 오류/타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
             for agent, response in zip(shuffled, responses):
-                if getattr(agent, 'timed_out', False):
+                if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
                     if not backup:
                         continue
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} 타임아웃 → {backup.name} 대체 투입*")
+                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
                     thinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -324,7 +326,7 @@ class DebateMode:
                         "consensus": _parse_consensus(backup_response),
                     })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
-                    self._replace_timed_out(agent, channel, thread_ts)
+                    self._replace_agent(agent, channel, thread_ts, reason)
 
             # Evaluate consensus
             agrees = [

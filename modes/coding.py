@@ -31,14 +31,14 @@ class CodingMode:
     def _get_backup(self, agent):
         return self._backup_map.get(agent.name)
 
-    def _replace_timed_out(self, agent, channel, thread_ts):
+    def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
         if agent.name in self._replaced:
             return
         backup = self._get_backup(agent)
         if not backup:
             return
         self._post(channel, thread_ts,
-            f"⚠️ *{agent.name} 타임아웃 → 이후 라운드부터 {backup.name} 교체*")
+            f"⚠️ *{agent.name} {reason} → 이후 라운드부터 {backup.name} 교체*")
         self.agents = [backup if a is agent else a for a in self.agents]
         if agent is self.claude:
             self.claude = backup
@@ -189,13 +189,14 @@ class CodingMode:
         self.slack.chat_postMessage(**kwargs)
 
     async def _ask_with_backup(self, agent, prompt, channel, thread_ts):
-        """에이전트 호출 후 타임아웃 시 백업 투입."""
+        """에이전트 호출 후 오류/타임아웃 시 백업 투입."""
         response = await agent.ask(prompt)
-        if getattr(agent, 'timed_out', False):
+        if getattr(agent, 'needs_replacement', False):
             backup = self._get_backup(agent)
             if backup:
+                reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
                 self._post(channel, thread_ts, agent.format_message(response))
-                self._post(channel, thread_ts, f"⚠️ *{agent.name} 타임아웃 → {backup.name} 대체 투입*")
+                self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
                 thinking = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -205,7 +206,7 @@ class CodingMode:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                 except Exception:
                     pass
-                self._replace_timed_out(agent, channel, thread_ts)
+                self._replace_agent(agent, channel, thread_ts, reason)
                 return response, backup
         return response, agent
 
@@ -280,17 +281,18 @@ class CodingMode:
             ),
         )
 
-        # Phase 3 타임아웃 체크 + 백업
+        # Phase 3 오류/타임아웃 체크 + 백업
         for agent, result, label in [
             (self.codex, codex_tests, "테스트 리더"),
             (self.claude, claude_tests, "테스트 참여"),
             (self.gemini, gemini_tests, "테스트 참여"),
         ]:
             self._post(channel, thread_ts, agent.format_message(f"*[{label}]*\n{result}"))
-            if getattr(agent, 'timed_out', False):
+            if getattr(agent, 'needs_replacement', False):
                 backup = self._get_backup(agent)
                 if backup:
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} 타임아웃 → {backup.name} 대체 투입*")
+                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
                     thinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -303,7 +305,7 @@ class CodingMode:
                     except Exception:
                         pass
                     self._post(channel, thread_ts, backup.format_message(f"*[{label} 대체]*\n{backup_result}"))
-                    self._replace_timed_out(agent, channel, thread_ts)
+                    self._replace_agent(agent, channel, thread_ts, reason)
                     # 테스트 결과 교체
                     if agent is self.codex:
                         codex_tests = backup_result
