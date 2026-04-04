@@ -270,8 +270,44 @@ class CodingMode:
             return True
         return False
 
+    async def _parallel_start(self, channel, thread_ts, request, agents):
+        """복수 에이전트 병렬 실행 모드."""
+        names = " / ".join(f"{a.emoji} {a.name}" for a in agents)
+        self._post(channel, thread_ts, f"*병렬 모드 시작* :zap:\n참여: {names}")
+
+        thinking_msgs = {}
+        for agent in agents:
+            msg = self.slack.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+            )
+            thinking_msgs[agent.name] = msg["ts"]
+
+        async def _ask_agent(a):
+            cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
+            result = await a.ask_streaming(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+            try:
+                self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
+            except Exception:
+                pass
+            return result
+
+        responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
+
+        for agent, response in zip(agents, responses):
+            self._post(channel, thread_ts, agent.format_message(response))
+
+        self._post(channel, thread_ts, "*✅ 병렬 모드 완료*")
+
     async def start(self, channel, thread_ts, request):
         self._bind_thread(thread_ts)
+
+        # 복수 에이전트 지정 시 병렬 모드
+        agents = self._pick_agents(request)
+        if len(agents) > 1:
+            await self._parallel_start(channel, thread_ts, request, agents)
+            return
+
         # 당일 이전 결론을 컨텍스트로 수집
         today_conclusions = self._fetch_today_conclusions(channel, thread_ts)
         context_prefix = ""
