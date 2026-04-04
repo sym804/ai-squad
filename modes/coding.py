@@ -498,11 +498,28 @@ class CodingMode:
             )
             self._post(channel, thread_ts, self.claude.format_message(f"*[수정된 코드]*\n{current_code}"))
 
-        # Final summary
-        self._broadcast(channel, thread_ts, (
-            "*✅ 코딩 모드 완료*\n\n"
-            f"*요청:* {request}\n\n"
-            f"• *{self.claude.name}* — 기획/설계/코드 작성 + 테스트 + 이슈 수정\n"
-            f"• *{self.codex.name}* — 코드 리뷰 + 테스트 리더 + 이슈 판별\n"
-            f"• *{self.gemini.name}* — 테스트 작성"
-        ))
+        # Final report — Codex가 전체 결과 취합 보고
+        self._post(channel, thread_ts, "━━━ *최종 보고서 작성 중 (Codex)* ━━━")
+        report_prompt = (
+            "아래는 코딩 파이프라인의 전체 작업 결과입니다. "
+            "테스트 리더로서 핵심 요약 + 테스트 결과 + 발견된 이슈 + 최종 판정을 포함한 보고서를 작성하세요.\n\n"
+            f"[요청] {request}\n\n"
+            f"[Claude 코드]\n{claude_code[:2000]}\n\n"
+            f"[Codex 리뷰]\n{review[:2000]}\n\n"
+            f"[테스트 결과]\nCodex: {codex_tests[:1000]}\nClaude: {claude_tests[:1000]}\nGemini: {gemini_tests[:1000]}\n\n"
+            f"[이슈 수정] 최종 코드:\n{current_code[:2000]}"
+        )
+        report_thinking = self.slack.chat_postMessage(
+            channel=channel, thread_ts=thread_ts,
+            text=f"💭 {self.codex.emoji} *[{self.codex.name}]* 보고서 작성 중..."
+        )
+        rstop, rcb = self._make_progress_handler(channel, thread_ts, report_thinking["ts"], self.codex)
+        report = await self.codex.ask_with_progress(report_prompt, on_progress=rcb, timeout=CLI_TIMEOUT_CODING)
+        rstop.set()
+        await asyncio.sleep(1)
+        try:
+            self.slack.chat_delete(channel=channel, ts=report_thinking["ts"])
+        except Exception:
+            pass
+
+        self._broadcast(channel, thread_ts, f"📋 *최종 보고서 ({self.codex.name})*\n{report}")
