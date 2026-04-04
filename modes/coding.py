@@ -28,21 +28,33 @@ MAX_FIX_ROUNDS = 3
 class CodingMode:
     def __init__(self, slack_client):
         self.slack = slack_client
-        self.claude = ClaudeAgent(continue_mode=True)
+        self.claude = ClaudeAgent(continue_mode=False)
         self.codex = CodexAgent()
         self.gemini = GeminiAgent()
         self.agents = [self.claude, self.codex, self.gemini]
         self._backup_map = {
             "Claude": CodexBackupAgent(),
-            "Codex": ClaudeBackupAgent(continue_mode=True),
-            "Gemini": ClaudeBackupAgent(continue_mode=True),
+            "Codex": ClaudeBackupAgent(continue_mode=False),
+            "Gemini": ClaudeBackupAgent(continue_mode=False),
         }
         self._replaced = set()
         self._bot_user_id = None
 
-    def _bind_thread(self, thread_ts):
+    @staticmethod
+    def _extract_path(text: str) -> str | None:
+        """메시지에서 Windows 경로를 추출. 존재하는 디렉토리만 반환."""
         import os
-        work_dir = os.path.expanduser("~")
+        # C:\... 패턴 매칭
+        m = re.search(r'[A-Za-z]:\\[^\s<>"|?*]+', text)
+        if m:
+            path = m.group(0).rstrip('\\')
+            if os.path.isdir(path):
+                return path
+        return None
+
+    def _bind_thread(self, thread_ts, request_text: str = ""):
+        import os
+        work_dir = self._extract_path(request_text) or os.path.expanduser("~")
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
             agent._cwd = work_dir
@@ -98,7 +110,7 @@ class CodingMode:
 
     async def followup(self, channel, thread_ts, question):
         """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달."""
-        self._bind_thread(thread_ts)
+        self._bind_thread(thread_ts, question)
 
         if self._check_cancel(channel, thread_ts):
             return
@@ -214,6 +226,7 @@ class CodingMode:
         state = {"text": ""}
 
         def _update_loop():
+            fail_count = 0
             while not stop_event.wait(15):
                 if stop_event.is_set():
                     break
@@ -222,8 +235,12 @@ class CodingMode:
                 msg = f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)\n```{preview}```"
                 try:
                     self.slack.chat_update(channel=channel, ts=thinking_ts, text=msg)
-                except Exception:
-                    break  # 메시지 삭제됐으면 중단
+                    fail_count = 0
+                except Exception as e:
+                    fail_count += 1
+                    print(f"[PROGRESS] {agent.name} chat_update fail #{fail_count}: {e}")
+                    if fail_count >= 5:
+                        break  # 연속 5회 실패 시만 중단
 
         def on_progress(text):
             state["text"] = text
@@ -379,7 +396,7 @@ class CodingMode:
         self._post(channel, thread_ts, "*✅ 병렬 모드 완료*")
 
     async def start(self, channel, thread_ts, request):
-        self._bind_thread(thread_ts)
+        self._bind_thread(thread_ts, request)
 
         # 복수 에이전트 지정 시 병렬 모드
         agents = self._pick_agents(request)
@@ -550,3 +567,4 @@ class CodingMode:
             pass
 
         self._broadcast(channel, thread_ts, f"📋 *최종 보고서 ({self.codex.name})*\n{report}")
+        self._post(channel, thread_ts, "*✅ 코딩 완료*")

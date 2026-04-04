@@ -112,10 +112,17 @@ def start_bot():
 
     auto_restart = True
     manual_stop = False
-    script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack_bot.py")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    script = os.path.join(base_dir, "slack_bot.py")
+    log_path = os.path.join(base_dir, "bot_output.log")
+    log_file = open(log_path, "a", encoding="utf-8")
+    log_file.write(f"\n{'='*50}\n[{datetime.now()}] Bot 시작\n{'='*50}\n")
+    log_file.flush()
     bot_process = subprocess.Popen(
-        [sys.executable, script],
-        cwd=os.path.dirname(os.path.abspath(__file__)),
+        [sys.executable, "-u", script],
+        cwd=base_dir,
+        stdout=log_file,
+        stderr=subprocess.STDOUT,
     )
     msg = f"✅ Bot 시작됨 (PID: {bot_process.pid})"
     print(f"[WATCHDOG] {msg}")
@@ -192,11 +199,19 @@ def check_bot_health():
         return
 
     if auto_restart:
+        # 크래시 로그 기록
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        log_path = os.path.join(base_dir, "bot_output.log")
+        try:
+            with open(log_path, "a", encoding="utf-8") as f:
+                f.write(f"\n[{datetime.now()}] CRASH detected (exit code: {exit_code})\n")
+        except Exception:
+            pass
         print(f"[WATCHDOG] 크래시 감지 (exit: {exit_code}), {RESTART_DELAY}초 후 재시작")
         notify_active_threads()
         time.sleep(RESTART_DELAY)
         result = start_bot()
-        notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\n{result}")
+        notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\nexit code: {exit_code}\n{result}")
 
 
 def poll_commands():

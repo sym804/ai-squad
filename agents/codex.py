@@ -25,7 +25,16 @@ _CODEX_NOISE_CONTAINS = [
     "Select-String -Path",
     "CategoryInfo",
     "FullyQualifiedErrorId",
+    ".ps1 파일을 로드할 수 없습니다",
+    "about_Execution_Policies",
+    "Execution_Policies",
+    "위치 줄:",
+    "+   ~~~",
+    "succeeded in",
 ]
+
+# Codex raw 실행 로그 (한 단어만 있는 라인)
+_CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 
 
 def _clean_codex_output(text: str) -> str:
@@ -39,6 +48,9 @@ def _clean_codex_output(text: str) -> str:
             continue
         # 디렉토리 목록 (d-----  또는 -a---- 패턴)
         if stripped.startswith(("d-----", "d-r---", "d--hsl", "-a----")):
+            continue
+        # Codex raw 실행 로그 (한 단어만 있는 라인: exec, user, codex)
+        if stripped in _CODEX_NOISE_EXACT:
             continue
         lines.append(line)
     return '\n'.join(lines).strip()

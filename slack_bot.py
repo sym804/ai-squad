@@ -153,6 +153,10 @@ def handle_message(event, say, client):
 
 
 if __name__ == "__main__":
+    import sys
+    import faulthandler
+    faulthandler.enable()  # segfault 등 치명적 오류 시 traceback 출력
+
     print("=" * 50)
     print("Slack Multi-Agent Bot 시작")
     print(f"  Debate Channel : {DEBATE_CHANNEL_ID}")
@@ -160,6 +164,15 @@ if __name__ == "__main__":
     for ch_id, work_dir in BRIDGE_CHANNELS.items():
         print(f"  Bridge Channel : {ch_id} → {work_dir}")
     print("=" * 50)
+    sys.stdout.flush()
 
-    handler = SocketModeHandler(app, SLACK_APP_TOKEN)
-    handler.start()
+    try:
+        handler = SocketModeHandler(app, SLACK_APP_TOKEN)
+        handler.start()
+    except KeyboardInterrupt:
+        print("[EXIT] KeyboardInterrupt")
+    except Exception as e:
+        print(f"[FATAL] {e}")
+        import traceback
+        traceback.print_exc()
+        sys.exit(1)

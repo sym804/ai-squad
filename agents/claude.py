@@ -98,18 +98,40 @@ class ClaudeAgent(AgentBase):
 
             output = ""
             last_callback = time.time()
+            start_time = time.time()
             result_data = None
+            # readline 타임아웃: 60초 (도구 호출 중 출력 없어도 너무 빨리 죽이지 않음)
+            readline_timeout = 60
+            # 전체 타임아웃: 코딩 타임아웃의 2배 (도구 호출 포함 최대 대기)
+            overall_timeout = t * 2
 
             while True:
-                try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
-                except asyncio.TimeoutError:
+                elapsed = time.time() - start_time
+                # 전체 경과 시간 체크
+                if elapsed > overall_timeout:
                     proc.kill()
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
                     self.last_usage = ""
-                    return f"[{self.name}] 응답 대기 시간 초과 ({t}초 무응답)"
+                    return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)"
+
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=readline_timeout)
+                except asyncio.TimeoutError:
+                    # readline 타임아웃이지만 프로세스가 살아있고 전체 시간 남았으면 계속 대기
+                    if proc.returncode is None and time.time() - start_time < overall_timeout:
+                        # 프로세스 생존 확인 + progress 콜백
+                        if on_progress and output:
+                            on_progress(output)
+                        continue
+                    # 전체 시간도 초과했거나 프로세스가 죽었으면 종료
+                    proc.kill()
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    self.last_usage = ""
+                    return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)"
 
                 if not line:
                     break
