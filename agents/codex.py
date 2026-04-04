@@ -31,6 +31,10 @@ _CODEX_NOISE_CONTAINS = [
     "위치 줄:",
     "+   ~~~",
     "succeeded in",
+    "web search:",
+    "exited 1 in",
+    "exited 0 in",
+    "Wall time:",
 ]
 
 # Codex raw 실행 로그 (한 단어만 있는 라인)
@@ -39,20 +43,19 @@ _CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 
 def _clean_codex_output(text: str, prompt: str = "") -> str:
     """Codex CLI 헤더 및 실행 로그 노이즈 제거. prompt가 주어지면 에코된 프롬프트도 제거."""
-    # Codex exec는 "user\n[프롬프트]\ncodex\n[응답]" 형식으로 출력
-    # 프롬프트 에코 제거: 출력에서 프롬프트 텍스트를 찾아 그 이후만 사용
     if prompt:
-        prompt_trimmed = prompt.strip()[:200]  # 프롬프트 앞부분으로 매칭
-        idx = text.find(prompt_trimmed)
-        if idx >= 0:
-            # 프롬프트 전체를 찾아서 그 뒤부터 사용
-            after_prompt = text[idx + len(prompt_trimmed):]
-            # 남은 부분에서 프롬프트의 나머지 + "codex" 라벨 건너뛰기
-            for marker in ("\ncodex\n", "\ncodex\r\n"):
-                mi = after_prompt.find(marker)
-                if mi >= 0:
-                    text = after_prompt[mi + len(marker):]
-                    break
+        # 프롬프트 전체 텍스트를 출력에서 직접 제거
+        prompt_stripped = prompt.strip()
+        if prompt_stripped in text:
+            text = text.replace(prompt_stripped, "", 1)
+        else:
+            # 줄바꿈 차이 보정 (\r\n vs \n)
+            prompt_norm = prompt_stripped.replace("\r\n", "\n")
+            text_norm = text.replace("\r\n", "\n")
+            if prompt_norm in text_norm:
+                # 정규화된 버전에서 위치 찾아 원본에서 제거
+                idx = text_norm.find(prompt_norm)
+                text = text_norm[:idx] + text_norm[idx + len(prompt_norm):]
 
     lines = []
     for line in text.split('\n'):
