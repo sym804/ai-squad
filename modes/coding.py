@@ -326,6 +326,29 @@ class CodingMode:
         for agent, response in zip(agents, responses):
             self._post(channel, thread_ts, agent.format_message(response))
 
+        # Codex가 전체 결과를 취합하여 최종 보고서 작성
+        self._post(channel, thread_ts, "━━━ *최종 보고서 작성 중 (Codex)* ━━━")
+        summary_prompt = (
+            "아래는 각 에이전트의 작업 결과입니다. "
+            "전체 내용을 종합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작성하세요.\n\n"
+        )
+        for agent, response in zip(agents, responses):
+            summary_prompt += f"[{agent.name} 결과]\n{response[:2000]}\n\n"
+
+        summary_thinking = self.slack.chat_postMessage(
+            channel=channel, thread_ts=thread_ts,
+            text=f"💭 {self.codex.emoji} *[{self.codex.name}]* 보고서 작성 중..."
+        )
+        stop, cb = self._make_progress_handler(channel, thread_ts, summary_thinking["ts"], self.codex)
+        summary = await self.codex.ask_with_progress(summary_prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+        stop.set()
+        await asyncio.sleep(1)
+        try:
+            self.slack.chat_delete(channel=channel, ts=summary_thinking["ts"])
+        except Exception:
+            pass
+
+        self._post(channel, thread_ts, f"📋 *최종 보고서*\n{summary}")
         self._post(channel, thread_ts, "*✅ 병렬 모드 완료*")
 
     async def start(self, channel, thread_ts, request):
