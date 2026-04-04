@@ -62,20 +62,26 @@ class DebateMode:
         """에이전트에 맞는 백업을 반환."""
         return self._backup_map.get(agent.name)
 
-    def _make_progress_callback(self, channel, thread_ts, thinking_ts, agent):
-        """스트리밍 진행 상황을 Slack 메시지로 업데이트."""
-        import time
-        def on_progress(text):
-            preview = text[-500:] if len(text) > 500 else text
-            if preview:
+    def _make_elapsed_updater(self, channel, thread_ts, thinking_ts, agent):
+        """경과 시간을 Slack 메시지에 업데이트."""
+        import time, threading
+        stop_event = threading.Event()
+        start_time = time.time()
+
+        def _update_loop():
+            while not stop_event.wait(15):
+                elapsed = int(time.time() - start_time)
                 try:
                     self.slack.chat_update(
                         channel=channel, ts=thinking_ts,
-                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중...\n```{preview}```"
+                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)"
                     )
                 except Exception:
                     pass
-        return on_progress
+
+        t = threading.Thread(target=_update_loop, daemon=True)
+        t.start()
+        return stop_event
 
     def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
         """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
@@ -111,18 +117,21 @@ class DebateMode:
             random.shuffle(shuffled)
 
             thinking_msgs = {}
+            stop_events = {}
             for agent in shuffled:
                 msg = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
                 )
                 thinking_msgs[agent.name] = msg["ts"]
+                stop_events[agent.name] = self._make_elapsed_updater(
+                    channel, thread_ts, msg["ts"], agent)
 
             prompt = self._build_followup_prompt(original_topic, question, history, round_num)
 
             async def _ask_followup(a):
-                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                result = await a.ask_streaming(prompt, on_progress=cb)
+                result = await a.ask(prompt)
+                stop_events[a.name].set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
@@ -315,21 +324,24 @@ class DebateMode:
             shuffled = list(self.agents)
             random.shuffle(shuffled)
 
-            # 에이전트별 생각 중 표시
+            # 에이전트별 생각 중 표시 + 경과 시간
             thinking_msgs = {}
+            stop_events = {}
             for agent in shuffled:
                 msg = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
                 )
                 thinking_msgs[agent.name] = msg["ts"]
+                stop_events[agent.name] = self._make_elapsed_updater(
+                    channel, thread_ts, msg["ts"], agent)
 
-            # 3개 AI 동시 실행 (스트리밍)
+            # 3개 AI 동시 실행
             prompt = self._build_prompt(topic, history, round_num)
 
-            async def _ask_with_progress(a):
-                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                result = await a.ask_streaming(prompt, on_progress=cb)
+            async def _ask_agent(a):
+                result = await a.ask(prompt)
+                stop_events[a.name].set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
@@ -337,7 +349,7 @@ class DebateMode:
                 return result
 
             responses = await asyncio.gather(
-                *[_ask_with_progress(agent) for agent in shuffled]
+                *[_ask_agent(agent) for agent in shuffled]
             )
 
             for agent, response in zip(shuffled, responses):

@@ -114,16 +114,19 @@ class CodingMode:
         else:
             # 복수 에이전트 동시 실행
             thinking_msgs = {}
+            stop_events = {}
             for agent in agents:
                 msg = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
                 )
                 thinking_msgs[agent.name] = msg["ts"]
+                stop_events[agent.name] = self._make_elapsed_updater(
+                    channel, thread_ts, msg["ts"], agent)
 
             async def _ask_agent(a):
-                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                result = await a.ask_streaming(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+                result = await a.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+                stop_events[a.name].set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
@@ -194,20 +197,26 @@ class CodingMode:
             kwargs["thread_ts"] = thread_ts
         self.slack.chat_postMessage(**kwargs)
 
-    def _make_progress_callback(self, channel, thread_ts, thinking_ts, agent):
-        """스트리밍 진행 상황을 Slack 메시지로 업데이트하는 콜백 생성."""
-        def on_progress(text):
-            # 마지막 500자만 표시
-            preview = text[-500:] if len(text) > 500 else text
-            if preview:
+    def _make_elapsed_updater(self, channel, thread_ts, thinking_ts, agent):
+        """경과 시간을 Slack 메시지에 업데이트하는 백그라운드 태스크 시작. 취소 함수 반환."""
+        import time, threading
+        stop_event = threading.Event()
+        start_time = time.time()
+
+        def _update_loop():
+            while not stop_event.wait(15):
+                elapsed = int(time.time() - start_time)
                 try:
                     self.slack.chat_update(
                         channel=channel, ts=thinking_ts,
-                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중...\n```{preview}```"
+                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)"
                     )
                 except Exception:
                     pass
-        return on_progress
+
+        t = threading.Thread(target=_update_loop, daemon=True)
+        t.start()
+        return stop_event
 
     async def _ask_with_backup(self, agent, prompt, channel, thread_ts):
         """에이전트 호출 후 오류/타임아웃 시 백업 투입."""
@@ -215,8 +224,9 @@ class CodingMode:
             channel=channel, thread_ts=thread_ts,
             text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
         )
-        callback = self._make_progress_callback(channel, thread_ts, thinking["ts"], agent)
-        response = await agent.ask_streaming(prompt, on_progress=callback, timeout=CLI_TIMEOUT_CODING)
+        stop = self._make_elapsed_updater(channel, thread_ts, thinking["ts"], agent)
+        response = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+        stop.set()
         try:
             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
         except Exception:
@@ -276,16 +286,19 @@ class CodingMode:
         self._post(channel, thread_ts, f"*병렬 모드 시작* :zap:\n참여: {names}")
 
         thinking_msgs = {}
+        stop_events = {}
         for agent in agents:
             msg = self.slack.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,
                 text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
             )
             thinking_msgs[agent.name] = msg["ts"]
+            stop_events[agent.name] = self._make_elapsed_updater(
+                channel, thread_ts, msg["ts"], agent)
 
         async def _ask_agent(a):
-            cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
-            result = await a.ask_streaming(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+            result = await a.ask(request, timeout=CLI_TIMEOUT_CODING)
+            stop_events[a.name].set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
             except Exception:
@@ -347,21 +360,23 @@ class CodingMode:
         if self._check_cancel(channel, thread_ts):
             return
 
-        # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여) — 3개 동시 스트리밍
+        # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여) — 3개 동시
         self._post(channel, thread_ts, "━━━ Phase 3: 테스트 작성 (Codex 리더 / Claude / Gemini) ━━━")
 
-        # 에이전트별 생각 중 메시지
         thinking_msgs = {}
+        stop_events = {}
         for agent in [self.codex, self.claude, self.gemini]:
             msg = self.slack.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,
                 text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
             )
             thinking_msgs[agent.name] = msg["ts"]
+            stop_events[agent.name] = self._make_elapsed_updater(
+                channel, thread_ts, msg["ts"], agent)
 
         async def _phase3_ask(agent, prompt, label):
-            cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[agent.name], agent)
-            result = await agent.ask_streaming(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+            result = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+            stop_events[agent.name].set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[agent.name])
             except Exception:
@@ -390,12 +405,12 @@ class CodingMode:
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
-                    cb = self._make_progress_callback(channel, thread_ts, thinking["ts"], backup)
-                    backup_result = await backup.ask_streaming(
+                    bstop = self._make_elapsed_updater(channel, thread_ts, thinking["ts"], backup)
+                    backup_result = await backup.ask(
                         f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
-                        on_progress=cb,
                         timeout=CLI_TIMEOUT_CODING,
                     )
+                    bstop.set()
                     try:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:

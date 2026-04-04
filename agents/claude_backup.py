@@ -19,13 +19,16 @@ class ClaudeBackupAgent(AgentBase):
         self.continue_mode = continue_mode
         self.last_usage = ""
 
+    def _build_cmd(self, tmp: str) -> str:
+        flag = "--continue -p" if self.continue_mode else "-p"
+        return f'type "{tmp}" | claude {flag} --output-format json'
+
     async def _run_cli(self, prompt: str) -> str:
         prompt = self.PERSPECTIVE + prompt
         tmp = self._write_temp(prompt)
-        flag = "--continue -p" if self.continue_mode else "-p"
         try:
             proc = await asyncio.create_subprocess_shell(
-                f'type "{tmp}" | claude {flag} --output-format json',
+                self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
