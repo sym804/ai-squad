@@ -37,8 +37,23 @@ _CODEX_NOISE_CONTAINS = [
 _CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 
 
-def _clean_codex_output(text: str) -> str:
-    """Codex CLI 헤더 및 실행 로그 노이즈 제거."""
+def _clean_codex_output(text: str, prompt: str = "") -> str:
+    """Codex CLI 헤더 및 실행 로그 노이즈 제거. prompt가 주어지면 에코된 프롬프트도 제거."""
+    # Codex exec는 "user\n[프롬프트]\ncodex\n[응답]" 형식으로 출력
+    # 프롬프트 에코 제거: 출력에서 프롬프트 텍스트를 찾아 그 이후만 사용
+    if prompt:
+        prompt_trimmed = prompt.strip()[:200]  # 프롬프트 앞부분으로 매칭
+        idx = text.find(prompt_trimmed)
+        if idx >= 0:
+            # 프롬프트 전체를 찾아서 그 뒤부터 사용
+            after_prompt = text[idx + len(prompt_trimmed):]
+            # 남은 부분에서 프롬프트의 나머지 + "codex" 라벨 건너뛰기
+            for marker in ("\ncodex\n", "\ncodex\r\n"):
+                mi = after_prompt.find(marker)
+                if mi >= 0:
+                    text = after_prompt[mi + len(marker):]
+                    break
+
     lines = []
     for line in text.split('\n'):
         stripped = line.strip()
@@ -80,11 +95,11 @@ class CodexAgent(AgentBase):
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
-            return _clean_codex_output(output)
+            return _clean_codex_output(output, prompt)
         finally:
             os.unlink(tmp)
 
     async def ask_with_progress(self, prompt, on_progress=None, timeout=None):
         """base의 ask_with_progress 호출 후 노이즈 제거."""
         result = await super().ask_with_progress(prompt, on_progress, timeout)
-        return _clean_codex_output(result)
+        return _clean_codex_output(result, prompt)

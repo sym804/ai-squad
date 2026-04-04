@@ -18,7 +18,9 @@ _NOISE_PATTERNS = re.compile(
 
 
 _NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_rejectDigits",
-                    "_digitIsSub", "maxLength:", "maxSubParamsLength:", "currentState:"]
+                    "_digitIsSub", "maxLength:", "maxSubParamsLength:", "currentState:",
+                    "YOLO mode is enabled", "Loaded cached credentials",
+                    "All tool calls will be automatically approved"]
 
 
 def _clean_output(text: str) -> str:
@@ -99,8 +101,9 @@ class GeminiAgent(AgentBase):
                     break
 
                 decoded = line.decode("utf-8", errors="replace")
-                # xterm 노이즈 라인 스킵
-                if "xterm.js" in decoded or "Int32Array" in decoded or "Uint16Array" in decoded:
+                # 노이즈 라인 스킵 (xterm + YOLO 모드 메시지)
+                if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
+                        "YOLO mode", "Loaded cached credentials", "automatically approved")):
                     continue
 
                 # quota/retry 에러 감지
