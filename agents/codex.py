@@ -35,6 +35,7 @@ _CODEX_NOISE_CONTAINS = [
     "exited 1 in",
     "exited 0 in",
     "Wall time:",
+    "tokens used",
 ]
 
 # Codex raw 실행 로그 (한 단어만 있는 라인)
@@ -71,7 +72,14 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         if stripped in _CODEX_NOISE_EXACT:
             continue
         lines.append(line)
-    return '\n'.join(lines).strip()
+    result = '\n'.join(lines).strip()
+    # 응답 중복 제거: Codex가 같은 답변을 2번 출력하는 경우
+    if len(result) > 100:
+        half = len(result) // 2
+        first_half = result[:half].strip()
+        if first_half and first_half in result[half:]:
+            result = first_half
+    return result
 
 
 class CodexAgent(AgentBase):
