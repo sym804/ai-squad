@@ -66,14 +66,17 @@ class CodingMode:
             self.gemini = backup
         self._replaced.add(agent.name)
 
-    def _pick_agent(self, text):
-        """메시지에 에이전트 이름이 포함되면 해당 에이전트 반환, 없으면 Claude."""
+    def _pick_agents(self, text):
+        """메시지에 에이전트 이름이 포함되면 해당 에이전트들 반환, 없으면 [Claude]."""
         lower = text.lower()
+        agents = []
         if "codex" in lower:
-            return self.codex
+            agents.append(self.codex)
         if "gemini" in lower:
-            return self.gemini
-        return self.claude
+            agents.append(self.gemini)
+        if "claude" in lower or not agents:
+            agents.insert(0, self.claude)
+        return agents
 
     async def followup(self, channel, thread_ts, question):
         """스레드에서 사용자 추가 지시 → 지정된 에이전트에게 전달."""
@@ -82,11 +85,36 @@ class CodingMode:
         if self._check_cancel(channel, thread_ts):
             return
 
-        agent = self._pick_agent(question)
-        response, used_agent = await self._ask_with_backup(
-            agent, question, channel, thread_ts
-        )
-        self._post(channel, thread_ts, used_agent.format_message(response))
+        agents = self._pick_agents(question)
+
+        if len(agents) == 1:
+            response, used_agent = await self._ask_with_backup(
+                agents[0], question, channel, thread_ts
+            )
+            self._post(channel, thread_ts, used_agent.format_message(response))
+        else:
+            # 복수 에이전트 동시 실행
+            thinking_msgs = {}
+            for agent in agents:
+                msg = self.slack.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts,
+                    text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+                )
+                thinking_msgs[agent.name] = msg["ts"]
+
+            async def _ask_agent(a):
+                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                result = await a.ask_streaming(question, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+                try:
+                    self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
+                except Exception:
+                    pass
+                return result
+
+            responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
+
+            for agent, response in zip(agents, responses):
+                self._post(channel, thread_ts, agent.format_message(response))
 
     def _broadcast(self, channel, thread_ts, text):
         try:
@@ -168,12 +196,8 @@ class CodingMode:
             channel=channel, thread_ts=thread_ts,
             text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
         )
-        # Claude 에이전트는 스트리밍으로 진행 상황 표시
-        if hasattr(agent, 'ask_streaming'):
-            callback = self._make_progress_callback(channel, thread_ts, thinking["ts"], agent)
-            response = await agent.ask_streaming(prompt, on_progress=callback, timeout=CLI_TIMEOUT_CODING)
-        else:
-            response = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+        callback = self._make_progress_callback(channel, thread_ts, thinking["ts"], agent)
+        response = await agent.ask_streaming(prompt, on_progress=callback, timeout=CLI_TIMEOUT_CODING)
         try:
             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
         except Exception:
@@ -268,22 +292,31 @@ class CodingMode:
         if self._check_cancel(channel, thread_ts):
             return
 
-        # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여)
+        # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여) — 3개 동시 스트리밍
         self._post(channel, thread_ts, "━━━ Phase 3: 테스트 작성 (Codex 리더 / Claude / Gemini) ━━━")
 
+        # 에이전트별 생각 중 메시지
+        thinking_msgs = {}
+        for agent in [self.codex, self.claude, self.gemini]:
+            msg = self.slack.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+            )
+            thinking_msgs[agent.name] = msg["ts"]
+
+        async def _phase3_ask(agent, prompt, label):
+            cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[agent.name], agent)
+            result = await agent.ask_streaming(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+            try:
+                self.slack.chat_delete(channel=channel, ts=thinking_msgs[agent.name])
+            except Exception:
+                pass
+            return result
+
         codex_tests, claude_tests, gemini_tests = await asyncio.gather(
-            self.codex.ask(
-                f"다음 코드에 대한 테스트 전략을 수립하고 핵심 테스트 코드를 작성해 주세요.\n\n{claude_code}",
-                timeout=CLI_TIMEOUT_CODING,
-            ),
-            self.claude.ask(
-                f"다음 코드에 대한 엣지 케이스 테스트를 작성해 주세요.\n\n{claude_code}",
-                timeout=CLI_TIMEOUT_CODING,
-            ),
-            self.gemini.ask(
-                f"다음 코드에 대한 추가 테스트를 작성해 주세요.\n\n{claude_code}",
-                timeout=CLI_TIMEOUT_CODING,
-            ),
+            _phase3_ask(self.codex, f"다음 코드에 대한 테스트 전략을 수립하고 핵심 테스트 코드를 작성해 주세요.\n\n{claude_code}", "테스트 리더"),
+            _phase3_ask(self.claude, f"다음 코드에 대한 엣지 케이스 테스트를 작성해 주세요.\n\n{claude_code}", "테스트 참여"),
+            _phase3_ask(self.gemini, f"다음 코드에 대한 추가 테스트를 작성해 주세요.\n\n{claude_code}", "테스트 참여"),
         )
 
         # Phase 3 오류/타임아웃 체크 + 백업
@@ -302,8 +335,11 @@ class CodingMode:
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
-                    backup_result = await backup.ask(
-                        f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}"
+                    cb = self._make_progress_callback(channel, thread_ts, thinking["ts"], backup)
+                    backup_result = await backup.ask_streaming(
+                        f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
+                        on_progress=cb,
+                        timeout=CLI_TIMEOUT_CODING,
                     )
                     try:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
@@ -311,7 +347,6 @@ class CodingMode:
                         pass
                     self._post(channel, thread_ts, backup.format_message(f"*[{label} 대체]*\n{backup_result}"))
                     self._replace_agent(agent, channel, thread_ts, reason)
-                    # 테스트 결과 교체
                     if agent is self.codex:
                         codex_tests = backup_result
                     elif agent is self.claude:

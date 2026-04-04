@@ -62,6 +62,21 @@ class DebateMode:
         """에이전트에 맞는 백업을 반환."""
         return self._backup_map.get(agent.name)
 
+    def _make_progress_callback(self, channel, thread_ts, thinking_ts, agent):
+        """스트리밍 진행 상황을 Slack 메시지로 업데이트."""
+        import time
+        def on_progress(text):
+            preview = text[-500:] if len(text) > 500 else text
+            if preview:
+                try:
+                    self.slack.chat_update(
+                        channel=channel, ts=thinking_ts,
+                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중...\n```{preview}```"
+                    )
+                except Exception:
+                    pass
+        return on_progress
+
     def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
         """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
         if agent.name in self._replaced:
@@ -95,21 +110,28 @@ class DebateMode:
             shuffled = list(self.agents)
             random.shuffle(shuffled)
 
-            names = " / ".join(a.format_message("").split("\n")[0] for a in shuffled)
-            thinking_msg = self.slack.chat_postMessage(
-                channel=channel, thread_ts=thread_ts,
-                text=f"💭 {names} 생각 중..."
-            )
+            thinking_msgs = {}
+            for agent in shuffled:
+                msg = self.slack.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts,
+                    text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+                )
+                thinking_msgs[agent.name] = msg["ts"]
 
             prompt = self._build_followup_prompt(original_topic, question, history, round_num)
-            responses = await asyncio.gather(
-                *[agent.ask(prompt) for agent in shuffled]
-            )
 
-            try:
-                self.slack.chat_delete(channel=channel, ts=thinking_msg["ts"])
-            except Exception:
-                pass
+            async def _ask_followup(a):
+                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                result = await a.ask_streaming(prompt, on_progress=cb)
+                try:
+                    self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
+                except Exception:
+                    pass
+                return result
+
+            responses = await asyncio.gather(
+                *[_ask_followup(agent) for agent in shuffled]
+            )
 
             round_consensuses = []
             for agent, response in zip(shuffled, responses):
@@ -293,24 +315,30 @@ class DebateMode:
             shuffled = list(self.agents)
             random.shuffle(shuffled)
 
-            # 생각 중 표시
-            names = " / ".join(a.format_message("").split("\n")[0] for a in shuffled)
-            thinking_msg = self.slack.chat_postMessage(
-                channel=channel, thread_ts=thread_ts,
-                text=f"💭 {names} 생각 중..."
-            )
+            # 에이전트별 생각 중 표시
+            thinking_msgs = {}
+            for agent in shuffled:
+                msg = self.slack.chat_postMessage(
+                    channel=channel, thread_ts=thread_ts,
+                    text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+                )
+                thinking_msgs[agent.name] = msg["ts"]
 
-            # 3개 AI 동시 실행
+            # 3개 AI 동시 실행 (스트리밍)
             prompt = self._build_prompt(topic, history, round_num)
-            responses = await asyncio.gather(
-                *[agent.ask(prompt) for agent in shuffled]
-            )
 
-            # 생각 중 메시지 삭제
-            try:
-                self.slack.chat_delete(channel=channel, ts=thinking_msg["ts"])
-            except Exception:
-                pass
+            async def _ask_with_progress(a):
+                cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                result = await a.ask_streaming(prompt, on_progress=cb)
+                try:
+                    self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
+                except Exception:
+                    pass
+                return result
+
+            responses = await asyncio.gather(
+                *[_ask_with_progress(agent) for agent in shuffled]
+            )
 
             for agent, response in zip(shuffled, responses):
                 self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))

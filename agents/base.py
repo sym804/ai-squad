@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import tempfile
 import subprocess
 from config import CLI_TIMEOUT
@@ -60,6 +61,73 @@ class AgentBase:
 
     async def _run_cli(self, prompt: str) -> str:
         raise NotImplementedError
+
+    def _build_cmd(self, tmp: str) -> str:
+        """서브클래스에서 오버라이드. CLI 명령어 반환."""
+        raise NotImplementedError
+
+    async def _run_cli_streaming(self, prompt: str, on_progress=None, idle_timeout: int = 300) -> str:
+        """범용 스트리밍 CLI 실행. stdout을 라인 단위로 읽으며 콜백 호출."""
+        tmp = self._write_temp(prompt)
+        try:
+            cmd = self._build_cmd(tmp)
+            proc = await asyncio.create_subprocess_shell(
+                cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._make_env(),
+            )
+            if self._current_thread_ts:
+                register_process(self._current_thread_ts, proc)
+
+            output = ""
+            last_callback = time.time()
+
+            while True:
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    self.timed_out = True
+                    self.has_error = False
+                    return f"[{self.name}] 응답 대기 시간 초과 ({idle_timeout}초 무응답)"
+
+                if not line:
+                    break
+
+                output += line.decode("utf-8", errors="replace")
+
+                if on_progress and time.time() - last_callback >= 10:
+                    on_progress(output.strip())
+                    last_callback = time.time()
+
+            await proc.wait()
+            self.timed_out = False
+
+            stderr = await proc.stderr.read()
+            output = output.strip()
+            if not output and stderr:
+                output = stderr.decode("utf-8", errors="replace").strip()
+            return output
+        finally:
+            os.unlink(tmp)
+
+    async def ask_streaming(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+        """스트리밍 ask. 데이터 수신 중에는 타임아웃 없음."""
+        t = timeout or CLI_TIMEOUT
+        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
+            self.timed_out = False
+            self.has_error = False
+            return f"[{self.name}] 작업 취소됨"
+        try:
+            result = await self._run_cli_streaming(prompt, on_progress, idle_timeout=t)
+            if not getattr(self, 'timed_out', False):
+                self.has_error = self._is_fatal_error(result)
+            return result
+        except Exception as e:
+            self.timed_out = False
+            self.has_error = True
+            return f"[{self.name}] 오류: {str(e)}"
 
     def format_message(self, response: str) -> str:
         usage = getattr(self, 'last_usage', '')

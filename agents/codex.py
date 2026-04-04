@@ -7,11 +7,14 @@ class CodexAgent(AgentBase):
     name = "Codex"
     emoji = "🟢"
 
+    def _build_cmd(self, tmp: str) -> str:
+        return f'type "{tmp}" | codex exec --skip-git-repo-check'
+
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
         try:
             proc = await asyncio.create_subprocess_shell(
-                f'type "{tmp}" | codex exec --skip-git-repo-check',
+                self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),

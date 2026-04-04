@@ -7,12 +7,14 @@ class GeminiAgent(AgentBase):
     name = "Gemini"
     emoji = "🔵"
 
+    def _build_cmd(self, tmp: str) -> str:
+        return f'type "{tmp}" | gemini -p ""'
+
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
         try:
-            cmd = f'type "{tmp}" | gemini -p ""'
             proc = await asyncio.create_subprocess_shell(
-                cmd,
+                self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
