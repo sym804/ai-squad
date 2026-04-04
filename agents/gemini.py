@@ -82,6 +82,8 @@ class GeminiAgent(AgentBase):
 
             output = ""
             last_callback = time.time()
+            retry_count = 0
+            MAX_RETRIES = 3  # retry 3회 초과 시 중단
 
             while True:
                 try:
@@ -100,6 +102,16 @@ class GeminiAgent(AgentBase):
                 # xterm 노이즈 라인 스킵
                 if "xterm.js" in decoded or "Int32Array" in decoded or "Uint16Array" in decoded:
                     continue
+
+                # quota/retry 에러 감지
+                if "exhausted your capacity" in decoded or "quota will reset" in decoded:
+                    retry_count += 1
+                    if retry_count >= MAX_RETRIES:
+                        proc.kill()
+                        await proc.wait()
+                        self.timed_out = False
+                        self.has_error = True
+                        return f"[{self.name}] API 할당량 초과 (재시도 {retry_count}회 실패)"
 
                 output += decoded
 
