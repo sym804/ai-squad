@@ -35,6 +35,14 @@ WATCHDOG_CHANNEL_ID = os.environ.get(
     os.environ.get("DEBATE_CHANNEL_ID", ""),
 )
 
+# 모든 활성 채널 목록 (재시작 알림용)
+ALL_CHANNELS = set(filter(None, [
+    os.environ.get("DEBATE_CHANNEL_ID", ""),
+    os.environ.get("CODING_CHANNEL_ID", ""),
+    os.environ.get("SR_AGENT_CHANNEL_ID", ""),
+    os.environ.get("TC_AGENT_CHANNEL_ID", ""),
+]))
+
 POLL_INTERVAL = 15  # 초마다 채널 폴링
 RESTART_DELAY = 5   # 크래시 후 재시작 대기 (초)
 MAX_RAPID_CRASHES = 5  # 연속 빠른 크래시 허용 횟수
@@ -61,13 +69,22 @@ def get_bot_user_id():
 
 
 def notify(text):
-    """Slack 채널에 알림을 보냅니다."""
+    """Watchdog 채널에 알림을 보냅니다."""
     if not WATCHDOG_CHANNEL_ID:
         return
     try:
         client.chat_postMessage(channel=WATCHDOG_CHANNEL_ID, text=text)
     except Exception as e:
         print(f"[WATCHDOG] 알림 실패: {e}")
+
+
+def notify_all(text):
+    """모든 활성 채널에 알림을 보냅니다."""
+    for ch in ALL_CHANNELS:
+        try:
+            client.chat_postMessage(channel=ch, text=text)
+        except Exception:
+            pass
 
 
 def start_bot():
@@ -111,6 +128,7 @@ def restart_bot():
     """봇을 재시작합니다."""
     global manual_stop
     manual_stop = True
+    notify_all("⚠️ *봇이 재시작됩니다* — 진행 중이던 작업이 중단되었습니다.")
     stop_bot()
     time.sleep(2)
     auto_restart = True
@@ -158,6 +176,7 @@ def check_bot_health():
 
     if auto_restart:
         print(f"[WATCHDOG] 크래시 감지 (exit: {exit_code}), {RESTART_DELAY}초 후 재시작")
+        notify_all("⚠️ *봇이 재시작됩니다* — 진행 중이던 작업이 중단되었습니다.")
         time.sleep(RESTART_DELAY)
         result = start_bot()
         notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\n{result}")
