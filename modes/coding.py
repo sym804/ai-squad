@@ -82,18 +82,33 @@ class CodingMode:
             agents.insert(0, self.claude)
         return agents
 
+    def _build_followup_prompt(self, channel, thread_ts, question):
+        """스레드 히스토리를 포함한 followup 프롬프트 생성."""
+        original = self._fetch_original_topic(channel, thread_ts)
+        history = self._fetch_thread_history(channel, thread_ts)
+
+        parts = [f"[원래 요청] {original}"]
+        if history:
+            parts.append("\n[스레드 대화 내용]")
+            for h in history[-15:]:
+                parts.append(f"- {h['name']}: {h['text'][:500]}")
+        parts.append(f"\n[사용자 추가 지시] {question}")
+        parts.append("\n위 스레드 내용을 참고하여 사용자의 지시에 응답하세요.")
+        return "\n".join(parts)
+
     async def followup(self, channel, thread_ts, question):
-        """스레드에서 사용자 추가 지시 → 지정된 에이전트에게 전달."""
+        """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달."""
         self._bind_thread(thread_ts)
 
         if self._check_cancel(channel, thread_ts):
             return
 
+        prompt = self._build_followup_prompt(channel, thread_ts, question)
         agents = self._pick_agents(question)
 
         if len(agents) == 1:
             response, used_agent = await self._ask_with_backup(
-                agents[0], question, channel, thread_ts
+                agents[0], prompt, channel, thread_ts
             )
             self._post(channel, thread_ts, used_agent.format_message(response))
         else:
@@ -108,7 +123,7 @@ class CodingMode:
 
             async def _ask_agent(a):
                 cb = self._make_progress_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                result = await a.ask_streaming(question, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+                result = await a.ask_streaming(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
