@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from agents.base import AgentBase
 
 
@@ -68,3 +69,93 @@ class ClaudeAgent(AgentBase):
             return output
         finally:
             os.unlink(tmp)
+
+    async def _run_cli_streaming(self, prompt: str, on_progress=None, idle_timeout: int = 300) -> str:
+        """스트리밍 모드로 CLI 실행. on_progress(text) 콜백으로 중간 결과 전달.
+        idle_timeout: 데이터 수신이 없으면 타임아웃 (초). 데이터가 계속 오면 무제한."""
+        tmp = self._write_temp(prompt)
+        flag = "--continue -p" if self.continue_mode else "-p"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'type "{tmp}" | claude {flag} --output-format stream-json --verbose',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._make_env(),
+            )
+            if self._current_thread_ts:
+                from cancel import register_process
+                register_process(self._current_thread_ts, proc)
+
+            output = ""
+            last_callback = time.time()
+            result_data = None
+
+            while True:
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=idle_timeout)
+                except asyncio.TimeoutError:
+                    # idle_timeout 동안 데이터 없음 → 타임아웃
+                    proc.kill()
+                    self.timed_out = True
+                    self.has_error = False
+                    self.last_usage = ""
+                    return f"[{self.name}] 응답 대기 시간 초과 ({idle_timeout}초 무응답)"
+
+                if not line:
+                    break  # EOF
+
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = data.get("type")
+
+                if msg_type == "assistant":
+                    content = data.get("message", {}).get("content", [])
+                    for block in content:
+                        if block.get("type") == "text":
+                            output = block.get("text", "").strip()
+
+                    if on_progress and time.time() - last_callback >= 10:
+                        on_progress(output)
+                        last_callback = time.time()
+
+                elif msg_type == "result":
+                    result_data = data
+                    output = data.get("result", "").strip()
+
+            await proc.wait()
+
+            if result_data:
+                self.last_usage = _format_token_usage(result_data)
+            else:
+                self.last_usage = ""
+
+            self.timed_out = False
+            return output
+        finally:
+            os.unlink(tmp)
+
+    async def ask_streaming(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+        """스트리밍 ask. 데이터가 오는 동안은 타임아웃 없음, idle 시에만 타임아웃."""
+        from config import CLI_TIMEOUT
+        from cancel import is_cancelled
+        t = timeout or CLI_TIMEOUT
+
+        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
+            self.timed_out = False
+            self.has_error = False
+            return f"[{self.name}] 작업 취소됨"
+        try:
+            result = await self._run_cli_streaming(prompt, on_progress, idle_timeout=t)
+            if not self.timed_out:
+                self.has_error = self._is_fatal_error(result)
+            return result
+        except Exception as e:
+            self.timed_out = False
+            self.has_error = True
+            return f"[{self.name}] 오류: {str(e)}"

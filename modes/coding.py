@@ -261,13 +261,33 @@ class CodingMode:
             kwargs["thread_ts"] = thread_ts
         self.slack.chat_postMessage(**kwargs)
 
+    def _make_progress_callback(self, channel, thread_ts, thinking_ts, agent):
+        """스트리밍 진행 상황을 Slack 메시지로 업데이트하는 콜백 생성."""
+        def on_progress(text):
+            # 마지막 500자만 표시
+            preview = text[-500:] if len(text) > 500 else text
+            if preview:
+                try:
+                    self.slack.chat_update(
+                        channel=channel, ts=thinking_ts,
+                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중...\n```{preview}```"
+                    )
+                except Exception:
+                    pass
+        return on_progress
+
     async def _ask_with_backup(self, agent, prompt, channel, thread_ts):
         """에이전트 호출 후 오류/타임아웃 시 백업 투입."""
         thinking = self.slack.chat_postMessage(
             channel=channel, thread_ts=thread_ts,
             text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
         )
-        response = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+        # Claude 에이전트는 스트리밍으로 진행 상황 표시
+        if hasattr(agent, 'ask_streaming'):
+            callback = self._make_progress_callback(channel, thread_ts, thinking["ts"], agent)
+            response = await agent.ask_streaming(prompt, on_progress=callback, timeout=CLI_TIMEOUT_CODING)
+        else:
+            response = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
         try:
             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
         except Exception:
