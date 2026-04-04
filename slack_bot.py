@@ -20,6 +20,16 @@ import cancel
 
 app = App(token=SLACK_BOT_TOKEN)
 
+# 자기 자신의 bot_id 조회
+_OWN_BOT_ID = None
+try:
+    from slack_sdk import WebClient
+    _auth = WebClient(token=SLACK_BOT_TOKEN).auth_test()
+    _OWN_BOT_ID = _auth.get("bot_id")
+    print(f"[INIT] Own bot_id: {_OWN_BOT_ID}")
+except Exception:
+    pass
+
 
 def _run_async(coro, client=None, channel=None, thread_ts=None):
     """새 이벤트 루프에서 비동기 코루틴을 실행합니다."""
@@ -54,8 +64,8 @@ def _run_async(coro, client=None, channel=None, thread_ts=None):
 def handle_message(event, say, client):
     print(f"[EVENT] channel={event.get('channel')} text={event.get('text', '')[:30]}")
 
-    # 봇 자신의 메시지 무시
-    if event.get("bot_id"):
+    # 자기 자신의 메시지만 무시 (다른 봇 메시지는 처리)
+    if event.get("bot_id") and event.get("bot_id") == _OWN_BOT_ID:
         return
 
     # message_changed, message_deleted 등 서브타입 무시
