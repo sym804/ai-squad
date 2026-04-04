@@ -83,6 +83,20 @@ class DebateMode:
         t.start()
         return stop_event
 
+    def _make_content_callback(self, channel, thread_ts, thinking_ts, agent):
+        """Claude 작업 내용을 Slack 메시지에 업데이트하는 콜백."""
+        def on_progress(text):
+            preview = text[-500:] if len(text) > 500 else text
+            if preview:
+                try:
+                    self.slack.chat_update(
+                        channel=channel, ts=thinking_ts,
+                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중...\n```{preview}```"
+                    )
+                except Exception:
+                    pass
+        return on_progress
+
     def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
         """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
         if agent.name in self._replaced:
@@ -130,8 +144,12 @@ class DebateMode:
             prompt = self._build_followup_prompt(original_topic, question, history, round_num)
 
             async def _ask_followup(a):
-                result = await a.ask(prompt)
-                stop_events[a.name].set()
+                if hasattr(a, 'ask_with_progress'):
+                    cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                    result = await a.ask_with_progress(prompt, on_progress=cb)
+                else:
+                    result = await a.ask(prompt)
+                    stop_events[a.name].set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
@@ -340,8 +358,12 @@ class DebateMode:
             prompt = self._build_prompt(topic, history, round_num)
 
             async def _ask_agent(a):
-                result = await a.ask(prompt)
-                stop_events[a.name].set()
+                if hasattr(a, 'ask_with_progress'):
+                    cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                    result = await a.ask_with_progress(prompt, on_progress=cb)
+                else:
+                    result = await a.ask(prompt)
+                    stop_events[a.name].set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:

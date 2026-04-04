@@ -1,6 +1,7 @@
 import asyncio
 import json
 import os
+import time
 from agents.base import AgentBase
 
 
@@ -70,5 +71,89 @@ class ClaudeAgent(AgentBase):
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
             return output
+        finally:
+            os.unlink(tmp)
+
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+        """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱."""
+        from config import CLI_TIMEOUT
+        from cancel import register_process, is_cancelled
+        t = timeout or CLI_TIMEOUT
+
+        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
+            return f"[{self.name}] 작업 취소됨"
+
+        tmp = self._write_temp(prompt)
+        flag = "--continue -p" if self.continue_mode else "-p"
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                f'type "{tmp}" | claude {flag} --output-format stream-json --verbose',
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._make_env(),
+                cwd=self._cwd,
+            )
+            if self._current_thread_ts:
+                register_process(self._current_thread_ts, proc)
+
+            output = ""
+            last_callback = time.time()
+            result_data = None
+
+            while True:
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    self.last_usage = ""
+                    return f"[{self.name}] 응답 대기 시간 초과 ({t}초 무응답)"
+
+                if not line:
+                    break
+
+                text = line.decode("utf-8", errors="replace").strip()
+                if not text:
+                    continue
+                try:
+                    data = json.loads(text)
+                except json.JSONDecodeError:
+                    continue
+
+                msg_type = data.get("type")
+
+                if msg_type == "assistant":
+                    # assistant 이벤트에서 텍스트 추출
+                    content = data.get("message", {}).get("content", [])
+                    for block in content:
+                        if block.get("type") == "text":
+                            new_text = block.get("text", "").strip()
+                            if new_text:
+                                output = new_text
+                    # 10초마다 콜백
+                    if on_progress and output and time.time() - last_callback >= 10:
+                        on_progress(output)
+                        last_callback = time.time()
+
+                elif msg_type == "result":
+                    result_data = data
+                    output = data.get("result", "").strip()
+
+            await proc.wait()
+
+            if result_data:
+                self.last_usage = _format_token_usage(result_data)
+            else:
+                self.last_usage = ""
+
+            self.timed_out = False
+            self.has_error = self._is_fatal_error(output) if output else False
+            return output
+        except Exception as e:
+            self.timed_out = False
+            self.has_error = True
+            return f"[{self.name}] 오류: {str(e)}"
         finally:
             os.unlink(tmp)
