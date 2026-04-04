@@ -2,7 +2,7 @@ import asyncio
 import json
 import os
 import time
-from agents.base import AgentBase
+from agents.base import AgentBase, _kill_process_tree
 
 
 def _format_token_usage(data: dict) -> str:
@@ -109,7 +109,7 @@ class ClaudeAgent(AgentBase):
                 elapsed = time.time() - start_time
                 # 전체 경과 시간 체크
                 if elapsed > overall_timeout:
-                    proc.kill()
+                    _kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
@@ -126,7 +126,7 @@ class ClaudeAgent(AgentBase):
                             on_progress(output)
                         continue
                     # 전체 시간도 초과했거나 프로세스가 죽었으면 종료
-                    proc.kill()
+                    _kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False

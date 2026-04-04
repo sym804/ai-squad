@@ -7,6 +7,25 @@ from config import CLI_TIMEOUT
 from cancel import register_process, is_cancelled
 
 
+def _kill_process_tree(proc):
+    """프로세스와 자식 프로세스 트리를 모두 종료. Windows에서 proc.kill()만으로는 자식이 남음."""
+    import sys
+    pid = proc.pid
+    try:
+        if sys.platform == "win32":
+            subprocess.run(
+                f"taskkill /F /T /PID {pid}",
+                shell=True, capture_output=True, timeout=10,
+            )
+        else:
+            proc.kill()
+    except Exception:
+        try:
+            proc.kill()
+        except Exception:
+            pass
+
+
 class AgentBase:
     name: str = "Agent"
     emoji: str = "🤖"
@@ -34,7 +53,7 @@ class AgentBase:
             for proc in procs:
                 try:
                     if proc.returncode is None:
-                        proc.kill()
+                        _kill_process_tree(proc)
                 except Exception:
                     pass
 
@@ -108,7 +127,7 @@ class AgentBase:
                 try:
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
                 except asyncio.TimeoutError:
-                    proc.kill()
+                    _kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False

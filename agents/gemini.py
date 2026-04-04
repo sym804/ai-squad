@@ -2,7 +2,7 @@ import asyncio
 import os
 import re
 import time
-from agents.base import AgentBase
+from agents.base import AgentBase, _kill_process_tree
 from config import CLI_TIMEOUT
 from cancel import register_process, is_cancelled
 
@@ -91,7 +91,7 @@ class GeminiAgent(AgentBase):
                 try:
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
                 except asyncio.TimeoutError:
-                    proc.kill()
+                    _kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
@@ -110,7 +110,7 @@ class GeminiAgent(AgentBase):
                 if "exhausted your capacity" in decoded or "quota will reset" in decoded:
                     retry_count += 1
                     if retry_count >= MAX_RETRIES:
-                        proc.kill()
+                        _kill_process_tree(proc)
                         await proc.wait()
                         self.timed_out = False
                         self.has_error = True
