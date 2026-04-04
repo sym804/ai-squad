@@ -72,11 +72,12 @@ def notify(text):
 
 def start_bot():
     """slack_bot.py를 subprocess로 시작합니다."""
-    global bot_process, auto_restart
+    global bot_process, auto_restart, manual_stop
     if bot_process and bot_process.poll() is None:
         return "⚠️ 이미 실행 중입니다."
 
     auto_restart = True
+    manual_stop = False
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "slack_bot.py")
     bot_process = subprocess.Popen(
         [sys.executable, script],

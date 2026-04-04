@@ -83,19 +83,11 @@ class BridgeMode:
             os.unlink(tmp)
 
     async def _run_cmd(self, cmd: str) -> str:
-        """subprocess 실행 + 타임아웃."""
+        """subprocess 실행 + 타임아웃. 타임아웃 시 프로세스 kill."""
         env = os.environ.copy()
         env["PYTHONIOENCODING"] = "utf-8"
-        try:
-            proc = await asyncio.wait_for(
-                self._create_proc(cmd, env),
-                timeout=CLI_TIMEOUT * 2,  # 브릿지는 작업이 길 수 있으므로 2배
-            )
-            return proc
-        except asyncio.TimeoutError:
-            return f"⏱️ 응답 시간 초과 ({CLI_TIMEOUT * 2}초)"
+        timeout = CLI_TIMEOUT * 2
 
-    async def _create_proc(self, cmd: str, env: dict) -> str:
         proc = await asyncio.create_subprocess_shell(
             cmd,
             stdout=asyncio.subprocess.PIPE,
@@ -106,11 +98,20 @@ class BridgeMode:
         thread_ts = getattr(self, '_thread_ts', None)
         if thread_ts:
             register_process(thread_ts, proc)
-        stdout, stderr = await proc.communicate()
-        output = stdout.decode("utf-8", errors="replace").strip()
-        if not output and stderr:
-            output = stderr.decode("utf-8", errors="replace").strip()
-        return output
+
+        try:
+            stdout, stderr = await asyncio.wait_for(
+                proc.communicate(),
+                timeout=timeout,
+            )
+            output = stdout.decode("utf-8", errors="replace").strip()
+            if not output and stderr:
+                output = stderr.decode("utf-8", errors="replace").strip()
+            return output
+        except asyncio.TimeoutError:
+            proc.kill()
+            await proc.wait()
+            return f"⏱️ 응답 시간 초과 ({timeout}초)"
 
     def _post_long(self, channel: str, thread_ts: str, text: str):
         """Slack 메시지 길이 제한(4000자) 대응 분할 전송."""

@@ -23,6 +23,10 @@ app = App(token=SLACK_BOT_TOKEN)
 
 def _run_async(coro, client=None, channel=None, thread_ts=None):
     """새 이벤트 루프에서 비동기 코루틴을 실행합니다."""
+    # 스레드-채널 매핑 등록
+    if thread_ts and channel:
+        cancel.register_thread(thread_ts, channel)
+
     loop = asyncio.new_event_loop()
     asyncio.set_event_loop(loop)
     try:
@@ -31,7 +35,6 @@ def _run_async(coro, client=None, channel=None, thread_ts=None):
         print(f"[ERROR] {e}")
         import traceback
         traceback.print_exc()
-        # Slack에 에러 알림
         if client and channel and thread_ts:
             try:
                 client.chat_postMessage(
@@ -42,6 +45,9 @@ def _run_async(coro, client=None, channel=None, thread_ts=None):
                 pass
     finally:
         loop.close()
+        # 정상/에러 완료 모두 정리
+        if thread_ts:
+            cancel.cleanup(thread_ts)
 
 
 @app.event("message")
@@ -75,12 +81,11 @@ def handle_message(event, say, client):
                 text="🛑 *작업 취소 요청됨* — 현재 단계 완료 후 중단됩니다."
             )
         else:
-            # 채널 최상위에서 !stop → 해당 채널의 모든 작업 취소
-            all_threads = list(cancel.active_processes.keys())
-            cancel.cancel_channel(all_threads)
+            # 채널 최상위에서 !stop → 해당 채널의 작업만 취소
+            count = cancel.cancel_channel(channel)
             client.chat_postMessage(
                 channel=channel,
-                text=f"🛑 *전체 작업 취소 요청됨* — {len(all_threads)}개 작업 중단 중..."
+                text=f"🛑 *채널 작업 취소 요청됨* — {count}개 작업 중단 중..."
             )
         return
 

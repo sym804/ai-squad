@@ -23,6 +23,20 @@ class AgentBase:
         "unexpected critical error",
     ]
 
+    def _kill_registered_processes(self):
+        """타임아웃/에러 시 이 에이전트가 등록한 프로세스를 정리."""
+        if not self._current_thread_ts:
+            return
+        from cancel import active_processes, _lock
+        with _lock:
+            procs = active_processes.get(self._current_thread_ts, [])
+            for proc in procs:
+                try:
+                    if proc.returncode is None:
+                        proc.kill()
+                except Exception:
+                    pass
+
     async def ask(self, prompt: str, timeout: int = None) -> str:
         t = timeout or CLI_TIMEOUT
         # 취소 확인
@@ -41,6 +55,7 @@ class AgentBase:
         except asyncio.TimeoutError:
             self.timed_out = True
             self.has_error = False
+            self._kill_registered_processes()
             return f"[{self.name}] 응답 시간 초과 ({t}초)"
         except Exception as e:
             self.timed_out = False
