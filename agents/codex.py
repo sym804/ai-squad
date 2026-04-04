@@ -1,6 +1,31 @@
 import asyncio
 import os
+import re
 from agents.base import AgentBase
+
+# Codex CLI 헤더/노이즈 패턴
+_CODEX_NOISE = [
+    "Reading prompt from stdin...",
+    "OpenAI Codex v",
+    "--------",
+    "workdir:",
+    "model:",
+    "provider:",
+    "approval:",
+    "sandbox:",
+    "reasoning effort:",
+    "reasoning sum",
+]
+
+
+def _clean_codex_output(text: str) -> str:
+    """Codex CLI 헤더 노이즈 제거."""
+    lines = []
+    for line in text.split('\n'):
+        if any(line.strip().startswith(noise) for noise in _CODEX_NOISE):
+            continue
+        lines.append(line)
+    return '\n'.join(lines).strip()
 
 
 class CodexAgent(AgentBase):
@@ -27,6 +52,11 @@ class CodexAgent(AgentBase):
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
-            return output
+            return _clean_codex_output(output)
         finally:
             os.unlink(tmp)
+
+    async def ask_with_progress(self, prompt, on_progress=None, timeout=None):
+        """base의 ask_with_progress 호출 후 노이즈 제거."""
+        result = await super().ask_with_progress(prompt, on_progress, timeout)
+        return _clean_codex_output(result)

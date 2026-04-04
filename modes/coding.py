@@ -193,10 +193,18 @@ class CodingMode:
             return []
 
     def _post(self, channel, thread_ts, text):
-        kwargs = {"channel": channel, "text": text}
-        if thread_ts:
-            kwargs["thread_ts"] = thread_ts
-        self.slack.chat_postMessage(**kwargs)
+        MAX_LEN = 3900
+        while text:
+            chunk = text[:MAX_LEN]
+            text = text[MAX_LEN:]
+            kwargs = {"channel": channel, "text": chunk}
+            if thread_ts:
+                kwargs["thread_ts"] = thread_ts
+            try:
+                self.slack.chat_postMessage(**kwargs)
+            except Exception as e:
+                print(f"[SLACK ERROR] {e}")
+                break
 
     def _make_progress_handler(self, channel, thread_ts, thinking_ts, agent):
         """경과 시간 + 내용 표시 핸들러. (stop_event, on_progress 콜백) 반환."""
