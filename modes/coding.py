@@ -67,140 +67,16 @@ class CodingMode:
         self._replaced.add(agent.name)
 
     async def followup(self, channel, thread_ts, question):
-        """스레드에서 사용자 추가 질문 → 합의까지 토론."""
+        """스레드에서 사용자 추가 지시 → Claude에게 --continue로 전달."""
         self._bind_thread(thread_ts)
-        original_topic = self._fetch_original_topic(channel, thread_ts)
-        history = self._fetch_thread_history(channel, thread_ts)
 
-        self._post(channel, thread_ts, f"💬 *추가 토론 시작*\n질문: {question}")
+        if self._check_cancel(channel, thread_ts):
+            return
 
-        history.append({"name": "사용자", "text": question})
-
-        for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
-            if self._check_cancel(channel, thread_ts):
-                return
-
-            self._post(channel, thread_ts, f"--- *추가 토론 라운드 {round_num}* ---")
-
-            shuffled = list(self.agents)
-            random.shuffle(shuffled)
-
-            names = " / ".join(a.format_message("").split("\n")[0] for a in shuffled)
-            thinking_msg = self.slack.chat_postMessage(
-                channel=channel, thread_ts=thread_ts,
-                text=f"💭 {names} 생각 중..."
-            )
-
-            prompt = self._build_followup_prompt(original_topic, question, history, round_num)
-
-            responses = await asyncio.gather(
-                *[agent.ask(prompt) for agent in shuffled]
-            )
-
-            try:
-                self.slack.chat_delete(channel=channel, ts=thinking_msg["ts"])
-            except Exception:
-                pass
-
-            round_consensuses = []
-            for agent, response in zip(shuffled, responses):
-                self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))
-                history.append({"name": agent.name, "text": response})
-                round_consensuses.append({
-                    "agent_name": agent.name,
-                    "agent_emoji": agent.emoji,
-                    "consensus": _parse_consensus(response),
-                })
-
-            # 오류/타임아웃된 에이전트 → 백업 투입 + 이후 라운드 교체
-            for agent, response in zip(shuffled, responses):
-                if getattr(agent, 'needs_replacement', False):
-                    backup = self._get_backup(agent)
-                    if not backup:
-                        continue
-                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
-                    thinking = self.slack.chat_postMessage(
-                        channel=channel, thread_ts=thread_ts,
-                        text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
-                    )
-                    backup_response = await backup.ask(prompt)
-                    try:
-                        self.slack.chat_delete(channel=channel, ts=thinking["ts"])
-                    except Exception:
-                        pass
-                    self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
-                    history.append({"name": backup.name, "text": backup_response})
-                    round_consensuses.append({
-                        "agent_name": backup.name,
-                        "agent_emoji": backup.emoji,
-                        "consensus": _parse_consensus(backup_response),
-                    })
-                    self._replace_agent(agent, channel, thread_ts, reason)
-
-            agrees = [
-                r for r in round_consensuses
-                if r["consensus"] is not None and r["consensus"].get("agree") is True
-            ]
-
-            if len(agrees) >= 3:
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion("추가 토론 전원 합의", round_num, question, round_consensuses))
-                return
-
-            if len(agrees) >= 2 and self._is_stalemate(history):
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion(f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question, round_consensuses))
-                return
-
-        # 최대 라운드 도달
-        self._broadcast(channel, thread_ts,
-            self._build_conclusion("추가 토론 최대 라운드 도달", MAX_DEBATE_ROUNDS, question, round_consensuses))
-
-    def _build_followup_prompt(self, original_topic, question, history, round_num):
-        recent = history[-15:] if len(history) > 15 else history
-        parts = [
-            "당신은 AI 코딩 에이전트입니다. 주어진 주제에 대해 자신의 관점으로 논리적으로 답변하세요.\n"
-            "반드시 500자 이내로 답변하세요.\n"
-            "답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
-            '<!--CONSENSUS:{"agree": true/false, "summary": "결론 요약 (1~3줄)"}-->\n'
-            "agree=true는 현재 논의에서 합의에 도달했다고 판단할 때 사용합니다.",
-            f"\n[원래 코딩 요청] {original_topic}",
-            f"[사용자 추가 질문] {question}",
-            f"[현재 라운드] {round_num}/{MAX_DEBATE_ROUNDS}",
-            "\n[이전 내용]",
-        ]
-        for entry in recent:
-            parts.append(f"- {entry['name']}: {entry['text'][:300]}")
-        parts.append("\n원래 요청과 사용자 질문의 맥락을 반드시 참고하여 답변하세요. 사용자의 의견이 최우선입니다. (500자 이내)")
-        return "\n".join(parts)
-
-    @staticmethod
-    def _is_stalemate(history):
-        """최근 2라운드(6개 메시지)가 같은 논점을 반복하는지 감지."""
-        ai_msgs = [h for h in history if h["name"] != "사용자"]
-        if len(ai_msgs) < 6:
-            return False
-        recent = set(m["text"][:100] for m in ai_msgs[-3:])
-        prev = set(m["text"][:100] for m in ai_msgs[-6:-3])
-        overlap = len(recent & prev)
-        return overlap >= 2
-
-    @staticmethod
-    def _build_conclusion(title, round_num, topic, round_consensuses):
-        """각 에이전트 요약을 포함한 결론 메시지 생성."""
-        lines = [f"🏛️ *{title} (라운드 {round_num})*", f"주제: {topic}", ""]
-        lines.append("📋 *각 에이전트 요약:*")
-        for r in round_consensuses:
-            c = r.get("consensus")
-            if c and c.get("summary"):
-                lines.append(f"{r['agent_emoji']} {r['agent_name']}: {c['summary']}")
-            else:
-                lines.append(f"{r['agent_emoji']} {r['agent_name']}: (요약 없음)")
-        agreed = [r for r in round_consensuses if r.get("consensus") and r["consensus"].get("agree")]
-        if agreed:
-            lines.append(f"\n💡 *결론:* {agreed[0]['consensus']['summary']}")
-        return "\n".join(lines)
+        response, used_agent = await self._ask_with_backup(
+            self.claude, question, channel, thread_ts
+        )
+        self._post(channel, thread_ts, used_agent.format_message(response))
 
     def _broadcast(self, channel, thread_ts, text):
         try:
