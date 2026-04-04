@@ -87,6 +87,23 @@ def notify_all(text):
             pass
 
 
+def notify_active_threads():
+    """진행 중이던 스레드에 중단 알림을 보냅니다."""
+    from cancel import load_and_clear_active
+    active = load_and_clear_active()
+    if not active:
+        return
+    msg = "⚠️ *봇이 재시작됩니다* — 이 스레드의 작업이 중단되었습니다."
+    for thread_ts, channel_id in active.items():
+        try:
+            client.chat_postMessage(
+                channel=channel_id, thread_ts=thread_ts, text=msg
+            )
+        except Exception:
+            pass
+    print(f"[WATCHDOG] {len(active)}개 스레드에 중단 알림 전송")
+
+
 def start_bot():
     """slack_bot.py를 subprocess로 시작합니다."""
     global bot_process, auto_restart, manual_stop
@@ -128,7 +145,7 @@ def restart_bot():
     """봇을 재시작합니다."""
     global manual_stop
     manual_stop = True
-    notify_all("⚠️ *봇이 재시작됩니다* — 진행 중이던 작업이 중단되었습니다.")
+    notify_active_threads()
     stop_bot()
     time.sleep(2)
     auto_restart = True
@@ -176,7 +193,7 @@ def check_bot_health():
 
     if auto_restart:
         print(f"[WATCHDOG] 크래시 감지 (exit: {exit_code}), {RESTART_DELAY}초 후 재시작")
-        notify_all("⚠️ *봇이 재시작됩니다* — 진행 중이던 작업이 중단되었습니다.")
+        notify_active_threads()
         time.sleep(RESTART_DELAY)
         result = start_bot()
         notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\n{result}")
