@@ -44,12 +44,20 @@ class CodingMode:
     def _extract_path(text: str) -> str | None:
         """메시지에서 Windows 경로를 추출. 존재하는 디렉토리만 반환."""
         import os
-        # C:\... 패턴 매칭
-        m = re.search(r'[A-Za-z]:\\[^\s<>"|?*]+', text)
+        # C:\... 패턴 매칭 (공백 ���함 경로 지원: 메시지 끝까지 잡고 역방향으로 줄임)
+        m = re.search(r'[A-Za-z]:\\[^<>"|?*\n]+', text)
         if m:
-            path = m.group(0).rstrip('\\')
-            if os.path.isdir(path):
-                return path
+            candidate = m.group(0).rstrip(' \\')
+            # 끝에서부터 줄여가며 유효한 디렉토리 찾기
+            while candidate and '\\' in candidate:
+                if os.path.isdir(candidate):
+                    return candidate
+                candidate = candidate.rsplit(' ', 1)[0].rstrip(' \\') if ' ' in candidate else candidate
+                if os.path.isdir(candidate):
+                    return candidate
+                break
+            if os.path.isdir(candidate):
+                return candidate
         return None
 
     def _bind_thread(self, thread_ts, request_text: str = ""):
@@ -124,7 +132,7 @@ class CodingMode:
             )
             self._post(channel, thread_ts, used_agent.format_message(response))
         else:
-            # 복수 에이전트 동시 실행
+            # 복수 에이전트 동시 실행 (대체 에이전트 투입 포함)
             thinking_msgs = {}
             handlers = {}
             for agent in agents:
@@ -150,6 +158,24 @@ class CodingMode:
 
             for agent, response in zip(agents, responses):
                 self._post(channel, thread_ts, agent.format_message(response))
+                if getattr(agent, 'needs_replacement', False):
+                    backup = self._get_backup(agent)
+                    if backup:
+                        reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                        self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                        thinking = self.slack.chat_postMessage(
+                            channel=channel, thread_ts=thread_ts,
+                            text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
+                        )
+                        bstop, bcb = self._make_progress_handler(channel, thread_ts, thinking["ts"], backup)
+                        backup_response = await backup.ask_with_progress(prompt, on_progress=bcb, timeout=CLI_TIMEOUT_CODING)
+                        bstop.set()
+                        try:
+                            self.slack.chat_delete(channel=channel, ts=thinking["ts"])
+                        except Exception:
+                            pass
+                        self._post(channel, thread_ts, backup.format_message(backup_response))
+                        self._replace_agent(agent, channel, thread_ts, reason)
 
     def _broadcast(self, channel, thread_ts, text):
         try:
@@ -374,7 +400,7 @@ class CodingMode:
         self._post(channel, thread_ts, "━━━ *최종 보고서 작성 중 (Codex)* ━━━")
         summary_prompt = (
             "아래는 각 에이전트의 작업 결과입니다. "
-            "전체 내용을 종합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작��하세요.\n\n"
+            "전체 내용을 종합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작성하세요.\n\n"
         )
         for agent, response in zip(final_agents, final_responses):
             summary_prompt += f"[{agent.name} 결과]\n{response[:2000]}\n\n"
