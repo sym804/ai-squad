@@ -41,8 +41,8 @@ class CodingMode:
         self._bot_user_id = None
 
     def _bind_thread(self, thread_ts):
-        import tempfile
-        work_dir = tempfile.mkdtemp(prefix="coding_")
+        import os
+        work_dir = os.path.expanduser("~")
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
             agent._cwd = work_dir
