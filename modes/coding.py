@@ -323,16 +323,43 @@ class CodingMode:
 
         responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
 
+        # 대체 에이전트 투입 + 결과 게시
+        final_agents = []
+        final_responses = []
         for agent, response in zip(agents, responses):
             self._post(channel, thread_ts, agent.format_message(response))
+            if getattr(agent, 'needs_replacement', False):
+                backup = self._get_backup(agent)
+                if backup:
+                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                    bthinking = self.slack.chat_postMessage(
+                        channel=channel, thread_ts=thread_ts,
+                        text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
+                    )
+                    bstop, bcb = self._make_progress_handler(channel, thread_ts, bthinking["ts"], backup)
+                    backup_response = await backup.ask_with_progress(request, on_progress=bcb, timeout=CLI_TIMEOUT_CODING)
+                    bstop.set()
+                    await asyncio.sleep(1)
+                    try:
+                        self.slack.chat_delete(channel=channel, ts=bthinking["ts"])
+                    except Exception:
+                        pass
+                    self._post(channel, thread_ts, backup.format_message(backup_response))
+                    self._replace_agent(agent, channel, thread_ts, reason)
+                    final_agents.append(backup)
+                    final_responses.append(backup_response)
+                    continue
+            final_agents.append(agent)
+            final_responses.append(response)
 
         # Codex가 전체 결과를 취합하여 최종 보고서 작성
         self._post(channel, thread_ts, "━━━ *최종 보고서 작성 중 (Codex)* ━━━")
         summary_prompt = (
             "아래는 각 에이전트의 작업 결과입니다. "
-            "전체 내용을 종합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작성하세요.\n\n"
+            "전체 내용을 종합하여 핵심 요약 + 발견 사항 + 개선 제안을 포함한 최종 보고서를 작��하세요.\n\n"
         )
-        for agent, response in zip(agents, responses):
+        for agent, response in zip(final_agents, final_responses):
             summary_prompt += f"[{agent.name} 결과]\n{response[:2000]}\n\n"
 
         summary_thinking = self.slack.chat_postMessage(
