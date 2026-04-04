@@ -66,15 +66,25 @@ class CodingMode:
             self.gemini = backup
         self._replaced.add(agent.name)
 
+    def _pick_agent(self, text):
+        """메시지에 에이전트 이름이 포함되면 해당 에이전트 반환, 없으면 Claude."""
+        lower = text.lower()
+        if "codex" in lower:
+            return self.codex
+        if "gemini" in lower:
+            return self.gemini
+        return self.claude
+
     async def followup(self, channel, thread_ts, question):
-        """스레드에서 사용자 추가 지시 → Claude에게 --continue로 전달."""
+        """스레드에서 사용자 추가 지시 → 지정된 에이전트에게 전달."""
         self._bind_thread(thread_ts)
 
         if self._check_cancel(channel, thread_ts):
             return
 
+        agent = self._pick_agent(question)
         response, used_agent = await self._ask_with_backup(
-            self.claude, question, channel, thread_ts
+            agent, question, channel, thread_ts
         )
         self._post(channel, thread_ts, used_agent.format_message(response))
 
