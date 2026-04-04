@@ -62,27 +62,6 @@ class DebateMode:
         """에이전트에 맞는 백업을 반환."""
         return self._backup_map.get(agent.name)
 
-    def _make_elapsed_updater(self, channel, thread_ts, thinking_ts, agent):
-        """경과 시간을 Slack 메시지에 업데이트."""
-        import time, threading
-        stop_event = threading.Event()
-        start_time = time.time()
-
-        def _update_loop():
-            while not stop_event.wait(15):
-                elapsed = int(time.time() - start_time)
-                try:
-                    self.slack.chat_update(
-                        channel=channel, ts=thinking_ts,
-                        text=f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)"
-                    )
-                except Exception:
-                    pass
-
-        t = threading.Thread(target=_update_loop, daemon=True)
-        t.start()
-        return stop_event
-
     def _make_content_callback(self, channel, thread_ts, thinking_ts, agent):
         """Claude 작업 내용을 Slack 메시지에 업데이트하는 콜백."""
         def on_progress(text):
@@ -131,25 +110,18 @@ class DebateMode:
             random.shuffle(shuffled)
 
             thinking_msgs = {}
-            stop_events = {}
             for agent in shuffled:
                 msg = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
                 )
                 thinking_msgs[agent.name] = msg["ts"]
-                stop_events[agent.name] = self._make_elapsed_updater(
-                    channel, thread_ts, msg["ts"], agent)
 
             prompt = self._build_followup_prompt(original_topic, question, history, round_num)
 
             async def _ask_followup(a):
-                if hasattr(a, 'ask_with_progress'):
-                    cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                    result = await a.ask_with_progress(prompt, on_progress=cb)
-                else:
-                    result = await a.ask(prompt)
-                    stop_events[a.name].set()
+                cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                result = await a.ask_with_progress(prompt, on_progress=cb)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
@@ -344,26 +316,19 @@ class DebateMode:
 
             # 에이전트별 생각 중 표시 + 경과 시간
             thinking_msgs = {}
-            stop_events = {}
             for agent in shuffled:
                 msg = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
                 )
                 thinking_msgs[agent.name] = msg["ts"]
-                stop_events[agent.name] = self._make_elapsed_updater(
-                    channel, thread_ts, msg["ts"], agent)
 
             # 3개 AI 동시 실행
             prompt = self._build_prompt(topic, history, round_num)
 
             async def _ask_agent(a):
-                if hasattr(a, 'ask_with_progress'):
-                    cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
-                    result = await a.ask_with_progress(prompt, on_progress=cb)
-                else:
-                    result = await a.ask(prompt)
-                    stop_events[a.name].set()
+                cb = self._make_content_callback(channel, thread_ts, thinking_msgs[a.name], a)
+                result = await a.ask_with_progress(prompt, on_progress=cb)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:

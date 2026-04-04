@@ -1,5 +1,6 @@
 import asyncio
 import os
+import time
 import tempfile
 import subprocess
 from config import CLI_TIMEOUT
@@ -76,6 +77,68 @@ class AgentBase:
 
     async def _run_cli(self, prompt: str) -> str:
         raise NotImplementedError
+
+    def _build_cmd(self, tmp: str) -> str:
+        raise NotImplementedError
+
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+        """stdout을 라인 단위로 읽으며 on_progress 콜백 호출."""
+        t = timeout or CLI_TIMEOUT
+        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
+            self.timed_out = False
+            self.has_error = False
+            return f"[{self.name}] 작업 취소됨"
+
+        tmp = self._write_temp(prompt)
+        try:
+            proc = await asyncio.create_subprocess_shell(
+                self._build_cmd(tmp),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=self._make_env(),
+                cwd=self._cwd,
+            )
+            if self._current_thread_ts:
+                register_process(self._current_thread_ts, proc)
+
+            output = ""
+            last_callback = time.time()
+
+            while True:
+                try:
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
+                except asyncio.TimeoutError:
+                    proc.kill()
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    return f"[{self.name}] 응답 대기 시간 초과 ({t}초 무응답)"
+
+                if not line:
+                    break
+
+                output += line.decode("utf-8", errors="replace")
+
+                if on_progress and time.time() - last_callback >= 10:
+                    on_progress(output.strip())
+                    last_callback = time.time()
+
+            await proc.wait()
+
+            stderr = await proc.stderr.read()
+            output = output.strip()
+            if not output and stderr:
+                output = stderr.decode("utf-8", errors="replace").strip()
+
+            self.timed_out = False
+            self.has_error = self._is_fatal_error(output) if output else False
+            return output
+        except Exception as e:
+            self.timed_out = False
+            self.has_error = True
+            return f"[{self.name}] 오류: {str(e)}"
+        finally:
+            os.unlink(tmp)
 
     def format_message(self, response: str) -> str:
         usage = getattr(self, 'last_usage', '')
