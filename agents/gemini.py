@@ -1,9 +1,36 @@
 import asyncio
 import os
+import re
 import time
 from agents.base import AgentBase
 from config import CLI_TIMEOUT
 from cancel import register_process, is_cancelled
+
+# xterm.js 터미널 이스케이프 코드 및 노이즈 패턴
+_NOISE_PATTERNS = re.compile(
+    r'xterm\.js:.*?abort: (?:true|false)\s*\}|'  # xterm.js 에러 블록
+    r'\x1b\[[0-9;]*[a-zA-Z]|'  # ANSI 이스케이프
+    r'Int32Array\(.*?\)|'  # TypedArray 덤프
+    r'Uint16Array\(.*?\)|'
+    r'maxLength:.*?maxSubParamsLength:.*?_digitIsSub:.*?(?:true|false)',
+    re.DOTALL
+)
+
+
+_NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_rejectDigits",
+                    "_digitIsSub", "maxLength:", "maxSubParamsLength:", "currentState:"]
+
+
+def _clean_output(text: str) -> str:
+    """Gemini 출력에서 터미널 노이즈 제거."""
+    lines = []
+    for line in text.split('\n'):
+        if any(kw in line for kw in _NOISE_KEYWORDS):
+            continue
+        stripped = line.strip()
+        if stripped:
+            lines.append(line)
+    return '\n'.join(lines)
 
 
 class GeminiAgent(AgentBase):
@@ -19,20 +46,22 @@ class GeminiAgent(AgentBase):
             proc = await asyncio.create_subprocess_shell(
                 self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
-            stdout, _ = await proc.communicate()
+            stdout, stderr = await proc.communicate()
             output = stdout.decode("utf-8", errors="replace").strip()
-            return output
+            if not output and stderr:
+                output = stderr.decode("utf-8", errors="replace").strip()
+            return _clean_output(output)
         finally:
             os.unlink(tmp)
 
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
-        """Gemini용: stderr 무시 (터미널 이스케이프 코드 방지)."""
+        """Gemini용: stdout+stderr 읽되 노이즈 필터링."""
         t = timeout or CLI_TIMEOUT
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             self.timed_out = False
@@ -44,7 +73,7 @@ class GeminiAgent(AgentBase):
             proc = await asyncio.create_subprocess_shell(
                 self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.STDOUT,  # 합쳐서 읽기
                 env=self._make_env(),
                 cwd=self._cwd,
             )
@@ -67,14 +96,19 @@ class GeminiAgent(AgentBase):
                 if not line:
                     break
 
-                output += line.decode("utf-8", errors="replace")
+                decoded = line.decode("utf-8", errors="replace")
+                # xterm 노이즈 라인 스킵
+                if "xterm.js" in decoded or "Int32Array" in decoded or "Uint16Array" in decoded:
+                    continue
+
+                output += decoded
 
                 if on_progress and time.time() - last_callback >= 10:
-                    on_progress(output.strip())
+                    on_progress(_clean_output(output))
                     last_callback = time.time()
 
             await proc.wait()
-            output = output.strip()
+            output = _clean_output(output)
 
             self.timed_out = False
             self.has_error = self._is_fatal_error(output) if output else False
