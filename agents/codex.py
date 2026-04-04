@@ -111,6 +111,9 @@ class CodexAgent(AgentBase):
             os.unlink(tmp)
 
     async def ask_with_progress(self, prompt, on_progress=None, timeout=None):
-        """base의 ask_with_progress 호출 후 노이즈 제거."""
-        result = await super().ask_with_progress(prompt, on_progress, timeout)
+        """base의 ask_with_progress 호출 후 노이즈 제거. progress 콜백도 정제."""
+        def _filtered_progress(raw_text):
+            if on_progress:
+                on_progress(_clean_codex_output(raw_text, prompt))
+        result = await super().ask_with_progress(prompt, _filtered_progress, timeout)
         return _clean_codex_output(result, prompt)
