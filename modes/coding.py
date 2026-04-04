@@ -41,10 +41,14 @@ class CodingMode:
         self._bot_user_id = None
 
     def _bind_thread(self, thread_ts):
+        import tempfile
+        work_dir = tempfile.mkdtemp(prefix="coding_")
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
+            agent._cwd = work_dir
         for backup in self._backup_map.values():
             backup._current_thread_ts = thread_ts
+            backup._cwd = work_dir
 
     def _get_backup(self, agent):
         return self._backup_map.get(agent.name)

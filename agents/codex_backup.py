@@ -25,6 +25,7 @@ class CodexBackupAgent(AgentBase):
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
+                cwd=self._cwd,
             )
             if self._current_thread_ts:
                 from cancel import register_process

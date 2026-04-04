@@ -11,6 +11,7 @@ class AgentBase:
     name: str = "Agent"
     emoji: str = "🤖"
     _current_thread_ts: str = None  # 현재 작업 중인 스레드
+    _cwd: str = None  # 작업 디렉토리 (None이면 프로세스 기본값)
 
     # 대체 에이전트 투입이 필요한 오류 패턴
     _FATAL_ERROR_PATTERNS = [
@@ -91,6 +92,7 @@ class AgentBase:
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
+                cwd=self._cwd,
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
