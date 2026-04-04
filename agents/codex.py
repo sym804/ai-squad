@@ -73,12 +73,19 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
             continue
         lines.append(line)
     result = '\n'.join(lines).strip()
+    # 숫자만 있는 라인 제거 (토큰 카운트: "6,226" 등)
+    result = '\n'.join(
+        line for line in result.split('\n')
+        if not line.strip().replace(',', '').replace('.', '').isdigit()
+    ).strip()
     # 응답 중복 제거: Codex가 같은 답변을 2번 출력하는 경우
+    # 첫 줄로 두 번째 등장 위치를 찾아 그 앞까지만 사용
     if len(result) > 100:
-        half = len(result) // 2
-        first_half = result[:half].strip()
-        if first_half and first_half in result[half:]:
-            result = first_half
+        first_line = result.split('\n')[0].strip()
+        if first_line and len(first_line) > 20:
+            second_pos = result.find(first_line, len(first_line))
+            if second_pos > 0:
+                result = result[:second_pos].strip()
     return result
 
 
