@@ -8,7 +8,7 @@ class CodexAgent(AgentBase):
     emoji = "🟢"
 
     def _build_cmd(self, tmp: str) -> str:
-        return f'type "{tmp}" | codex exec --skip-git-repo-check'
+        return f'type "{tmp}" | codex exec --full-auto --skip-git-repo-check'
 
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
