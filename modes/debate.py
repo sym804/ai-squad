@@ -71,13 +71,15 @@ class DebateMode:
 
         def _update_loop():
             while not stop_event.wait(15):
+                if stop_event.is_set():
+                    break
                 elapsed = int(time.time() - start_time)
                 preview = state["text"][-500:] if state["text"] else "응답 대기 중..."
                 msg = f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)\n```{preview}```"
                 try:
                     self.slack.chat_update(channel=channel, ts=thinking_ts, text=msg)
                 except Exception:
-                    pass
+                    break
 
         def on_progress(text):
             state["text"] = text

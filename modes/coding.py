@@ -130,8 +130,8 @@ class CodingMode:
                 stop.set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[DELETE FAIL] {a.name}: {e}")
                 return result
 
             responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
@@ -207,13 +207,15 @@ class CodingMode:
 
         def _update_loop():
             while not stop_event.wait(15):
+                if stop_event.is_set():
+                    break
                 elapsed = int(time.time() - start_time)
                 preview = state["text"][-500:] if state["text"] else "응답 대기 중..."
                 msg = f"💭 {agent.emoji} *[{agent.name}]* 작업 중... ({elapsed}초)\n```{preview}```"
                 try:
                     self.slack.chat_update(channel=channel, ts=thinking_ts, text=msg)
                 except Exception:
-                    pass
+                    break  # 메시지 삭제됐으면 중단
 
         def on_progress(text):
             state["text"] = text
@@ -231,10 +233,11 @@ class CodingMode:
         stop, cb = self._make_progress_handler(channel, thread_ts, thinking["ts"], agent)
         response = await agent.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
         stop.set()
+        await asyncio.sleep(1)  # 타이머 스레드 종료 대기
         try:
             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
-        except Exception:
-            pass
+        except Exception as e:
+            print(f"[DELETE FAIL] {e}")
         if getattr(agent, 'needs_replacement', False):
             backup = self._get_backup(agent)
             if backup:
@@ -248,8 +251,8 @@ class CodingMode:
                 response = await backup.ask(prompt)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
-                except Exception:
-                    pass
+                except Exception as e:
+                    print(f"[DELETE FAIL] backup: {e}")
                 self._replace_agent(agent, channel, thread_ts, reason)
                 return response, backup
         return response, agent
@@ -306,8 +309,8 @@ class CodingMode:
             stop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[DELETE FAIL] {a.name}: {e}")
             return result
 
         responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
@@ -385,8 +388,8 @@ class CodingMode:
             pstop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[agent.name])
-            except Exception:
-                pass
+            except Exception as e:
+                print(f"[DELETE FAIL] {agent.name}: {e}")
             return result
 
         codex_tests, claude_tests, gemini_tests = await asyncio.gather(
@@ -420,8 +423,8 @@ class CodingMode:
                     bstop.set()
                     try:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        print(f"[DELETE FAIL] backup: {e}")
                     self._post(channel, thread_ts, backup.format_message(f"*[{label} 대체]*\n{backup_result}"))
                     self._replace_agent(agent, channel, thread_ts, reason)
                     if agent is self.codex:
