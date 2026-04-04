@@ -13,16 +13,23 @@ class ClaudeBackupAgent(AgentBase):
         "기존 의견에 동의하더라도 다른 각도(비판적 시각, 반대 사례, 실용적 대안 등)에서 논의를 풍부하게 만드세요.\n\n"
     )
 
+    def __init__(self, continue_mode=False):
+        self.continue_mode = continue_mode
+
     async def _run_cli(self, prompt: str) -> str:
         prompt = self.PERSPECTIVE + prompt
         tmp = self._write_temp(prompt)
+        flag = "--continue -p" if self.continue_mode else "-p"
         try:
             proc = await asyncio.create_subprocess_shell(
-                f'type "{tmp}" | claude -p',
+                f'type "{tmp}" | claude {flag}',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
             )
+            if self._current_thread_ts:
+                from cancel import register_process
+                register_process(self._current_thread_ts, proc)
             stdout, stderr = await proc.communicate()
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:

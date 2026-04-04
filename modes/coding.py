@@ -4,7 +4,8 @@ import datetime
 import re
 
 from agents import ClaudeAgent, CodexAgent, GeminiAgent, ClaudeBackupAgent, CodexBackupAgent
-from config import MAX_DEBATE_ROUNDS
+from config import MAX_DEBATE_ROUNDS, CLI_TIMEOUT_CODING
+from cancel import is_cancelled, cleanup
 
 CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
 
@@ -27,17 +28,23 @@ MAX_FIX_ROUNDS = 3
 class CodingMode:
     def __init__(self, slack_client):
         self.slack = slack_client
-        self.claude = ClaudeAgent()
+        self.claude = ClaudeAgent(continue_mode=True)
         self.codex = CodexAgent()
         self.gemini = GeminiAgent()
         self.agents = [self.claude, self.codex, self.gemini]
         self._backup_map = {
             "Claude": CodexBackupAgent(),
-            "Codex": ClaudeBackupAgent(),
-            "Gemini": ClaudeBackupAgent(),
+            "Codex": ClaudeBackupAgent(continue_mode=True),
+            "Gemini": ClaudeBackupAgent(continue_mode=True),
         }
         self._replaced = set()
         self._bot_user_id = None
+
+    def _bind_thread(self, thread_ts):
+        for agent in self.agents:
+            agent._current_thread_ts = thread_ts
+        for backup in self._backup_map.values():
+            backup._current_thread_ts = thread_ts
 
     def _get_backup(self, agent):
         return self._backup_map.get(agent.name)
@@ -61,6 +68,7 @@ class CodingMode:
 
     async def followup(self, channel, thread_ts, question):
         """스레드에서 사용자 추가 질문 → 합의까지 토론."""
+        self._bind_thread(thread_ts)
         original_topic = self._fetch_original_topic(channel, thread_ts)
         history = self._fetch_thread_history(channel, thread_ts)
 
@@ -69,6 +77,9 @@ class CodingMode:
         history.append({"name": "사용자", "text": question})
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
+            if self._check_cancel(channel, thread_ts):
+                return
+
             self._post(channel, thread_ts, f"--- *추가 토론 라운드 {round_num}* ---")
 
             shuffled = list(self.agents)
@@ -252,7 +263,15 @@ class CodingMode:
 
     async def _ask_with_backup(self, agent, prompt, channel, thread_ts):
         """에이전트 호출 후 오류/타임아웃 시 백업 투입."""
-        response = await agent.ask(prompt)
+        thinking = self.slack.chat_postMessage(
+            channel=channel, thread_ts=thread_ts,
+            text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
+        )
+        response = await agent.ask(prompt, timeout=CLI_TIMEOUT_CODING)
+        try:
+            self.slack.chat_delete(channel=channel, ts=thinking["ts"])
+        except Exception:
+            pass
         if getattr(agent, 'needs_replacement', False):
             backup = self._get_backup(agent)
             if backup:
@@ -294,7 +313,16 @@ class CodingMode:
             print(f"[SLACK ERROR] fetch today conclusions: {e}")
             return []
 
+    def _check_cancel(self, channel, thread_ts):
+        """취소 확인. 취소됐으면 True 반환."""
+        if is_cancelled(thread_ts):
+            self._post(channel, thread_ts, "🛑 *작업이 취소되었습니다*")
+            cleanup(thread_ts)
+            return True
+        return False
+
     async def start(self, channel, thread_ts, request):
+        self._bind_thread(thread_ts)
         # 당일 이전 결론을 컨텍스트로 수집
         today_conclusions = self._fetch_today_conclusions(channel, thread_ts)
         context_prefix = ""
@@ -318,6 +346,9 @@ class CodingMode:
         )
         self._post(channel, thread_ts, used_agent.format_message(claude_code))
 
+        if self._check_cancel(channel, thread_ts):
+            return
+
         # Phase 2 — Codex: 코드 리뷰
         self._post(channel, thread_ts, "━━━ Phase 2: 코드 리뷰 (Codex) ━━━")
 
@@ -328,18 +359,24 @@ class CodingMode:
         )
         self._post(channel, thread_ts, used_agent.format_message(review))
 
+        if self._check_cancel(channel, thread_ts):
+            return
+
         # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여)
         self._post(channel, thread_ts, "━━━ Phase 3: 테스트 작성 (Codex 리더 / Claude / Gemini) ━━━")
 
         codex_tests, claude_tests, gemini_tests = await asyncio.gather(
             self.codex.ask(
-                f"다음 코드에 대한 테스트 전략을 수립하고 핵심 테스트 코드를 작성해 주세요.\n\n{claude_code}"
+                f"다음 코드에 대한 테스트 전략을 수립하고 핵심 테스트 코드를 작성해 주세요.\n\n{claude_code}",
+                timeout=CLI_TIMEOUT_CODING,
             ),
             self.claude.ask(
-                f"다음 코드에 대한 엣지 케이스 테스트를 작성해 주세요.\n\n{claude_code}"
+                f"다음 코드에 대한 엣지 케이스 테스트를 작성해 주세요.\n\n{claude_code}",
+                timeout=CLI_TIMEOUT_CODING,
             ),
             self.gemini.ask(
-                f"다음 코드에 대한 추가 테스트를 작성해 주세요.\n\n{claude_code}"
+                f"다음 코드에 대한 추가 테스트를 작성해 주세요.\n\n{claude_code}",
+                timeout=CLI_TIMEOUT_CODING,
             ),
         )
 
@@ -376,15 +413,21 @@ class CodingMode:
                     elif agent is self.gemini:
                         gemini_tests = backup_result
 
+        if self._check_cancel(channel, thread_ts):
+            return
+
         # Issue-fix loop (max 3 rounds)
         all_tests = f"{codex_tests}\n\n{claude_tests}\n\n{gemini_tests}"
         current_code = claude_code
 
         for fix_round in range(1, MAX_FIX_ROUNDS + 1):
+            if self._check_cancel(channel, thread_ts):
+                return
             issues_found = await self.codex.ask(
                 f"다음 코드와 테스트 결과를 분석하여, 수정이 필요한 이슈가 있는지 판단해 주세요. "
                 f"이슈가 없으면 '이슈 없음'이라고만 답해 주세요.\n\n"
-                f"코드:\n{current_code}\n\n테스트:\n{all_tests}"
+                f"코드:\n{current_code}\n\n테스트:\n{all_tests}",
+                timeout=CLI_TIMEOUT_CODING,
             )
 
             if "이슈 없음" in issues_found:
@@ -398,7 +441,8 @@ class CodingMode:
 
             current_code = await self.claude.ask(
                 f"다음 이슈를 반영하여 코드를 수정해 주세요.\n\n"
-                f"이슈:\n{issues_found}\n\n기존 코드:\n{current_code}"
+                f"이슈:\n{issues_found}\n\n기존 코드:\n{current_code}",
+                timeout=CLI_TIMEOUT_CODING,
             )
             self._post(channel, thread_ts, self.claude.format_message(f"*[수정된 코드]*\n{current_code}"))
 

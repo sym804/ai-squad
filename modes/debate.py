@@ -7,6 +7,7 @@ import datetime
 
 from agents import ClaudeAgent, CodexAgent, GeminiAgent, ClaudeBackupAgent, CodexBackupAgent
 from config import MAX_DEBATE_ROUNDS, CONSENSUS_EARLY_ROUNDS
+from cancel import is_cancelled, cleanup
 
 logger = logging.getLogger(__name__)
 
@@ -50,6 +51,13 @@ class DebateMode:
         self._replaced = set()  # 이미 교체된 에이전트 이름
         self._bot_user_id = None
 
+    def _bind_thread(self, thread_ts: str):
+        """모든 에이전트에 현재 스레드 정보 설정."""
+        for agent in self.agents:
+            agent._current_thread_ts = thread_ts
+        for backup in self._backup_map.values():
+            backup._current_thread_ts = thread_ts
+
     def _get_backup(self, agent):
         """에이전트에 맞는 백업을 반환."""
         return self._backup_map.get(agent.name)
@@ -68,6 +76,7 @@ class DebateMode:
 
     async def followup(self, channel: str, thread_ts: str, question: str):
         """스레드에서 사용자가 추가 질문 → 기존 대화 기반 추가 토론 (합의까지)."""
+        self._bind_thread(thread_ts)
         original_topic = self._fetch_original_topic(channel, thread_ts)
         history = self._fetch_thread_history(channel, thread_ts)
 
@@ -76,6 +85,11 @@ class DebateMode:
         history.append({"name": "사용자", "text": question})
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
+            if is_cancelled(thread_ts):
+                self._post(channel, thread_ts, "🛑 *작업이 취소되었습니다*")
+                cleanup(thread_ts)
+                return
+
             self._post(channel, thread_ts, f"--- *추가 토론 라운드 {round_num}* ---")
 
             shuffled = list(self.agents)
@@ -246,6 +260,7 @@ class DebateMode:
 
     async def start(self, channel: str, thread_ts: str, topic: str):
         """Main entry point for debate mode."""
+        self._bind_thread(thread_ts)
         self._post(channel, thread_ts, f"*토론을 시작합니다*\n주제: {topic}")
 
         # 당일 이전 토론 합의 결론을 컨텍스트에 포함
@@ -258,6 +273,11 @@ class DebateMode:
         final_summary = None
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
+            if is_cancelled(thread_ts):
+                self._post(channel, thread_ts, "🛑 *작업이 취소되었습니다*")
+                cleanup(thread_ts)
+                return
+
             # 라운드 시작 전 스레드에서 사용자 메시지 수집
             user_messages = self._fetch_user_messages(channel, thread_ts)
             for um in user_messages:

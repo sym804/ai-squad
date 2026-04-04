@@ -9,6 +9,7 @@ import asyncio
 import os
 
 from config import CLI_TIMEOUT
+from cancel import is_cancelled, cleanup, register_process
 
 
 class BridgeMode:
@@ -18,6 +19,7 @@ class BridgeMode:
 
     async def handle(self, channel: str, thread_ts: str, text: str):
         """메시지를 CLI에 전달하고 응답을 스레드로 반환."""
+        self._thread_ts = thread_ts
         text = text.strip()
         if not text:
             return
@@ -101,6 +103,9 @@ class BridgeMode:
             cwd=self.work_dir,
             env=env,
         )
+        thread_ts = getattr(self, '_thread_ts', None)
+        if thread_ts:
+            register_process(thread_ts, proc)
         stdout, stderr = await proc.communicate()
         output = stdout.decode("utf-8", errors="replace").strip()
         if not output and stderr:

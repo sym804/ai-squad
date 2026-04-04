@@ -17,6 +17,9 @@ class GeminiAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
             )
+            if self._current_thread_ts:
+                from cancel import register_process
+                register_process(self._current_thread_ts, proc)
             stdout, stderr = await proc.communicate()
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:

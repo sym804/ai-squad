@@ -3,11 +3,13 @@ import os
 import tempfile
 import subprocess
 from config import CLI_TIMEOUT
+from cancel import register_process, is_cancelled
 
 
 class AgentBase:
     name: str = "Agent"
     emoji: str = "🤖"
+    _current_thread_ts: str = None  # 현재 작업 중인 스레드
 
     # 대체 에이전트 투입이 필요한 오류 패턴
     _FATAL_ERROR_PATTERNS = [
@@ -20,11 +22,17 @@ class AgentBase:
         "unexpected critical error",
     ]
 
-    async def ask(self, prompt: str) -> str:
+    async def ask(self, prompt: str, timeout: int = None) -> str:
+        t = timeout or CLI_TIMEOUT
+        # 취소 확인
+        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
+            self.timed_out = False
+            self.has_error = False
+            return f"[{self.name}] 작업 취소됨"
         try:
             result = await asyncio.wait_for(
                 self._run_cli(prompt),
-                timeout=CLI_TIMEOUT
+                timeout=t
             )
             self.timed_out = False
             self.has_error = self._is_fatal_error(result)
@@ -32,7 +40,7 @@ class AgentBase:
         except asyncio.TimeoutError:
             self.timed_out = True
             self.has_error = False
-            return f"[{self.name}] 응답 시간 초과 ({CLI_TIMEOUT}초)"
+            return f"[{self.name}] 응답 시간 초과 ({t}초)"
         except Exception as e:
             self.timed_out = False
             self.has_error = True

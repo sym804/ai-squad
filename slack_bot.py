@@ -15,6 +15,7 @@ from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_C
 from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
+import cancel
 
 
 app = App(token=SLACK_BOT_TOKEN)
@@ -62,6 +63,27 @@ def handle_message(event, say, client):
     # watchdog 명령어 무시
     if text.strip().lower().startswith("!bot"):
         return
+
+    # !stop 명령어 처리
+    if text.strip().lower() == "!stop":
+        thread_ts = event.get("thread_ts")
+        if thread_ts:
+            # 스레드에서 !stop → 해당 스레드만 취소
+            cancel.cancel(thread_ts)
+            client.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text="🛑 *작업 취소 요청됨* — 현재 단계 완료 후 중단됩니다."
+            )
+        else:
+            # 채널 최상위에서 !stop → 해당 채널의 모든 작업 취소
+            all_threads = list(cancel.active_processes.keys())
+            cancel.cancel_channel(all_threads)
+            client.chat_postMessage(
+                channel=channel,
+                text=f"🛑 *전체 작업 취소 요청됨* — {len(all_threads)}개 작업 중단 중..."
+            )
+        return
+
     thread_ts = event.get("thread_ts")
 
     # 스레드 답글 → 추가 토론/질문
