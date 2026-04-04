@@ -62,7 +62,11 @@ class AgentBase:
         raise NotImplementedError
 
     def format_message(self, response: str) -> str:
-        return f"{self.emoji} *[{self.name}]*\n{response}"
+        usage = getattr(self, 'last_usage', '')
+        msg = f"{self.emoji} *[{self.name}]*\n{response}"
+        if usage:
+            msg += f"\n{usage}"
+        return msg
 
     @staticmethod
     def _write_temp(prompt: str) -> str:

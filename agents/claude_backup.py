@@ -1,6 +1,8 @@
 import asyncio
+import json
 import os
 from agents.base import AgentBase
+from agents.claude import _format_token_usage
 
 
 class ClaudeBackupAgent(AgentBase):
@@ -15,6 +17,7 @@ class ClaudeBackupAgent(AgentBase):
 
     def __init__(self, continue_mode=False):
         self.continue_mode = continue_mode
+        self.last_usage = ""
 
     async def _run_cli(self, prompt: str) -> str:
         prompt = self.PERSPECTIVE + prompt
@@ -22,7 +25,7 @@ class ClaudeBackupAgent(AgentBase):
         flag = "--continue -p" if self.continue_mode else "-p"
         try:
             proc = await asyncio.create_subprocess_shell(
-                f'type "{tmp}" | claude {flag}',
+                f'type "{tmp}" | claude {flag} --output-format json',
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
                 env=self._make_env(),
@@ -31,7 +34,14 @@ class ClaudeBackupAgent(AgentBase):
                 from cancel import register_process
                 register_process(self._current_thread_ts, proc)
             stdout, stderr = await proc.communicate()
-            output = stdout.decode("utf-8", errors="replace").strip()
+            raw = stdout.decode("utf-8", errors="replace").strip()
+            try:
+                data = json.loads(raw)
+                output = data.get("result", "").strip()
+                self.last_usage = _format_token_usage(data)
+            except (json.JSONDecodeError, AttributeError):
+                output = raw
+                self.last_usage = ""
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
             return output
