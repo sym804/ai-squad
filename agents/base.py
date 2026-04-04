@@ -82,7 +82,7 @@ class AgentBase:
         raise NotImplementedError
 
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
-        """stdout을 라인 단위로 읽으며 on_progress 콜백 호출."""
+        """stdout+stderr를 동시에 읽으며 on_progress 콜백 호출."""
         t = timeout or CLI_TIMEOUT
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             self.timed_out = False
@@ -94,7 +94,7 @@ class AgentBase:
             proc = await asyncio.create_subprocess_shell(
                 self._build_cmd(tmp),
                 stdout=asyncio.subprocess.PIPE,
-                stderr=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,  # stderr를 stdout으로 합침
                 env=self._make_env(),
                 cwd=self._cwd,
             )
@@ -124,11 +124,7 @@ class AgentBase:
                     last_callback = time.time()
 
             await proc.wait()
-
-            stderr = await proc.stderr.read()
             output = output.strip()
-            if not output and stderr:
-                output = stderr.decode("utf-8", errors="replace").strip()
 
             self.timed_out = False
             self.has_error = self._is_fatal_error(output) if output else False
