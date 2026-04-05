@@ -73,6 +73,9 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         # Codex raw 실행 로그 (한 단어만 있는 라인: exec, user, codex)
         if stripped in _CODEX_NOISE_EXACT:
             continue
+        # Codex 파일 탐색 출력 (경로만 있는 라인: foo\bar.ext 또는 foo/bar.ext)
+        if re.match(r'^[\w.\-]+[\\\/][\w.\-\\\/\s]+\.\w{1,10}$', stripped) and not stripped.startswith(('#', '-', '*', '`')):
+            continue
         lines.append(line)
     result = '\n'.join(lines).strip()
     # 숫자만 있는 라인 제거 (토큰 카운트: "6,226" 등)
@@ -81,13 +84,16 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         if not line.strip().replace(',', '').replace('.', '').isdigit()
     ).strip()
     # 응답 중복 제거: Codex가 같은 답변을 2번 출력하는 경우
-    # 첫 줄로 두 번째 등장 위치를 찾아 그 앞까지만 사용
+    # 첫 비빈 줄들 중 길이 8자 이상인 줄로 두 번째 등장을 찾아 그 앞까지만 사용
     if len(result) > 100:
-        first_line = result.split('\n')[0].strip()
-        if first_line and len(first_line) > 20:
-            second_pos = result.find(first_line, len(first_line))
-            if second_pos > 0:
-                result = result[:second_pos].strip()
+        for candidate in result.split('\n')[:5]:
+            candidate = candidate.strip()
+            if len(candidate) >= 8:
+                first_pos = result.find(candidate)
+                second_pos = result.find(candidate, first_pos + len(candidate))
+                if second_pos > 0 and second_pos > len(result) * 0.3:
+                    result = result[:second_pos].strip()
+                    break
     return result
 
 
