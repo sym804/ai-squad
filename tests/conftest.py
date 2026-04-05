@@ -11,3 +11,6 @@ def mock_env(monkeypatch):
     monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test-token")
     monkeypatch.setenv("DEBATE_CHANNEL_ID", "C_DEBATE_TEST")
     monkeypatch.setenv("CODING_CHANNEL_ID", "C_CODING_TEST")
+    monkeypatch.setenv("SR_AGENT_CHANNEL_ID", "")
+    monkeypatch.setenv("TC_AGENT_CHANNEL_ID", "")
+    monkeypatch.setenv("CODING_ALLOWED_DIRS", "")
