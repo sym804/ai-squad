@@ -65,14 +65,18 @@ class CodingMode:
         from security import validate_work_dir
         raw_path = self._extract_path(request_text)
         work_dir = validate_work_dir(raw_path, ALLOWED_WORK_DIRS)
+        if raw_path and not work_dir:
+            # 명시적 경로가 비허용 → 거부 (다른 프로젝트에서 실행 방지)
+            self._rejected_thread = thread_ts
+            self._rejected_reason = f"경로 `{raw_path}`은(는) 허용 목록에 없습니다."
+            return
         if not work_dir and ALLOWED_WORK_DIRS:
-            # whitelist가 설정돼 있는데 유효 경로가 없으면 첫 번째 허용 경로 사용
+            # 경로 미지정 → 첫 번째 허용 경로를 기본값으로 사용
             work_dir = ALLOWED_WORK_DIRS[0]
-            if raw_path:
-                print(f"[SECURITY] 경로 거부: {raw_path} → 기본 경로 {work_dir} 사용")
         elif not work_dir:
             # whitelist 자체가 비어있으면 (설정 누락) 거부
             self._rejected_thread = thread_ts
+            self._rejected_reason = "허용된 작업 디렉토리가 설정되지 않았습니다. CODING_ALLOWED_DIRS 환경변수를 확인하세요."
             return
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
@@ -131,7 +135,8 @@ class CodingMode:
         """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달."""
         self._bind_thread(thread_ts, question)
         if getattr(self, '_rejected_thread', None) == thread_ts:
-            self._post(channel, thread_ts, "🛑 *허용된 작업 디렉토리가 설정되지 않았습니다. CODING_ALLOWED_DIRS 환경변수를 확인하세요.*")
+            reason = getattr(self, '_rejected_reason', '')
+            self._post(channel, thread_ts, f"🛑 *작업 거부: {reason}*")
             return
 
         if self._check_cancel(channel, thread_ts):
@@ -438,7 +443,8 @@ class CodingMode:
     async def start(self, channel, thread_ts, request):
         self._bind_thread(thread_ts, request)
         if getattr(self, '_rejected_thread', None) == thread_ts:
-            self._post(channel, thread_ts, "🛑 *허용된 작업 디렉토리가 설정되지 않았습니다. CODING_ALLOWED_DIRS 환경변수를 확인하세요.*")
+            reason = getattr(self, '_rejected_reason', '')
+            self._post(channel, thread_ts, f"🛑 *작업 거부: {reason}*")
             return
 
         # 복수 에이전트 지정 시 병렬 모드
