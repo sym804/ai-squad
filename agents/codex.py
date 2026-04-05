@@ -38,6 +38,14 @@ _CODEX_NOISE_CONTAINS = [
     "exited 0 in",
     "Wall time:",
     "tokens used",
+    # PowerShell dir/ls 출력
+    "LastWriteTime",
+    "Mode ",
+    "----  ",
+    "d--h--",
+    "d-----",
+    "d-r---",
+    "\ub514\ub809\ud130\ub9ac:",  # "디렉터리:"
 ]
 
 # Codex raw 실행 로그 (한 단어만 있는 라인)
