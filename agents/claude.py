@@ -3,7 +3,7 @@ import json
 import os
 import time
 from agents.base import AgentBase
-from process import kill_process_tree
+from process import kill_process_tree, platform_cmd
 from config import make_filtered_env
 
 
@@ -63,7 +63,7 @@ class ClaudeAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *self._build_cmd(tmp),
+                *platform_cmd(self._build_cmd(tmp)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -101,7 +101,7 @@ class ClaudeAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *self._build_stream_cmd(),
+                *platform_cmd(self._build_stream_cmd()),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

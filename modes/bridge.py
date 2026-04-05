@@ -10,7 +10,7 @@ import os
 
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import is_cancelled, cleanup, register_process
-from process import kill_process_tree
+from process import kill_process_tree, platform_cmd
 
 
 class BridgeMode:
@@ -94,7 +94,7 @@ class BridgeMode:
         timeout = CLI_TIMEOUT * 2
 
         proc = await asyncio.create_subprocess_exec(
-            *cmd,
+            *platform_cmd(cmd),
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,

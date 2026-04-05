@@ -4,7 +4,7 @@ import time
 import tempfile
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
-from process import kill_process_tree
+from process import kill_process_tree, platform_cmd
 
 
 class AgentBase:
@@ -92,7 +92,7 @@ class AgentBase:
 
         tmp = self._write_temp(prompt)
         try:
-            cmd = self._build_cmd(tmp)
+            cmd = platform_cmd(self._build_cmd(tmp))
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdout=asyncio.subprocess.PIPE,

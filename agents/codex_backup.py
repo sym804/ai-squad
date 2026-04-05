@@ -2,6 +2,7 @@ import asyncio
 import os
 from agents.base import AgentBase
 from config import make_filtered_env
+from process import platform_cmd
 
 
 class CodexBackupAgent(AgentBase):
@@ -23,7 +24,7 @@ class CodexBackupAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *self._build_cmd(tmp),
+                *platform_cmd(self._build_cmd(tmp)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,

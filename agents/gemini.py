@@ -3,7 +3,7 @@ import os
 import re
 import time
 from agents.base import AgentBase
-from process import kill_process_tree
+from process import kill_process_tree, platform_cmd
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
 
@@ -48,7 +48,7 @@ class GeminiAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *self._build_cmd(tmp),
+                *platform_cmd(self._build_cmd(tmp)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
@@ -77,7 +77,7 @@ class GeminiAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *self._build_cmd(tmp),
+                *platform_cmd(self._build_cmd(tmp)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # 합쳐서 읽기
