@@ -62,7 +62,13 @@ class CodingMode:
 
     def _bind_thread(self, thread_ts, request_text: str = ""):
         import os
-        work_dir = self._extract_path(request_text) or os.path.expanduser("~")
+        from config import ALLOWED_WORK_DIRS
+        from security import validate_work_dir
+        raw_path = self._extract_path(request_text)
+        work_dir = validate_work_dir(raw_path, ALLOWED_WORK_DIRS)
+        if raw_path and not work_dir:
+            print(f"[SECURITY] 경로 거부: {raw_path} (whitelist: {ALLOWED_WORK_DIRS})")
+        work_dir = work_dir or os.path.expanduser("~")
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
             agent._cwd = work_dir
