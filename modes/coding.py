@@ -61,14 +61,19 @@ class CodingMode:
         return None
 
     def _bind_thread(self, thread_ts, request_text: str = ""):
-        import os
         from config import ALLOWED_WORK_DIRS
         from security import validate_work_dir
         raw_path = self._extract_path(request_text)
         work_dir = validate_work_dir(raw_path, ALLOWED_WORK_DIRS)
-        if raw_path and not work_dir:
-            print(f"[SECURITY] 경로 거부: {raw_path} (whitelist: {ALLOWED_WORK_DIRS})")
-        work_dir = work_dir or os.path.expanduser("~")
+        if not work_dir and ALLOWED_WORK_DIRS:
+            # whitelist가 설정돼 있는데 유효 경로가 없으면 첫 번째 허용 경로 사용
+            work_dir = ALLOWED_WORK_DIRS[0]
+            if raw_path:
+                print(f"[SECURITY] 경로 거부: {raw_path} → 기본 경로 {work_dir} 사용")
+        elif not work_dir:
+            # whitelist 자체가 비어있으면 (설정 누락) 거부
+            self._rejected_thread = thread_ts
+            return
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
             agent._cwd = work_dir
@@ -125,6 +130,9 @@ class CodingMode:
     async def followup(self, channel, thread_ts, question):
         """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달."""
         self._bind_thread(thread_ts, question)
+        if getattr(self, '_rejected_thread', None) == thread_ts:
+            self._post(channel, thread_ts, "🛑 *허용된 작업 디렉토리가 설정되지 않았습니다. CODING_ALLOWED_DIRS 환경변수를 확인하세요.*")
+            return
 
         if self._check_cancel(channel, thread_ts):
             return
@@ -429,6 +437,9 @@ class CodingMode:
 
     async def start(self, channel, thread_ts, request):
         self._bind_thread(thread_ts, request)
+        if getattr(self, '_rejected_thread', None) == thread_ts:
+            self._post(channel, thread_ts, "🛑 *허용된 작업 디렉토리가 설정되지 않았습니다. CODING_ALLOWED_DIRS 환경변수를 확인하세요.*")
+            return
 
         # 복수 에이전트 지정 시 병렬 모드
         agents = self._pick_agents(request)
