@@ -92,9 +92,11 @@ class AgentBase:
 
         tmp = self._write_temp(prompt)
         try:
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             cmd = platform_cmd(self._build_cmd(tmp))
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # stderr를 stdout으로 합침
                 env=make_filtered_env(),
@@ -102,6 +104,11 @@ class AgentBase:
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
+
+            # stdin에 프롬프트 전달 후 닫기
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
 
             output = ""
             last_callback = time.time()
