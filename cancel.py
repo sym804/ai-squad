@@ -9,6 +9,8 @@ import json
 import os
 import threading
 
+from process import kill_process_tree
+
 _lock = threading.Lock()
 _ACTIVE_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".active_threads.json")
 cancelled_threads: set[str] = set()
@@ -22,7 +24,7 @@ def cancel(thread_ts: str):
         cancelled_threads.add(thread_ts)
         for proc in active_processes.get(thread_ts, []):
             try:
-                proc.kill()
+                kill_process_tree(proc)
             except Exception:
                 pass
 
