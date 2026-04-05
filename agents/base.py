@@ -2,28 +2,9 @@ import asyncio
 import os
 import time
 import tempfile
-import subprocess
-from config import CLI_TIMEOUT
+from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
-
-
-def _kill_process_tree(proc):
-    """프로세스와 자식 프로세스 트리를 모두 종료. Windows에서 proc.kill()만으로는 자식이 남음."""
-    import sys
-    pid = proc.pid
-    try:
-        if sys.platform == "win32":
-            subprocess.run(
-                f"taskkill /F /T /PID {pid}",
-                shell=True, capture_output=True, timeout=10,
-            )
-        else:
-            proc.kill()
-    except Exception:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+from process import kill_process_tree
 
 
 class AgentBase:
@@ -53,7 +34,7 @@ class AgentBase:
             for proc in procs:
                 try:
                     if proc.returncode is None:
-                        _kill_process_tree(proc)
+                        kill_process_tree(proc)
                 except Exception:
                     pass
 
@@ -97,7 +78,8 @@ class AgentBase:
     async def _run_cli(self, prompt: str) -> str:
         raise NotImplementedError
 
-    def _build_cmd(self, tmp: str) -> str:
+    def _build_cmd(self, tmp: str) -> list[str]:
+        """서브프로세스 실행 명령어를 리스트로 반환. 서브클래스에서 구현."""
         raise NotImplementedError
 
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
@@ -110,11 +92,12 @@ class AgentBase:
 
         tmp = self._write_temp(prompt)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                self._build_cmd(tmp),
+            cmd = self._build_cmd(tmp)
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # stderr를 stdout으로 합침
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
@@ -127,7 +110,7 @@ class AgentBase:
                 try:
                     line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
                 except asyncio.TimeoutError:
-                    _kill_process_tree(proc)
+                    kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
@@ -176,6 +159,5 @@ class AgentBase:
 
     @staticmethod
     def _make_env():
-        env = os.environ.copy()
-        env["PYTHONIOENCODING"] = "utf-8"
-        return env
+        """하위 호환용. make_filtered_env()로 위임."""
+        return make_filtered_env()
