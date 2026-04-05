@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 from agents.base import AgentBase
+from config import make_filtered_env
 
 # Codex CLI 헤더/노이즈 패턴
 _CODEX_NOISE_STARTS = [
@@ -93,23 +94,25 @@ class CodexAgent(AgentBase):
     name = "Codex"
     emoji = "🟢"
 
-    def _build_cmd(self, tmp: str) -> str:
-        return f'type "{tmp}" | codex exec --full-auto --skip-git-repo-check'
+    def _build_cmd(self, tmp: str) -> list[str]:
+        return ["codex", "exec", "--full-auto", "--skip-git-repo-check"]
 
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                self._build_cmd(tmp),
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_cmd(tmp),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 from cancel import register_process
                 register_process(self._current_thread_ts, proc)
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=stdin_data)
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()

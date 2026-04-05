@@ -4,6 +4,7 @@ import os
 import time
 from agents.base import AgentBase
 from process import kill_process_tree
+from config import make_filtered_env
 
 
 def _format_token_usage(data: dict) -> str:
@@ -43,24 +44,36 @@ class ClaudeAgent(AgentBase):
         self.continue_mode = continue_mode
         self.last_usage = ""
 
-    def _build_cmd(self, tmp: str) -> str:
-        flag = "--continue -p" if self.continue_mode else "-p"
-        return f'type "{tmp}" | claude {flag} --output-format json'
+    def _build_cmd(self, tmp: str) -> list[str]:
+        cmd = ["claude"]
+        if self.continue_mode:
+            cmd.append("--continue")
+        cmd.extend(["-p", "--output-format", "json"])
+        return cmd
+
+    def _build_stream_cmd(self) -> list[str]:
+        cmd = ["claude"]
+        if self.continue_mode:
+            cmd.append("--continue")
+        cmd.extend(["-p", "--output-format", "stream-json", "--verbose"])
+        return cmd
 
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                self._build_cmd(tmp),
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_cmd(tmp),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 from cancel import register_process
                 register_process(self._current_thread_ts, proc)
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=stdin_data)
             raw = stdout.decode("utf-8", errors="replace").strip()
             try:
                 data = json.loads(raw)
@@ -85,17 +98,21 @@ class ClaudeAgent(AgentBase):
             return f"[{self.name}] 작업 취소됨"
 
         tmp = self._write_temp(prompt)
-        flag = "--continue -p" if self.continue_mode else "-p"
         try:
-            proc = await asyncio.create_subprocess_shell(
-                f'type "{tmp}" | claude {flag} --output-format stream-json --verbose',
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_stream_cmd(),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
 
             output = ""
             last_callback = time.time()

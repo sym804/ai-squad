@@ -4,7 +4,7 @@ import re
 import time
 from agents.base import AgentBase
 from process import kill_process_tree
-from config import CLI_TIMEOUT
+from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
 
 # xterm.js 터미널 이스케이프 코드 및 노이즈 패턴
@@ -40,22 +40,24 @@ class GeminiAgent(AgentBase):
     name = "Gemini"
     emoji = "🔵"
 
-    def _build_cmd(self, tmp: str) -> str:
-        return f'type "{tmp}" | gemini -y -p ""'
+    def _build_cmd(self, tmp: str) -> list[str]:
+        return ["gemini", "-y", "-p", ""]
 
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                self._build_cmd(tmp),
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_cmd(tmp),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
-            stdout, stderr = await proc.communicate()
+            stdout, stderr = await proc.communicate(input=stdin_data)
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
@@ -73,15 +75,20 @@ class GeminiAgent(AgentBase):
 
         tmp = self._write_temp(prompt)
         try:
-            proc = await asyncio.create_subprocess_shell(
-                self._build_cmd(tmp),
+            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
+            proc = await asyncio.create_subprocess_exec(
+                *self._build_cmd(tmp),
+                stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # 합쳐서 읽기
-                env=self._make_env(),
+                env=make_filtered_env(),
                 cwd=self._cwd,
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
 
             output = ""
             last_callback = time.time()
