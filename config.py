@@ -11,7 +11,7 @@ SR_AGENT_CHANNEL_ID = os.environ.get("SR_AGENT_CHANNEL_ID", "")
 TC_AGENT_CHANNEL_ID = os.environ.get("TC_AGENT_CHANNEL_ID", "")
 MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))
 CONSENSUS_EARLY_ROUNDS = int(os.environ.get("CONSENSUS_EARLY_ROUNDS", "5"))
-CLI_TIMEOUT = 120
+CLI_TIMEOUT = 180
 CLI_TIMEOUT_CODING = 300  # 코딩 모드는 5분
 
 # Bridge mode working directories (환경변수에서 로드)

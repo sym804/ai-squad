@@ -46,27 +46,79 @@ _CODEX_NOISE_CONTAINS = [
     "d-----",
     "d-r---",
     "\ub514\ub809\ud130\ub9ac:",  # "디렉터리:"
+    # Codex 내부 collab 로그
+    "collab: SpawnAgent",
+    "collab: Wait",
+    "collab: SendInput",
+    "collab: ",
 ]
 
 # Codex raw 실행 로그 (한 단어만 있는 라인)
 _CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 
 
+def _normalize_ws(s: str) -> str:
+    """공백/줄바꿈 정규화: ANSI 제거, 수평 공백 축소, 줄바꿈 통일."""
+    s = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', s)   # ANSI 이스케이프 제거
+    s = s.replace("\r\n", "\n").replace("\r", "\n")
+    s = re.sub(r'[ \t]+', ' ', s)                   # 수평 공백 축소
+    return s.strip()
+
+
 def _clean_codex_output(text: str, prompt: str = "") -> str:
     """Codex CLI 헤더 및 실행 로그 노이즈 제거. prompt가 주어지면 에코된 프롬프트도 제거."""
+    # ANSI 이스케이프 선제거
+    text = re.sub(r'\x1b\[[0-9;]*[a-zA-Z]', '', text)
+
     if prompt:
-        # 프롬프트 전체 텍스트를 출력에서 직접 제거
         prompt_stripped = prompt.strip()
+
+        # 1차: 원본에서 직접 매칭 (줄바꿈만 통일, 공백은 보존)
+        prompt_unified = prompt_stripped.replace("\r\n", "\n").replace("\r", "\n")
         if prompt_stripped in text:
             text = text.replace(prompt_stripped, "", 1)
+        elif prompt_unified in text.replace("\r\n", "\n").replace("\r", "\n"):
+            # 줄바꿈 통일 후 위치를 찾아 원본 줄 기반으로 제거
+            text_lf = text.replace("\r\n", "\n").replace("\r", "\n")
+            idx = text_lf.find(prompt_unified)
+            pre = text_lf[:idx].count('\n')
+            span = prompt_unified.count('\n') + 1
+            orig_lines = text.splitlines(keepends=True)
+            text = ''.join(orig_lines[:pre] + orig_lines[pre + span:])
         else:
-            # 줄바꿈 차이 보정 (\r\n vs \n)
-            prompt_norm = prompt_stripped.replace("\r\n", "\n")
-            text_norm = text.replace("\r\n", "\n")
-            if prompt_norm in text_norm:
-                # 정규화된 버전에서 위치 찾아 원본에서 제거
-                idx = text_norm.find(prompt_norm)
-                text = text_norm[:idx] + text_norm[idx + len(prompt_norm):]
+            # 2차: 줄 단위 정규화 매칭으로 위치 특정
+            orig_lines = text.split('\n')
+            norm_lines = [_normalize_ws(l) for l in orig_lines]
+            prompt_norm_lines = [
+                _normalize_ws(l)
+                for l in prompt_stripped.split('\n')
+                if len(l.strip()) >= 15
+            ]
+            if len(prompt_norm_lines) >= 3:
+                # 순서 보존 서브시퀀스 매칭: 프롬프트 줄을 순서대로, 갭 허용
+                best_start, best_end, best_matched = None, None, 0
+                plen = len(prompt_norm_lines)
+                for i in range(len(norm_lines)):
+                    pi, matched, last_j, gap = 0, 0, i, 0
+                    for j in range(i, len(norm_lines)):
+                        nl = norm_lines[j]
+                        if not nl:
+                            continue  # 빈 줄 무시
+                        if pi < plen and nl == prompt_norm_lines[pi]:
+                            pi += 1
+                            matched += 1
+                            last_j = j
+                            gap = 0
+                        else:
+                            gap += 1
+                            if gap > 5 and matched > 0:
+                                break  # 매칭 안 되는 줄이 5줄 넘으면 중단
+                    if matched >= 3 and matched > best_matched:
+                        best_start = i
+                        best_end = last_j + 1
+                        best_matched = matched
+                if best_start is not None:
+                    text = '\n'.join(orig_lines[:best_start] + orig_lines[best_end:])
 
     lines = []
     for line in text.split('\n'):
@@ -92,16 +144,15 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         if not line.strip().replace(',', '').replace('.', '').isdigit()
     ).strip()
     # 응답 중복 제거: Codex가 같은 답변을 2번 출력하는 경우
-    # 첫 비빈 줄들 중 길이 8자 이상인 줄로 두 번째 등장을 찾아 그 앞까지만 사용
+    # 비어있지 않은 줄 중 길이 8자 이상인 줄로 두 번째 등장을 찾아 그 앞까지만 사용
     if len(result) > 100:
-        for candidate in result.split('\n')[:5]:
-            candidate = candidate.strip()
-            if len(candidate) >= 8:
-                first_pos = result.find(candidate)
-                second_pos = result.find(candidate, first_pos + len(candidate))
-                if second_pos > 0 and second_pos > len(result) * 0.3:
-                    result = result[:second_pos].strip()
-                    break
+        content_lines = [l.strip() for l in result.split('\n') if l.strip() and len(l.strip()) >= 8]
+        for candidate in content_lines[:10]:
+            first_pos = result.find(candidate)
+            second_pos = result.find(candidate, first_pos + len(candidate))
+            if second_pos > 0 and second_pos > len(result) * 0.3:
+                result = result[:second_pos].strip()
+                break
     return result
 
 
