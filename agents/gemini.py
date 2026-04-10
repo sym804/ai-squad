@@ -63,15 +63,17 @@ _BACKOFF_BASE = 10
 
 
 # 모델 선택 근거 (2026-04-11 벤치마크, 각 모델 × 2회, 동일 프롬프트):
-#   gemini-2.5-flash-lite          →   9.1s  (primary)
-#   gemini-3-flash-preview         →  11.8s  (fallback)
+#   gemini-2.5-flash-lite          →   9.1s  (fallback)
+#   gemini-3-flash-preview         →  11.8s  (primary)
 #   gemini-3.1-flash-lite-preview  →  54.9s  (재시도 5회 — 불안정)
 #   gemini-2.5-flash               →  65.5s  (가장 느림 — 제외)
-# Google AI Pro 구독으로 모든 모델에 접근 가능하고 일일 quota도 충분(99%+ 남음).
-# lite 모델이 압도적으로 빠르면서 성공률 100%라 primary로 선정.
+# Google AI Pro 구독으로 모든 모델에 접근 가능, 일일 quota도 충분(99%+ 남음).
+# gemini-3-flash-preview를 primary로 선정 — 2.5-flash-lite보다 2.7초만 느리고,
+# Gemini 3세대 최신 모델이라 추론·맥락 이해 품질 우위. 속도 차이가 미미하면
+# 최신 모델을 쓰는 것이 future-proof.
 _GEMINI_MODELS = [
-    "gemini-2.5-flash-lite",   # 평균 9.1s, 안정적, 일일 quota 570+
-    "gemini-3-flash-preview",  # fallback, 평균 11.8s
+    "gemini-3-flash-preview",  # primary, 평균 11.8s, Gemini 3 세대
+    "gemini-2.5-flash-lite",   # fallback, 평균 9.1s, 안정적
 ]
 
 

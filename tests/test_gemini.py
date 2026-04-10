@@ -64,9 +64,16 @@ class TestModelConfiguration:
     가장 느린 것으로 확인됨. primary는 속도 기준으로 선정.
     """
 
-    def test_primary_is_fastest_model(self):
-        """primary(첫 번째)는 벤치마크 1위 모델이어야 함."""
-        assert _GEMINI_MODELS[0] == "gemini-2.5-flash-lite"
+    def test_primary_is_latest_fast_model(self):
+        """primary는 Gemini 3 세대 flash-preview.
+
+        벤치마크에서 gemini-2.5-flash-lite가 9.1s로 가장 빨랐지만
+        gemini-3-flash-preview도 11.8s로 차이가 2.7초에 불과하고, 3세대
+        최신 모델이라 추론·맥락 이해 품질 우위가 있어 primary로 선정.
+        2.5-flash-lite는 fallback으로 이동.
+        """
+        assert _GEMINI_MODELS[0] == "gemini-3-flash-preview"
+        assert "gemini-2.5-flash-lite" in _GEMINI_MODELS  # fallback으로 유지
 
     def test_slow_gemini_2_5_flash_removed(self):
         """gemini-2.5-flash는 벤치마크에서 65.5s로 가장 느렸으므로 제외."""
