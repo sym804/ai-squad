@@ -36,17 +36,36 @@ def _clean_output(text: str) -> str:
     return '\n'.join(lines)
 
 
-_RATE_LIMIT_PATTERNS = ["429", "exhausted your capacity", "quota will reset",
-                        "QUOTA_EXHAUSTED", "QuotaError", "RATE_LIMIT", "RESOURCE_EXHAUSTED"]
+# Rate-limit 탐지: bare "429"는 `file.py:429` 같은 라인 번호/숫자에도 오탐되므로
+# base.py의 _FATAL_* 패턴과 동일한 구조로 맥락어 + 구분자를 요구한다.
+_RATE_LIMIT_SUBSTRINGS = (
+    "exhausted your capacity",
+    "quota will reset",
+    "quota_exhausted",
+    "quota exceeded",
+    "quotaerror",
+    "rate_limit",
+    "rate_limit_error",
+    "resource_exhausted",
+    "resourceexhausted",
+)
+
+_RATE_LIMIT_REGEX = re.compile(
+    r"\b(?:status|code|error|http)[\s:=\-\"']{0,6}429\b"
+    r"|\b429[\s:,=\-\"']{1,4}(?:too\s+many|rate[\s\-]?limit|quota)\b",
+    re.IGNORECASE,
+)
 
 _MAX_RETRIES = 1  # Gemini CLI가 내부적으로 5회 재시도하므로 외부 재시도는 1회만
 _BACKOFF_BASE = 10
 
 
+# 단일 안정 모델만 사용. preview/lite 모델(gemini-3-flash-preview,
+# gemini-3.1-flash-lite-preview)은 quota가 매우 타이트해서 거의 매번 429 발생,
+# 결과적으로 cooldown → fallback 사이클만 반복시키고 실사용에 방해됨.
+# 다중 모델 fallback이 필요해지면 나중에 재도입.
 _GEMINI_MODELS = [
-    "gemini-3.1-flash-lite-preview",  # 3.1 Flash Lite (최우선)
-    "gemini-3-flash-preview",         # 3.0 Flash (2순위)
-    "gemini-2.5-flash",               # 안정 모델 (최종 fallback)
+    "gemini-2.5-flash",
 ]
 
 # 모델 가용성 캐시: 429 난 모델은 5분간 스킵
@@ -76,8 +95,19 @@ class GeminiAgent(AgentBase):
 
     @staticmethod
     def _is_rate_limited(output: str) -> bool:
-        lower = output.lower()
-        return any(p.lower() in lower for p in _RATE_LIMIT_PATTERNS)
+        """Gemini 출력에서 rate-limit / quota 소진 신호를 감지.
+
+        bare "429" substring은 숫자(라인 번호, 수치 등)에 오탐되므로, 맥락어
+        (status/code/error/http 등)가 앞에 있을 때만 매칭. `exhausted your
+        capacity`, `quota exceeded` 같은 고유 substring은 그대로 허용.
+        """
+        if not output:
+            return False
+        low = output.lower()
+        for sub in _RATE_LIMIT_SUBSTRINGS:
+            if sub in low:
+                return True
+        return bool(_RATE_LIMIT_REGEX.search(low))
 
     async def _run_cli(self, prompt: str) -> str:
         tmp = self._write_temp(prompt)
@@ -155,7 +185,7 @@ class GeminiAgent(AgentBase):
                     "YOLO mode", "Loaded cached credentials", "automatically approved")):
                 continue
 
-            if any(p.lower() in decoded.lower() for p in _RATE_LIMIT_PATTERNS):
+            if self._is_rate_limited(decoded):
                 rate_limited = True
 
             output += decoded
