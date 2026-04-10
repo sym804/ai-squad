@@ -1,5 +1,6 @@
 import asyncio
 import os
+import re
 import time
 import tempfile
 from config import CLI_TIMEOUT, make_filtered_env
@@ -7,22 +8,40 @@ from cancel import register_process, is_cancelled
 from process import kill_process_tree, platform_cmd
 
 
+# 대체 투입 트리거: 고유도 substring (대소문자 무시)
+# - 너무 일반적인 키워드(예: "critical error", "rate limit")는 코드/주석 인용에서
+#   오탐 가능하므로 제외. 아래는 실제 fatal 에러에서만 등장하는 고유 문자열.
+_FATAL_SUBSTRINGS = (
+    # OpenAI
+    "quotaerror",
+    "quota_exhausted",
+    "quota exceeded",
+    "exhausted your capacity",
+    "quota will reset",
+    # Anthropic
+    "rate_limit_error",
+    "anthropic.ratelimiterror",
+    # 기타
+    "unexpected critical error",
+)
+
+# 429 관련 패턴은 context 단어가 앞에 있어야만 매칭 (맨 substring은 `payment.py:429`
+# 같은 라인 번호에도 오탐). context 단어와 429 사이에는 whitespace/콜론/등호/따옴표
+# 등의 구분자만 허용 (최대 6자).
+# 두 번째 alt는 `429 Too Many Requests`, `429: quota exceeded` 같은 케이스 커버.
+_FATAL_REGEX = re.compile(
+    r"\b(?:error|status|http|code|rate[\s\-]?limit|ratelimiterror|resourceexhausted)"
+    r"[\s:=\-\"']{0,6}429\b"
+    r"|\b429[\s:,=\-\"']{1,4}(?:too\s+many|rate[\s\-]?limit|quota)\b",
+    re.IGNORECASE,
+)
+
+
 class AgentBase:
     name: str = "Agent"
     emoji: str = "🤖"
     _current_thread_ts: str = None  # 현재 작업 중인 스레드
     _cwd: str = None  # 작업 디렉토리 (None이면 프로세스 기본값)
-
-    # 대체 에이전트 투입이 필요한 오류 패턴
-    _FATAL_ERROR_PATTERNS = [
-        "QuotaError",
-        "QUOTA_EXHAUSTED",
-        "exhausted your capacity",
-        "quota will reset",
-        "429",
-        "critical error",
-        "unexpected critical error",
-    ]
 
     def _kill_registered_processes(self):
         """타임아웃/에러 시 이 에이전트가 등록한 프로세스를 정리."""
@@ -64,11 +83,23 @@ class AgentBase:
             return f"[{self.name}] 오류: {str(e)}"
 
     def _is_fatal_error(self, output: str) -> bool:
-        """응답 내용에 치명적 오류 패턴이 포함되어 있는지 확인."""
-        for pattern in self._FATAL_ERROR_PATTERNS:
-            if pattern.lower() in output.lower():
+        """응답 내용에 치명적 오류 패턴이 포함되어 있는지 확인.
+
+        긴 출력(Codex 툴 로그, 코드 덤프 등)에서 중간 부분의 우연 매칭을 피하기
+        위해 **선두 2000자 + 말미 2000자**만 검사한다. 실제 fatal error는 거의
+        항상 출력의 시작(스택트레이스/초기 에러)이나 끝(retry 실패 후 종료)에
+        위치한다. 4000자 이하 짧은 출력은 전체 검사.
+        """
+        if not output:
+            return False
+        if len(output) <= 4000:
+            window = output.lower()
+        else:
+            window = output[:2000].lower() + "\n" + output[-2000:].lower()
+        for sub in _FATAL_SUBSTRINGS:
+            if sub in window:
                 return True
-        return False
+        return bool(_FATAL_REGEX.search(window))
 
     @property
     def needs_replacement(self) -> bool:

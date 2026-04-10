@@ -56,6 +56,14 @@ _CODEX_NOISE_CONTAINS = [
 # Codex raw 실행 로그 (한 단어만 있는 라인)
 _CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 
+# Windows 절대경로 라인 (C:\Users\... 또는 D:/path/...)
+_WIN_ABS_PATH_LINE = re.compile(r'^[A-Za-z]:[\\/]\S*$')
+
+# 파일:라인 또는 파일:라인:내용 (ripgrep/grep -n / cat -n 스타일)
+# 예: routers/payment.py:188:    con = sqlite3.connect(...)
+#     app.js:323
+_FILE_LINE_REF = re.compile(r'^[\w./\\\-]+\.\w{1,10}:\d+(?::|\s|$)')
+
 
 def _normalize_ws(s: str) -> str:
     """공백/줄바꿈 정규화: ANSI 제거, 수평 공백 축소, 줄바꿈 통일."""
@@ -135,6 +143,12 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
             continue
         # Codex 파일 탐색 출력 (경로만 있는 라인: foo\bar.ext 또는 foo/bar.ext)
         if re.match(r'^[\w.\-]+[\\\/][\w.\-\\\/\s]+\.\w{1,10}$', stripped) and not stripped.startswith(('#', '-', '*', '`')):
+            continue
+        # Windows 절대경로 덤프 (C:\Users\ymseo\...)
+        if _WIN_ABS_PATH_LINE.match(stripped) and not stripped.startswith(('#', '-', '*', '`', '>')):
+            continue
+        # 파일:라인 참조 (payment.py:188, app.js:429, routers/foo.py:12:code)
+        if _FILE_LINE_REF.match(stripped) and not stripped.startswith(('#', '-', '*', '`', '>')):
             continue
         lines.append(line)
     result = '\n'.join(lines).strip()
