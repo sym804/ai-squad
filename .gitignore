@@ -6,3 +6,13 @@ __pycache__/
 .active_threads.json
 *.log
 send_test.py
+
+# Claude Code 인프라 (플러그인/스킬/메모리 — 도구가 관리)
+.claude/
+docs/superpowers/
+memory/
+
+# 개인 자료 (프로젝트와 무관)
+toss_interview/
+toss_qa_enhanced.html
+toss_qa_interview_prep.html
