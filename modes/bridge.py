@@ -10,7 +10,7 @@ import os
 
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import is_cancelled, cleanup, register_process
-from process import kill_process_tree, platform_cmd
+from process import kill_process_tree, platform_cmd, subprocess_kwargs
 
 
 class BridgeMode:
@@ -100,6 +100,7 @@ class BridgeMode:
             stderr=asyncio.subprocess.PIPE,
             cwd=self.work_dir,
             env=make_filtered_env(),
+            **subprocess_kwargs(),
         )
         thread_ts = getattr(self, '_thread_ts', None)
         if thread_ts:

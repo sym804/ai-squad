@@ -3,7 +3,7 @@ import json
 import os
 import time
 from agents.base import AgentBase
-from process import kill_process_tree, platform_cmd
+from process import kill_process_tree, platform_cmd, subprocess_kwargs
 from config import make_filtered_env
 
 
@@ -69,6 +69,7 @@ class ClaudeAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                **subprocess_kwargs(),
             )
             if self._current_thread_ts:
                 from cancel import register_process
@@ -107,6 +108,7 @@ class ClaudeAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                **subprocess_kwargs(),
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)

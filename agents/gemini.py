@@ -3,7 +3,7 @@ import os
 import re
 import time
 from agents.base import AgentBase
-from process import kill_process_tree, platform_cmd
+from process import kill_process_tree, platform_cmd, subprocess_kwargs
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
 
@@ -94,6 +94,7 @@ class GeminiAgent(AgentBase):
                         stderr=asyncio.subprocess.PIPE,
                         env=make_filtered_env(),
                         cwd=self._cwd,
+                        **subprocess_kwargs(),
                     )
                     if self._current_thread_ts:
                         register_process(self._current_thread_ts, proc)
@@ -124,6 +125,7 @@ class GeminiAgent(AgentBase):
             stderr=asyncio.subprocess.STDOUT,
             env=make_filtered_env(),
             cwd=self._cwd,
+            **subprocess_kwargs(),
         )
         if self._current_thread_ts:
             register_process(self._current_thread_ts, proc)

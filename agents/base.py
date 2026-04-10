@@ -5,7 +5,7 @@ import time
 import tempfile
 from config import CLI_TIMEOUT, make_filtered_env
 from cancel import register_process, is_cancelled
-from process import kill_process_tree, platform_cmd
+from process import kill_process_tree, platform_cmd, subprocess_kwargs
 
 
 # 대체 투입 트리거: 고유도 substring (대소문자 무시)
@@ -132,6 +132,7 @@ class AgentBase:
                 stderr=asyncio.subprocess.STDOUT,  # stderr를 stdout으로 합침
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                **subprocess_kwargs(),
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)

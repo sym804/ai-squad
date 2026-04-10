@@ -2,7 +2,7 @@ import asyncio
 import os
 from agents.base import AgentBase
 from config import make_filtered_env
-from process import platform_cmd
+from process import platform_cmd, subprocess_kwargs
 
 
 class CodexBackupAgent(AgentBase):
@@ -30,6 +30,7 @@ class CodexBackupAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                **subprocess_kwargs(),
             )
             if self._current_thread_ts:
                 from cancel import register_process
