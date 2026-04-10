@@ -21,7 +21,9 @@ _NOISE_PATTERNS = re.compile(
 _NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_rejectDigits",
                     "_digitIsSub", "maxLength:", "maxSubParamsLength:", "currentState:",
                     "YOLO mode is enabled", "Loaded cached credentials",
-                    "All tool calls will be automatically approved"]
+                    "All tool calls will be automatically approved",
+                    # Gemini CLI 내부 재시도 로그 — 재시도 성공 시엔 최종 출력에 포함시키면 안 됨
+                    "Attempt ", "Retrying after"]
 
 
 def _clean_output(text: str) -> str:
@@ -129,11 +131,16 @@ class GeminiAgent(AgentBase):
                     if self._current_thread_ts:
                         register_process(self._current_thread_ts, proc)
                     stdout, stderr = await proc.communicate(input=stdin_data)
+                    exit_code = proc.returncode
                     out_text = stdout.decode("utf-8", errors="replace").strip()
                     err_text = stderr.decode("utf-8", errors="replace").strip()
                     last_output = out_text or err_text
                     combined = out_text + "\n" + err_text
-                    if not self._is_rate_limited(combined):
+                    # exit_code 0이면 CLI 내부 재시도(최대 5회)가 성공한 것.
+                    # stream 중에 "exhausted your capacity" 등이 보였더라도 그건 내부
+                    # 재시도 로그이므로 최종 결과는 성공으로 신뢰.
+                    is_rate_limited = (exit_code != 0 and self._is_rate_limited(combined))
+                    if not is_rate_limited:
                         return _clean_output(last_output)
                     if attempt < _MAX_RETRIES - 1:
                         backoff = _BACKOFF_BASE * (2 ** attempt)
@@ -174,9 +181,12 @@ class GeminiAgent(AgentBase):
         output = ""
         last_callback = time.time()
         start_time = time.time()
-        rate_limited = False
+        saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
         readline_timeout = 60
         overall_timeout = t * 2
+
+        # 내부 재시도 로그 키워드 — output에 포함하지 않고 rate-limit 힌트로만 기록
+        _RETRY_NOISE = ("Attempt ", "Retrying after")
 
         while True:
             elapsed = time.time() - start_time
@@ -210,9 +220,14 @@ class GeminiAgent(AgentBase):
             if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
                     "YOLO mode", "Loaded cached credentials", "automatically approved")):
                 continue
+            # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트만 기록
+            if any(kw in decoded for kw in _RETRY_NOISE):
+                if self._is_rate_limited(decoded):
+                    saw_rate_limit_noise = True
+                continue
 
             if self._is_rate_limited(decoded):
-                rate_limited = True
+                saw_rate_limit_noise = True
 
             output += decoded
 
@@ -220,7 +235,11 @@ class GeminiAgent(AgentBase):
                 on_progress(_clean_output(output))
                 last_callback = time.time()
 
-        await proc.wait()
+        exit_code = await proc.wait()
+        # 최종 판정: exit_code 0이면 CLI 내부 재시도(최대 5회)가 성공한 것이므로
+        # stream 중 429 노이즈가 있었어도 최종 결과를 신뢰하고 rate_limited = False.
+        # exit_code != 0이고 rate-limit 패턴이 관측됐을 때만 진짜 실패로 판정.
+        rate_limited = (exit_code != 0 and saw_rate_limit_noise)
         return output, rate_limited
 
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
