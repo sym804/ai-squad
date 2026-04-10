@@ -122,6 +122,12 @@ class TestIsStalemate:
 
 class TestBuildConclusion:
     def test_basic_structure(self):
+        """결론 메시지는 타이틀 + 주제 + 각 에이전트 요약만 포함.
+
+        통합 결론("💡 *결론:*")은 `_generate_final_answer`가 별도로 생성하므로
+        여기서는 각 에이전트의 summary만 나열한다. consensus가 None인 에이전트는
+        스킵.
+        """
         consensuses = [
             {"agent_name": "Claude", "agent_emoji": "🟠",
              "consensus": {"agree": True, "summary": "좋은 결론"}},
@@ -135,13 +141,19 @@ class TestBuildConclusion:
         assert "라운드 3" in result
         assert "테스트 주제" in result
         assert "Claude: 좋은 결론" in result
-        assert "Gemini: (요약 없음)" in result
-        assert "💡 *결론:* 좋은 결론" in result
+        assert "Codex: 동의합니다" in result
+        # consensus가 None인 에이전트는 생략
+        assert "Gemini" not in result
+        assert "(요약 없음)" not in result
+        # 통합 결론 블록은 _build_conclusion이 만들지 않음
+        assert "💡 *결론:*" not in result
 
     def test_no_agrees(self):
+        """agree=False만 있어도 summary는 표시, 통합 결론 블록은 없음."""
         consensuses = [
             {"agent_name": "A", "agent_emoji": "X",
              "consensus": {"agree": False, "summary": "반대"}},
         ]
         result = DebateMode._build_conclusion("라운드 도달", 10, "주제", consensuses)
         assert "💡 *결론:*" not in result
+        assert "A: 반대" in result

@@ -14,11 +14,17 @@ logger = logging.getLogger(__name__)
 CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
 
 SYSTEM_PROMPT = (
-    "당신은 AI 토론 에이전트입니다. 주어진 주제에 대해 자신의 관점으로 논리적으로 답변하세요.\n"
+    "당신은 AI 토론 에이전트입니다. 다른 에이전트들과 토론하여 합의에 도달하세요.\n"
     "반드시 500자 이내로 답변하세요.\n"
-    "답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
-    '<!--CONSENSUS:{"agree": true/false, "summary": "결론 요약 (1~3줄)"}-->\n'
-    "agree=true는 현재 논의에서 합의에 도달했다고 판단할 때 사용합니다."
+    "핵심 원칙:\n"
+    "- 다른 에이전트의 의견을 검토하고, 동의/반박/보완하며 토론하세요.\n"
+    "- 사용자가 구체적인 정보를 요구하면 (상품명, 수치, 목록, 링크 등) 반드시 구체적으로 답하세요.\n"
+    "- 추상적 요약이나 일반론으로 끝내지 말고, 사용자의 요구사항에 맞는 실질적 답변을 제시하세요.\n"
+    "\n답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
+    '<!--CONSENSUS:{"agree": true/false, "summary": "사용자 질문에 대한 구체적 답변 (상품명, 수치 등 포함, 1~3줄)"}-->\n'
+    "agree=true: 다른 에이전트들과 의견이 충분히 일치한다고 판단할 때.\n"
+    "agree=false: 아직 논의가 더 필요하거나 의견 차이가 있을 때.\n"
+    "summary에는 단순 '합의함' 이 아니라, 사용자가 원하는 답변 자체를 담으세요."
 )
 
 
@@ -191,13 +197,15 @@ class DebateMode:
             ]
 
             if len(agrees) >= 3:
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion("추가 토론 전원 합의", round_num, question, round_consensuses))
+                header = self._build_conclusion("추가 토론 전원 합의", round_num, question, round_consensuses)
+                final = await self._generate_final_answer(question, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
                 return
 
             if len(agrees) >= 2 and self._is_stalemate(history):
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion(f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question, round_consensuses))
+                header = self._build_conclusion(f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question, round_consensuses)
+                final = await self._generate_final_answer(question, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
                 return
 
             # 라운드 사이 사용자 메시지 수집
@@ -207,8 +215,9 @@ class DebateMode:
                     history.append({"name": "사용자", "text": um})
 
         # 최대 라운드 도달
-        self._broadcast(channel, thread_ts,
-            self._build_conclusion("추가 토론 최대 라운드 도달", MAX_DEBATE_ROUNDS, question, round_consensuses))
+        header = self._build_conclusion("추가 토론 최대 라운드 도달", MAX_DEBATE_ROUNDS, question, round_consensuses)
+        final = await self._generate_final_answer(question, history, round_consensuses)
+        self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
 
     def _build_followup_prompt(self, original_topic: str, question: str, history: list[dict], round_num: int) -> str:
         recent = history[-15:] if len(history) > 15 else history
@@ -221,7 +230,7 @@ class DebateMode:
         ]
         for entry in recent:
             parts.append(f"- {entry['name']}: {entry['text'][:300]}")
-        parts.append("\n원래 주제와 사용자 질문의 맥락을 반드시 참고하여 답변하세요. 사용자의 의견이 최우선입니다. (500자 이내)")
+        parts.append("\n원래 주제와 사용자 질문의 맥락을 반드시 참고하여 답변하세요. 사용자의 의견이 최우선입니다. 구체적 정보(이름, 수치, 목록 등)가 요구되면 반드시 포함하세요. (500자 이내)")
         return "\n".join(parts)
 
     def _fetch_original_topic(self, channel: str, thread_ts: str) -> str:
@@ -402,21 +411,24 @@ class DebateMode:
             ]
             print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)}")
 
-            # 3개 전원 합의 → 즉시 종료
+            # 3개 전원 합의 → 통합 답변 생성 후 종료
             if len(agrees) >= 3:
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion("전원 합의 도달", round_num, topic, round_consensuses))
+                header = self._build_conclusion("전원 합의 도달", round_num, topic, round_consensuses)
+                final = await self._generate_final_answer(topic, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
                 return
 
             # 2개 동의 + 교착 상태 → 다수결 종료
             if len(agrees) >= 2 and self._is_stalemate(history):
-                self._broadcast(channel, thread_ts,
-                    self._build_conclusion(f"다수 합의 (교착 상태, {len(agrees)}/3 동의)", round_num, topic, round_consensuses))
+                header = self._build_conclusion(f"다수 합의 (교착 상태, {len(agrees)}/3 동의)", round_num, topic, round_consensuses)
+                final = await self._generate_final_answer(topic, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
                 return
         else:
             # Max rounds exhausted
-            self._broadcast(channel, thread_ts,
-                self._build_conclusion(f"최대 라운드({MAX_DEBATE_ROUNDS}) 도달", MAX_DEBATE_ROUNDS, topic, round_consensuses))
+            header = self._build_conclusion(f"최대 라운드({MAX_DEBATE_ROUNDS}) 도달", MAX_DEBATE_ROUNDS, topic, round_consensuses)
+            final = await self._generate_final_answer(topic, history, round_consensuses)
+            self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
 
     def _build_prompt(
         self, topic: str, history: list[dict], round_num: int
@@ -436,7 +448,7 @@ class DebateMode:
             for entry in recent:
                 parts.append(f"- {entry['name']}: {entry['text'][:300]}")
 
-        parts.append("\n위 내용을 참고하여 자신의 관점으로 답변하세요. (500자 이내)")
+        parts.append("\n위 내용을 참고하여 사용자의 질문/요구사항에 직접적으로 답변하세요. 구체적 정보(이름, 수치, 목록 등)가 요구되면 반드시 포함하세요. (500자 이내)")
         return "\n".join(parts)
 
     @staticmethod
@@ -453,24 +465,57 @@ class DebateMode:
 
     @staticmethod
     def _build_conclusion(title: str, round_num: int, topic: str, round_consensuses: list[dict]) -> str:
-        """각 에이전트 요약을 포함한 결론 메시지 생성."""
+        """각 에이전트 요약 + 합의된 답변 구조의 결론 메시지 생성."""
         lines = [f"🏛️ *{title} (라운드 {round_num})*", f"주제: {topic}", ""]
 
-        # 각 에이전트 요약
+        # 항상 각 에이전트 요약 표시
         lines.append("📋 *각 에이전트 요약:*")
         for r in round_consensuses:
             c = r.get("consensus")
             if c and c.get("summary"):
                 lines.append(f"{r['agent_emoji']} {r['agent_name']}: {c['summary']}")
-            else:
-                lines.append(f"{r['agent_emoji']} {r['agent_name']}: (요약 없음)")
-
-        # 대표 결론 (agree한 것 중 첫 번째)
-        agreed = [r for r in round_consensuses if r.get("consensus") and r["consensus"].get("agree")]
-        if agreed:
-            lines.append(f"\n💡 *결론:* {agreed[0]['consensus']['summary']}")
 
         return "\n".join(lines)
+
+    async def _generate_final_answer(self, topic: str, history: list[dict], round_consensuses: list[dict]) -> str:
+        """합의된 에이전트들의 의견을 종합하여 하나의 통합 답변 생성."""
+        summaries = []
+        for r in round_consensuses:
+            c = r.get("consensus")
+            if c and c.get("agree") and c.get("summary"):
+                summaries.append(f"- {r['agent_name']}: {c['summary']}")
+
+        # 최근 토론 내용도 참고
+        recent_history = []
+        for h in history[-9:]:
+            recent_history.append(f"- {h['name']}: {h['text'][:300]}")
+
+        prompt = (
+            "아래는 3명의 AI 에이전트가 토론 후 합의한 내용입니다.\n"
+            f"사용자 질문: {topic}\n\n"
+            "[각 에이전트 합의 요약]\n" + "\n".join(summaries) + "\n\n"
+            "[최근 토론 내용]\n" + "\n".join(recent_history) + "\n\n"
+            "위 내용을 종합하여 사용자의 질문에 대한 하나의 통합 답변을 작성하세요.\n"
+            "규칙:\n"
+            "- 에이전트들이 공통으로 추천/동의한 내용을 중심으로 정리\n"
+            "- 구체적 정보(상품명, 수치, 링크 등)가 있으면 반드시 포함\n"
+            "- 에이전트 이름을 언급하지 말고 하나의 합의된 답변으로 작성\n"
+            "- 500자 이내"
+        )
+
+        agent = self.agents[0]  # 첫 번째 에이전트로 통합 답변 생성
+        try:
+            result = await agent.ask(prompt)
+            # CONSENSUS 태그 제거
+            return _strip_consensus(result)
+        except Exception as e:
+            # 실패 시 fallback: 각 에이전트 요약 나열
+            lines = []
+            for r in round_consensuses:
+                c = r.get("consensus")
+                if c and c.get("summary"):
+                    lines.append(f"{r['agent_emoji']} {r['agent_name']}: {c['summary']}")
+            return "\n".join(lines)
 
     def _fetch_user_messages(self, channel: str, thread_ts: str) -> list[str]:
         """스레드에서 사용자(봇이 아닌)의 메시지를 가져온다."""
