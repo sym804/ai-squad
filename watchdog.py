@@ -208,10 +208,16 @@ def check_bot_health():
         except Exception:
             pass
         print(f"[WATCHDOG] 크래시 감지 (exit: {exit_code}), {RESTART_DELAY}초 후 재시작")
-        notify_active_threads()
+        try:
+            notify_active_threads()
+        except Exception:
+            pass
         time.sleep(RESTART_DELAY)
         result = start_bot()
-        notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\nexit code: {exit_code}\n{result}")
+        try:
+            notify(f"⚠️ *Bot 크래시 → 자동 재시작* ({ts})\nexit code: {exit_code}\n{result}")
+        except Exception:
+            print(f"[WATCHDOG] 재시작 알림 실패 (네트워크 에러), 봇은 시작됨: {result}")
 
 
 def poll_commands():
@@ -276,14 +282,20 @@ def acquire_lock():
         try:
             with open(lock_path, "r") as f:
                 old_pid = int(f.read().strip())
-            # 해당 PID가 살아있는지 확인
+            # 해당 PID가 실제로 실행 중인지 확인 (exit code 검사)
             import ctypes
             kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x1000, False, old_pid)  # PROCESS_QUERY_LIMITED_INFORMATION
+            handle = kernel32.OpenProcess(0x400 | 0x1000, False, old_pid)
             if handle:
-                kernel32.CloseHandle(handle)
-                print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
-                sys.exit(0)
+                try:
+                    exit_code = ctypes.c_ulong()
+                    alive = (kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                             and exit_code.value == 259)  # STILL_ACTIVE
+                finally:
+                    kernel32.CloseHandle(handle)
+                if alive:
+                    print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
+                    sys.exit(0)
         except (ValueError, OSError):
             pass
     # 새 lockfile 작성
@@ -324,10 +336,29 @@ def main():
     result = start_bot()
     notify(f"🐕 *Watchdog 가동*\n{result}\n\n명령어: `!bot status/start/stop/restart`")
 
+    consecutive_errors = 0
+    MAX_CONSECUTIVE_ERRORS = 10  # 연속 에러 시 Slack 클라이언트 재생성
+
     try:
         while True:
-            check_bot_health()
-            poll_commands()
+            try:
+                check_bot_health()
+                poll_commands()
+                consecutive_errors = 0
+            except KeyboardInterrupt:
+                raise
+            except Exception as e:
+                consecutive_errors += 1
+                print(f"[WATCHDOG] 루프 에러 ({consecutive_errors}회 연속): {e}")
+                if consecutive_errors >= MAX_CONSECUTIVE_ERRORS:
+                    # Slack 클라이언트 재생성 (SSL 세션 리셋)
+                    print("[WATCHDOG] Slack 클라이언트 재생성")
+                    try:
+                        client.__init__(token=SLACK_BOT_TOKEN)
+                    except Exception:
+                        pass
+                    consecutive_errors = 0
+                time.sleep(POLL_INTERVAL)
             time.sleep(POLL_INTERVAL)
     except KeyboardInterrupt:
         print("\n[WATCHDOG] 종료 중...")
