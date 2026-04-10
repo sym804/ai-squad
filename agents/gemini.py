@@ -146,7 +146,15 @@ class GeminiAgent(AgentBase):
             os.unlink(tmp)
 
     async def _run_progress_once(self, stdin_data: bytes, on_progress, t: int, model: str = None):
-        """1회 실행. (output, is_rate_limited) 반환."""
+        """1회 실행. (output, is_rate_limited) 반환.
+
+        타임아웃 전략 (agents/claude.py와 동일 패턴):
+        - readline_timeout = 60초: 매 라인 대기 한계
+        - overall_timeout  = t * 2: 전체 실행 한계
+        Gemini CLI는 복잡한 프롬프트에서 2~3분 버퍼링 후 한 번에 출력하는 경우가
+        있어서 단일 타임아웃(180초)으로는 종종 끊긴다. readline이 만료돼도
+        프로세스가 살아있고 전체 시간이 남아있으면 계속 폴링.
+        """
         cmd = platform_cmd(["gemini", "-m", model or _GEMINI_MODELS[0], "-y", "-p", ""])
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -165,17 +173,35 @@ class GeminiAgent(AgentBase):
 
         output = ""
         last_callback = time.time()
+        start_time = time.time()
         rate_limited = False
+        readline_timeout = 60
+        overall_timeout = t * 2
 
         while True:
-            try:
-                line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
-            except asyncio.TimeoutError:
+            elapsed = time.time() - start_time
+            if elapsed > overall_timeout:
                 kill_process_tree(proc)
                 await proc.wait()
                 self.timed_out = True
                 self.has_error = False
-                return f"[{self.name}] 응답 대기 시간 초과 ({t}초 무응답)", False
+                return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
+
+            try:
+                line = await asyncio.wait_for(
+                    proc.stdout.readline(), timeout=readline_timeout
+                )
+            except asyncio.TimeoutError:
+                # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
+                if proc.returncode is None and time.time() - start_time < overall_timeout:
+                    if on_progress and output:
+                        on_progress(_clean_output(output))
+                    continue
+                kill_process_tree(proc)
+                await proc.wait()
+                self.timed_out = True
+                self.has_error = False
+                return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
 
             if not line:
                 break
