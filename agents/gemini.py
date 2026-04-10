@@ -62,13 +62,25 @@ _MAX_RETRIES = 1  # Gemini CLI가 내부적으로 5회 재시도하므로 외부
 _BACKOFF_BASE = 10
 
 
-# 단일 안정 모델만 사용. preview/lite 모델(gemini-3-flash-preview,
-# gemini-3.1-flash-lite-preview)은 quota가 매우 타이트해서 거의 매번 429 발생,
-# 결과적으로 cooldown → fallback 사이클만 반복시키고 실사용에 방해됨.
-# 다중 모델 fallback이 필요해지면 나중에 재도입.
+# 모델 선택 근거 (2026-04-11 벤치마크, 각 모델 × 2회, 동일 프롬프트):
+#   gemini-2.5-flash-lite          →   9.1s  (primary)
+#   gemini-3-flash-preview         →  11.8s  (fallback)
+#   gemini-3.1-flash-lite-preview  →  54.9s  (재시도 5회 — 불안정)
+#   gemini-2.5-flash               →  65.5s  (가장 느림 — 제외)
+# Google AI Pro 구독으로 모든 모델에 접근 가능하고 일일 quota도 충분(99%+ 남음).
+# lite 모델이 압도적으로 빠르면서 성공률 100%라 primary로 선정.
 _GEMINI_MODELS = [
-    "gemini-2.5-flash",
+    "gemini-2.5-flash-lite",   # 평균 9.1s, 안정적, 일일 quota 570+
+    "gemini-3-flash-preview",  # fallback, 평균 11.8s
 ]
+
+
+# 전역 동시 호출 제한: 초기에는 OAuth 무료 티어 가정으로 Semaphore(1) 직렬화
+# 했으나, (1) Google AI Pro 구독으로 실제 quota가 충분하고, (2) primary 모델을
+# `gemini-2.5-flash-lite`로 바꿔 호출당 소요가 9초 수준으로 짧아져서 burst 부담이
+# 크지 않다. 그래서 `Semaphore(3)`으로 완화 — 최대 3개 동시 Gemini 호출만 허용.
+# 이 정도면 병렬 debate 2개도 bottleneck 없이 돌고, 갑작스런 burst만 방어.
+_gemini_concurrency = asyncio.Semaphore(3)
 
 # 모델 가용성 캐시: 429 난 모델은 5분간 스킵
 _model_cooldown: dict[str, float] = {}  # {model: expire_timestamp}
@@ -119,19 +131,21 @@ class GeminiAgent(AgentBase):
             for model in _available_models():
                 cmd = platform_cmd(["gemini", "-m", model, "-y", "-p", ""])
                 for attempt in range(_MAX_RETRIES):
-                    proc = await asyncio.create_subprocess_exec(
-                        *cmd,
-                        stdin=asyncio.subprocess.PIPE,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE,
-                        env=make_filtered_env(),
-                        cwd=self._cwd,
-                        **subprocess_kwargs(),
-                    )
-                    if self._current_thread_ts:
-                        register_process(self._current_thread_ts, proc)
-                    stdout, stderr = await proc.communicate(input=stdin_data)
-                    exit_code = proc.returncode
+                    # 전역 직렬화: 병렬 debate에서 Gemini 호출이 동시에 터지지 않도록.
+                    async with _gemini_concurrency:
+                        proc = await asyncio.create_subprocess_exec(
+                            *cmd,
+                            stdin=asyncio.subprocess.PIPE,
+                            stdout=asyncio.subprocess.PIPE,
+                            stderr=asyncio.subprocess.PIPE,
+                            env=make_filtered_env(),
+                            cwd=self._cwd,
+                            **subprocess_kwargs(),
+                        )
+                        if self._current_thread_ts:
+                            register_process(self._current_thread_ts, proc)
+                        stdout, stderr = await proc.communicate(input=stdin_data)
+                        exit_code = proc.returncode
                     out_text = stdout.decode("utf-8", errors="replace").strip()
                     err_text = stderr.decode("utf-8", errors="replace").strip()
                     last_output = out_text or err_text
@@ -163,79 +177,84 @@ class GeminiAgent(AgentBase):
         프로세스가 살아있고 전체 시간이 남아있으면 계속 폴링.
         """
         cmd = platform_cmd(["gemini", "-m", model or _GEMINI_MODELS[0], "-y", "-p", ""])
-        proc = await asyncio.create_subprocess_exec(
-            *cmd,
-            stdin=asyncio.subprocess.PIPE,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.STDOUT,
-            env=make_filtered_env(),
-            cwd=self._cwd,
-            **subprocess_kwargs(),
-        )
-        if self._current_thread_ts:
-            register_process(self._current_thread_ts, proc)
-        proc.stdin.write(stdin_data)
-        await proc.stdin.drain()
-        proc.stdin.close()
 
-        output = ""
-        last_callback = time.time()
-        start_time = time.time()
-        saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
-        readline_timeout = 60
-        overall_timeout = t * 2
+        # 전역 직렬화: 병렬 debate에서 Gemini 호출 동시 폭주 방지.
+        # 전체 subprocess 수명(spawn → read loop → wait)을 감싸야 실효성 있음.
+        async with _gemini_concurrency:
+            proc = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdin=asyncio.subprocess.PIPE,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+                env=make_filtered_env(),
+                cwd=self._cwd,
+                **subprocess_kwargs(),
+            )
+            if self._current_thread_ts:
+                register_process(self._current_thread_ts, proc)
+            proc.stdin.write(stdin_data)
+            await proc.stdin.drain()
+            proc.stdin.close()
 
-        # 내부 재시도 로그 키워드 — output에 포함하지 않고 rate-limit 힌트로만 기록
-        _RETRY_NOISE = ("Attempt ", "Retrying after")
+            output = ""
+            last_callback = time.time()
+            start_time = time.time()
+            saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
+            readline_timeout = 60
+            overall_timeout = t * 2
 
-        while True:
-            elapsed = time.time() - start_time
-            if elapsed > overall_timeout:
-                kill_process_tree(proc)
-                await proc.wait()
-                self.timed_out = True
-                self.has_error = False
-                return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
+            # 내부 재시도 로그 키워드 — output에 포함하지 않고 rate-limit 힌트로만 기록
+            _RETRY_NOISE = ("Attempt ", "Retrying after")
 
-            try:
-                line = await asyncio.wait_for(
-                    proc.stdout.readline(), timeout=readline_timeout
-                )
-            except asyncio.TimeoutError:
-                # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
-                if proc.returncode is None and time.time() - start_time < overall_timeout:
-                    if on_progress and output:
-                        on_progress(_clean_output(output))
+            while True:
+                elapsed = time.time() - start_time
+                if elapsed > overall_timeout:
+                    kill_process_tree(proc)
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
+
+                try:
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=readline_timeout
+                    )
+                except asyncio.TimeoutError:
+                    # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
+                    if proc.returncode is None and time.time() - start_time < overall_timeout:
+                        if on_progress and output:
+                            on_progress(_clean_output(output))
+                        continue
+                    kill_process_tree(proc)
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
+
+                if not line:
+                    break
+
+                decoded = line.decode("utf-8", errors="replace")
+                if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
+                        "YOLO mode", "Loaded cached credentials", "automatically approved")):
                     continue
-                kill_process_tree(proc)
-                await proc.wait()
-                self.timed_out = True
-                self.has_error = False
-                return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
+                # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트만 기록
+                if any(kw in decoded for kw in _RETRY_NOISE):
+                    if self._is_rate_limited(decoded):
+                        saw_rate_limit_noise = True
+                    continue
 
-            if not line:
-                break
-
-            decoded = line.decode("utf-8", errors="replace")
-            if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
-                    "YOLO mode", "Loaded cached credentials", "automatically approved")):
-                continue
-            # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트만 기록
-            if any(kw in decoded for kw in _RETRY_NOISE):
                 if self._is_rate_limited(decoded):
                     saw_rate_limit_noise = True
-                continue
 
-            if self._is_rate_limited(decoded):
-                saw_rate_limit_noise = True
+                output += decoded
 
-            output += decoded
+                if on_progress and time.time() - last_callback >= 10:
+                    on_progress(_clean_output(output))
+                    last_callback = time.time()
 
-            if on_progress and time.time() - last_callback >= 10:
-                on_progress(_clean_output(output))
-                last_callback = time.time()
+            exit_code = await proc.wait()
 
-        exit_code = await proc.wait()
         # 최종 판정: exit_code 0이면 CLI 내부 재시도(최대 5회)가 성공한 것이므로
         # stream 중 429 노이즈가 있었어도 최종 결과를 신뢰하고 rate_limited = False.
         # exit_code != 0이고 rate-limit 패턴이 관측됐을 때만 진짜 실패로 판정.

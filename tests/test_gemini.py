@@ -57,18 +57,29 @@ class TestRateLimitDetection:
 
 
 class TestModelConfiguration:
-    """모델 목록이 안정 모델 중심인지 확인 (preview/lite 제거)."""
+    """모델 목록이 벤치마크 결과(2026-04-11)에 맞는지 확인.
 
-    def test_only_stable_model(self):
-        """기본 모델은 단일 안정 모델 (preview/lite 금지)."""
-        assert "gemini-2.5-flash" in _GEMINI_MODELS
+    Google AI Pro 구독으로 6개 모델 접근 가능하며, 실제 응답 속도 벤치마크에서
+    `gemini-2.5-flash-lite`가 9.1s로 가장 빠르고 `gemini-2.5-flash`가 65.5s로
+    가장 느린 것으로 확인됨. primary는 속도 기준으로 선정.
+    """
 
-    def test_no_preview_models(self):
-        """preview/lite 모델은 quota 문제로 제거됨."""
+    def test_primary_is_fastest_model(self):
+        """primary(첫 번째)는 벤치마크 1위 모델이어야 함."""
+        assert _GEMINI_MODELS[0] == "gemini-2.5-flash-lite"
+
+    def test_slow_gemini_2_5_flash_removed(self):
+        """gemini-2.5-flash는 벤치마크에서 65.5s로 가장 느렸으므로 제외."""
+        assert "gemini-2.5-flash" not in _GEMINI_MODELS
+
+    def test_unstable_3_1_lite_preview_removed(self):
+        """gemini-3.1-flash-lite-preview는 재시도 5회 + 55s로 불안정, 제외."""
+        assert "gemini-3.1-flash-lite-preview" not in _GEMINI_MODELS
+
+    def test_all_models_have_known_tier(self):
+        """등록된 모든 모델은 벤치마크에서 성공률 100% 달성한 것만."""
+        benchmarked_ok = {"gemini-2.5-flash-lite", "gemini-3-flash-preview"}
         for model in _GEMINI_MODELS:
-            assert "preview" not in model.lower(), (
-                f"{model}: preview 모델은 quota가 타이트해서 제거되어야 함"
-            )
-            assert "lite" not in model.lower(), (
-                f"{model}: lite 모델은 quota가 타이트해서 제거되어야 함"
+            assert model in benchmarked_ok, (
+                f"{model}: 벤치마크에서 검증되지 않음. 등록 전 성능 측정 필요"
             )
