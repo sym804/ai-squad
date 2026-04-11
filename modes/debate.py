@@ -14,12 +14,12 @@ logger = logging.getLogger(__name__)
 CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
 
 SYSTEM_PROMPT = (
-    "당신은 AI 토론 에이전트입니다. 다른 에이전트들과 토론하여 합의에 도달하세요.\n"
+    "당신은 AI 토론 에이전트입니다. 여러 라운드에 걸쳐 다른 에이전트들과 합의에 도달하세요.\n"
     "반드시 500자 이내로 답변하세요.\n"
     "핵심 원칙:\n"
-    "- 다른 에이전트의 의견을 검토하고, 동의/반박/보완하며 토론하세요.\n"
     "- 사용자가 구체적인 정보를 요구하면 (상품명, 수치, 목록, 링크 등) 반드시 구체적으로 답하세요.\n"
     "- 추상적 요약이나 일반론으로 끝내지 말고, 사용자의 요구사항에 맞는 실질적 답변을 제시하세요.\n"
+    "- 상대 에이전트 검토 여부는 각 라운드 지시문에 따르세요. 지시 없이 임의로 '다른 에이전트'를 언급/추측하지 마세요.\n"
     "\n답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
     '<!--CONSENSUS:{"agree": true/false, "summary": "사용자 질문에 대한 구체적 답변 (상품명, 수치 등 포함, 1~3줄)"}-->\n'
     "agree=true: 다른 에이전트들과 의견이 충분히 일치한다고 판단할 때.\n"
@@ -220,17 +220,34 @@ class DebateMode:
         self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
 
     def _build_followup_prompt(self, original_topic: str, question: str, history: list[dict], round_num: int) -> str:
+        """추가 토론 프롬프트. followup의 [이전 토론 내용]은 실제 과거 발언이므로 라운드 1부터 노출.
+        단, 이번 추가 토론 **현재 라운드**의 상대 발언은 아직 없으므로 추측 금지."""
         recent = history[-15:] if len(history) > 15 else history
         parts = [
             SYSTEM_PROMPT,
             f"\n[원래 토론 주제] {original_topic}",
             f"[사용자 추가 질문] {question}",
             f"[현재 라운드] {round_num}/{MAX_DEBATE_ROUNDS}",
-            "\n[이전 토론 내용]",
         ]
-        for entry in recent:
-            parts.append(f"- {entry['name']}: {entry['text'][:300]}")
-        parts.append("\n원래 주제와 사용자 질문의 맥락을 반드시 참고하여 답변하세요. 사용자의 의견이 최우선입니다. 구체적 정보(이름, 수치, 목록 등)가 요구되면 반드시 포함하세요. (500자 이내)")
+        if recent:
+            parts.append("\n[이전 토론 내용]")
+            for entry in recent:
+                parts.append(f"- {entry['name']}: {entry['text'][:300]}")
+
+        if round_num == 1:
+            parts.append(
+                "\n⚠️ 추가 토론 **라운드 1**입니다. 위 [이전 토론 내용]은 과거 기록이므로 맥락으로 참고하세요.\n"
+                "- 하지만 이번 추가 질문에 대한 다른 에이전트의 **현재 라운드 답변**은 아직 없습니다.\n"
+                "- 현재 라운드에서 다른 에이전트가 뭐라고 할지 추측/언급하지 마세요.\n"
+                "- 사용자 추가 질문에 본인의 독립적 견해만 제시하세요.\n"
+                "- 라운드 1의 agree 필드는 반드시 false로 설정하세요. (500자 이내)"
+            )
+        else:
+            parts.append(
+                "\n원래 주제와 사용자 추가 질문의 맥락을 반드시 참고하여, "
+                "위 [이전 토론 내용]의 다른 에이전트 의견을 검토/반박/보완하세요. "
+                "사용자 의견이 최우선입니다. 구체적 정보(이름, 수치, 목록 등)를 포함하세요. (500자 이내)"
+            )
         return "\n".join(parts)
 
     def _fetch_original_topic(self, channel: str, thread_ts: str) -> str:
@@ -433,9 +450,18 @@ class DebateMode:
     def _build_prompt(
         self, topic: str, history: list[dict], round_num: int
     ) -> str:
-        """Build prompt with topic, recent history, and instructions."""
-        # Only include last 10 messages to avoid context overflow
-        recent = history[-10:] if len(history) > 10 else history
+        """Build prompt with topic, recent history, and round-aware instructions.
+
+        라운드 1: 아직 상대 발언이 없음 → 사용자 메시지만 노출, 본인 독립 견해만.
+                 (today_conclusions 등 에이전트 라벨 섞인 히스토리는 라운드 1에서 제외)
+        라운드 2+: 라운드 1 발언을 검토/반박/보완.
+        """
+        # 라운드 1: 에이전트 라벨 섞인 히스토리(이전 토론 결론 등) 제거, 사용자 메시지만
+        if round_num == 1:
+            filtered = [h for h in history if h.get("name") == "사용자"]
+        else:
+            filtered = history
+        recent = filtered[-10:] if len(filtered) > 10 else filtered
 
         parts = [
             SYSTEM_PROMPT,
@@ -448,7 +474,19 @@ class DebateMode:
             for entry in recent:
                 parts.append(f"- {entry['name']}: {entry['text'][:300]}")
 
-        parts.append("\n위 내용을 참고하여 사용자의 질문/요구사항에 직접적으로 답변하세요. 구체적 정보(이름, 수치, 목록 등)가 요구되면 반드시 포함하세요. (500자 이내)")
+        if round_num == 1:
+            parts.append(
+                "\n⚠️ 이번은 **라운드 1**입니다. 아직 다른 에이전트의 발언이 없습니다.\n"
+                "- 다른 에이전트가 무슨 말을 했을지 추측/가정/언급하지 마세요.\n"
+                "- '다른 에이전트', '상대', '앞서 언급된', '한 에이전트는' 같은 표현 금지.\n"
+                "- 라운드 1의 agree 필드는 반드시 false로 설정하세요 (비교할 발언이 없음).\n"
+                "- 사용자 질문에 본인의 독립적 견해만 구체적으로 제시하세요. (500자 이내)"
+            )
+        else:
+            parts.append(
+                "\n위 [이전 발언]의 다른 에이전트 의견을 반드시 검토하여 동의/반박/보완하세요. "
+                "사용자 요구사항에 직접 답변하고, 구체적 정보(이름, 수치, 목록 등)를 포함하세요. (500자 이내)"
+            )
         return "\n".join(parts)
 
     @staticmethod
