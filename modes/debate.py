@@ -140,7 +140,7 @@ class DebateMode:
 
             prompt = self._build_followup_prompt(original_topic, question, history, round_num)
 
-            async def _ask_followup(a):
+            async def _ask_followup_and_post(a):
                 stop, cb = handlers[a.name]
                 result = await a.ask_with_progress(prompt, on_progress=cb)
                 stop.set()
@@ -148,15 +148,16 @@ class DebateMode:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
                     pass
+                # 완료 즉시 응답 포스트
+                self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
                 return result
 
             responses = await asyncio.gather(
-                *[_ask_followup(agent) for agent in shuffled]
+                *[_ask_followup_and_post(agent) for agent in shuffled]
             )
 
             round_consensuses = []
             for agent, response in zip(shuffled, responses):
-                self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))
                 history.append({"name": agent.name, "text": response})
                 round_consensuses.append({
                     "agent_name": agent.name,
@@ -368,10 +369,10 @@ class DebateMode:
                 handlers[agent.name] = self._make_progress_handler(
                     channel, thread_ts, msg["ts"], agent)
 
-            # 3개 AI 동시 실행
+            # 3개 AI 동시 실행 — 완료 즉시 포스트 (slowest 대기 공백 제거)
             prompt = self._build_prompt(topic, history, round_num)
 
-            async def _ask_agent(a):
+            async def _ask_and_post(a):
                 stop, cb = handlers[a.name]
                 result = await a.ask_with_progress(prompt, on_progress=cb)
                 stop.set()
@@ -379,14 +380,16 @@ class DebateMode:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
                     pass
+                # 완료 즉시 응답 포스트 (실제 완료 순서대로 사용자에게 표시)
+                self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
                 return result
 
             responses = await asyncio.gather(
-                *[_ask_agent(agent) for agent in shuffled]
+                *[_ask_and_post(agent) for agent in shuffled]
             )
 
+            # history/consensus는 shuffled 순서로 기록 (재현성 유지)
             for agent, response in zip(shuffled, responses):
-                self._post(channel, thread_ts, agent.format_message(_strip_consensus(response)))
                 history.append({"name": agent.name, "text": response})
                 round_consensuses.append({
                     "agent_name": agent.name,
