@@ -144,10 +144,20 @@ class AgentBase:
 
             output = ""
             last_callback = time.time()
+            deadline = time.time() + t  # 전체 타임아웃 데드라인
 
             while True:
+                remaining = deadline - time.time()
+                if remaining <= 0:
+                    kill_process_tree(proc)
+                    await proc.wait()
+                    self.timed_out = True
+                    self.has_error = False
+                    return f"[{self.name}] 전체 시간 초과 ({t}초)"
+
+                line_timeout = min(remaining, t)
                 try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=t)
+                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=line_timeout)
                 except asyncio.TimeoutError:
                     kill_process_tree(proc)
                     await proc.wait()

@@ -14,3 +14,7 @@ class ClaudeBackupAgent(ClaudeAgent):
     async def _run_cli(self, prompt: str) -> str:
         """PERSPECTIVE를 프롬프트 앞에 붙여서 실행."""
         return await super()._run_cli(self.PERSPECTIVE + prompt)
+
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+        """PERSPECTIVE를 프롬프트 앞에 붙여서 실행."""
+        return await super().ask_with_progress(self.PERSPECTIVE + prompt, on_progress, timeout)
