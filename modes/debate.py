@@ -15,10 +15,15 @@ CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
 
 SYSTEM_PROMPT = (
     "당신은 AI 토론 에이전트입니다. 여러 라운드에 걸쳐 다른 에이전트들과 합의에 도달하세요.\n"
-    "반드시 500자 이내로 답변하세요.\n"
+    "최종 답변은 반드시 500자 이내로 작성하세요. (웹 검색/도구 호출은 글자수에 포함되지 않음)\n"
     "핵심 원칙:\n"
     "- 사용자가 구체적인 정보를 요구하면 (상품명, 수치, 목록, 링크 등) 반드시 구체적으로 답하세요.\n"
     "- 추상적 요약이나 일반론으로 끝내지 말고, 사용자의 요구사항에 맞는 실질적 답변을 제시하세요.\n"
+    "- **실시간 수치/시세/뉴스/환율/지수/가격**이 필요한 질문이면 **첫 번째 행동으로** 반드시 웹 검색 툴을 호출해 최신 값을 조회하세요. 출처(URL 또는 출처명)와 조회 시각을 답변에 명시하세요. 학습 데이터 기억만으로 수치를 단정 제시하는 것은 금지입니다.\n"
+    "  * Gemini: `google_web_search` 툴을 호출하세요.\n"
+    "  * Claude: `WebSearch` 또는 `WebFetch` 툴을 호출하세요.\n"
+    "  * Codex: `web_search` 툴을 호출하세요.\n"
+    "- 검색 결과가 서로 엇갈리면 가장 권위 있는 공식 출처(거래소, 통계청, 공식 API 등)를 우선하세요.\n"
     "- 상대 에이전트 검토 여부는 각 라운드 지시문에 따르세요. 지시 없이 임의로 '다른 에이전트'를 언급/추측하지 마세요.\n"
     "\n답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
     '<!--CONSENSUS:{"agree": true/false, "summary": "사용자 질문에 대한 구체적 답변 (상품명, 수치 등 포함, 1~3줄)"}-->\n'
@@ -281,8 +286,9 @@ class DebateMode:
                 if not text:
                     continue
                 if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
-                    # 봇 메시지에서 에이전트 이름 추출
-                    for agent in self.agents:
+                    # 봇 메시지에서 에이전트 이름 추출 (primary + backup)
+                    all_agents = list(self.agents) + list(self._backup_map.values())
+                    for agent in all_agents:
                         if text.startswith(f"{agent.emoji} *[{agent.name}]*"):
                             name = agent.name
                             text = text.split("\n", 1)[-1] if "\n" in text else text

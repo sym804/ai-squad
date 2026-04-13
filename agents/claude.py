@@ -48,14 +48,16 @@ class ClaudeAgent(AgentBase):
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
-        cmd.extend(["-p", "--output-format", "json"])
+        cmd.extend(["-p", "--output-format", "json",
+                    "--allowedTools", "WebSearch", "WebFetch"])
         return cmd
 
     def _build_stream_cmd(self) -> list[str]:
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
-        cmd.extend(["-p", "--output-format", "stream-json", "--verbose"])
+        cmd.extend(["-p", "--output-format", "stream-json", "--verbose",
+                    "--allowedTools", "WebSearch", "WebFetch"])
         return cmd
 
     async def _run_cli(self, prompt: str) -> str:
