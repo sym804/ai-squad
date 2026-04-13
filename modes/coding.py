@@ -39,6 +39,8 @@ class CodingMode:
         }
         self._replaced = set()
         self._bot_user_id = None
+        self._rejected_thread = None
+        self._rejected_reason = ""
 
     @staticmethod
     def _extract_path(text: str) -> str | None:
@@ -234,7 +236,8 @@ class CodingMode:
                 if not text:
                     continue
                 if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
-                    for agent in self.agents:
+                    all_agents = list(self.agents) + list(self._backup_map.values())
+                    for agent in all_agents:
                         if text.startswith(f"{agent.emoji} *[{agent.name}]*"):
                             name = agent.name
                             text = text.split("\n", 1)[-1] if "\n" in text else text
