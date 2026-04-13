@@ -6,7 +6,9 @@
 """
 
 import asyncio
+import subprocess
 import threading
+from concurrent.futures import ThreadPoolExecutor
 
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
@@ -15,7 +17,43 @@ from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_C
 from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
+from process import platform_cmd, subprocess_kwargs
 import cancel
+
+
+_CLI_CHECKS = [
+    ("claude", ["claude", "--version"]),
+    ("codex",  ["codex",  "--version"]),
+    ("gemini", ["gemini", "--version"]),
+]
+
+
+def _check_one_cli(name: str, cmd: list[str]) -> tuple[str, bool, str]:
+    """단일 CLI의 --version 실행 결과. (name, ok, detail)."""
+    try:
+        p = subprocess.run(
+            platform_cmd(cmd),
+            capture_output=True, text=True, timeout=10,
+            encoding="utf-8", errors="replace",
+            **subprocess_kwargs(),
+        )
+        if p.returncode == 0:
+            ver = (p.stdout or p.stderr).strip().splitlines()[0] if (p.stdout or p.stderr) else ""
+            return (name, True, ver)
+        return (name, False, f"exit {p.returncode}: {(p.stderr or p.stdout).strip()[:200]}")
+    except FileNotFoundError:
+        return (name, False, "설치되지 않음 (PATH에 없음)")
+    except subprocess.TimeoutExpired:
+        return (name, False, "10초 타임아웃")
+    except Exception as e:
+        return (name, False, f"{type(e).__name__}: {e}")
+
+
+def check_clis() -> list[tuple[str, bool, str]]:
+    """claude/codex/gemini CLI 버전을 병렬 호출. 결과 리스트 반환."""
+    with ThreadPoolExecutor(max_workers=len(_CLI_CHECKS)) as ex:
+        futures = [ex.submit(_check_one_cli, n, c) for n, c in _CLI_CHECKS]
+        return [f.result() for f in futures]
 
 
 app = App(token=SLACK_BOT_TOKEN)
@@ -163,6 +201,27 @@ if __name__ == "__main__":
     print(f"  Coding Channel : {CODING_CHANNEL_ID}")
     for ch_id, work_dir in BRIDGE_CHANNELS.items():
         print(f"  Bridge Channel : {ch_id} → {work_dir}")
+    print("=" * 50)
+
+    # CLI 헬스체크
+    print("[HEALTH] CLI 버전 확인 중...")
+    results = check_clis()
+    failures = []
+    for name, ok, detail in results:
+        mark = "✅" if ok else "❌"
+        print(f"  {mark} {name}: {detail}")
+        if not ok:
+            failures.append((name, detail))
+    if failures and _OWN_BOT_ID:
+        try:
+            lines = ["⚠️ *CLI 헬스체크 실패* — 일부 에이전트 사용 불가:"]
+            for name, detail in failures:
+                lines.append(f"  • `{name}`: {detail}")
+            WebClient(token=SLACK_BOT_TOKEN).chat_postMessage(
+                channel=DEBATE_CHANNEL_ID, text="\n".join(lines)
+            )
+        except Exception as e:
+            print(f"[HEALTH] Slack 알림 실패: {e}")
     print("=" * 50)
     sys.stdout.flush()
 
