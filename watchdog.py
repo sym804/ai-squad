@@ -51,11 +51,13 @@ RAPID_CRASH_WINDOW = 60  # 이 시간(초) 안에 MAX_RAPID_CRASHES번 죽으면
 
 client = WebClient(token=SLACK_BOT_TOKEN)
 bot_process = None
+bot_log_file = None  # start_bot()에서 열린 로그 파일 핸들
 bot_user_id = None
 auto_restart = True
 manual_stop = False  # 수동 종료 시 크래시 알림 방지
 crash_times = []
 handled_ts = set()  # 이미 처리한 메시지 timestamp
+_HANDLED_MAX = 100  # handled_ts 최대 크기
 
 
 def get_bot_user_id():
@@ -104,24 +106,36 @@ def notify_active_threads():
     print(f"[WATCHDOG] {len(active)}개 스레드에 중단 알림 전송")
 
 
+def _close_log():
+    """이전 로그 핸들을 안전하게 닫는다."""
+    global bot_log_file
+    if bot_log_file:
+        try:
+            bot_log_file.close()
+        except Exception:
+            pass
+        bot_log_file = None
+
+
 def start_bot():
     """slack_bot.py를 subprocess로 시작합니다."""
-    global bot_process, auto_restart, manual_stop
+    global bot_process, bot_log_file, auto_restart, manual_stop
     if bot_process and bot_process.poll() is None:
         return "⚠️ 이미 실행 중입니다."
 
     auto_restart = True
     manual_stop = False
+    _close_log()
     base_dir = os.path.dirname(os.path.abspath(__file__))
     script = os.path.join(base_dir, "slack_bot.py")
     log_path = os.path.join(base_dir, "bot_output.log")
-    log_file = open(log_path, "a", encoding="utf-8")
-    log_file.write(f"\n{'='*50}\n[{datetime.now()}] Bot 시작\n{'='*50}\n")
-    log_file.flush()
+    bot_log_file = open(log_path, "a", encoding="utf-8")
+    bot_log_file.write(f"\n{'='*50}\n[{datetime.now()}] Bot 시작\n{'='*50}\n")
+    bot_log_file.flush()
     bot_process = subprocess.Popen(
         [sys.executable, "-u", script],
         cwd=base_dir,
-        stdout=log_file,
+        stdout=bot_log_file,
         stderr=subprocess.STDOUT,
     )
     msg = f"✅ Bot 시작됨 (PID: {bot_process.pid})"
@@ -130,27 +144,30 @@ def start_bot():
 
 
 def stop_bot():
-    """실행 중인 봇을 종료합니다."""
+    """실행 중인 봇과 자식 프로세스 트리를 종료합니다."""
     global bot_process, auto_restart, manual_stop
+    from process import kill_process_tree
     auto_restart = False
     manual_stop = True
     if bot_process and bot_process.poll() is None:
-        bot_process.terminate()
+        kill_process_tree(bot_process)
         try:
             bot_process.wait(timeout=15)
         except subprocess.TimeoutExpired:
             bot_process.kill()
         # poll 잔여 exit code 소비
         bot_process.poll()
+        _close_log()
         msg = "🛑 Bot 종료됨"
         print(f"[WATCHDOG] {msg}")
         return msg
+    _close_log()
     return "⚠️ 실행 중인 봇이 없습니다."
 
 
 def restart_bot():
     """봇을 재시작합니다."""
-    global manual_stop
+    global manual_stop, auto_restart
     manual_stop = True
     notify_active_threads()
     stop_bot()
@@ -170,7 +187,7 @@ def bot_status():
 
 def check_bot_health():
     """봇 프로세스가 죽었는지 확인하고, 필요 시 재시작합니다."""
-    global bot_process, crash_times, manual_stop
+    global bot_process, crash_times, manual_stop, auto_restart
 
     if bot_process is None:
         return
@@ -190,6 +207,8 @@ def check_bot_health():
     ts = datetime.now().strftime("%H:%M:%S")
 
     if len(crash_times) >= MAX_RAPID_CRASHES:
+        auto_restart = False
+        bot_process = None
         notify(
             f"🚨 *Bot 반복 크래시* ({ts}) - {len(crash_times)}회/{RAPID_CRASH_WINDOW}초\n"
             f"자동 재시작 중단. `!bot start`로 수동 시작하세요."
@@ -248,10 +267,10 @@ def poll_commands():
 
         handled_ts.add(msg["ts"])
 
-        # 오래된 ts 정리 (100개 초과 시)
-        if len(handled_ts) > 100:
-            handled_ts.clear()
-            handled_ts.add(msg["ts"])
+        # 오래된 ts 정리 — 가장 오래된 것부터 제거 (FIFO)
+        if len(handled_ts) > _HANDLED_MAX:
+            oldest = sorted(handled_ts)[:len(handled_ts) - _HANDLED_MAX]
+            handled_ts.difference_update(oldest)
 
         parts = text.split()
         cmd = parts[1] if len(parts) > 1 else "help"
@@ -275,6 +294,29 @@ def poll_commands():
             )
 
 
+def _is_pid_alive(pid: int) -> bool:
+    """PID가 실제로 실행 중인지 확인."""
+    if sys.platform == "win32":
+        import ctypes
+        kernel32 = ctypes.windll.kernel32
+        handle = kernel32.OpenProcess(0x400 | 0x1000, False, pid)
+        if not handle:
+            return False
+        try:
+            exit_code = ctypes.c_ulong()
+            alive = (kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
+                     and exit_code.value == 259)  # STILL_ACTIVE
+        finally:
+            kernel32.CloseHandle(handle)
+        return alive
+    else:
+        try:
+            os.kill(pid, 0)
+            return True
+        except OSError:
+            return False
+
+
 def acquire_lock():
     """중복 실행 방지 — lockfile로 PID 확인."""
     lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
@@ -282,25 +324,20 @@ def acquire_lock():
         try:
             with open(lock_path, "r") as f:
                 old_pid = int(f.read().strip())
-            # 해당 PID가 실제로 실행 중인지 확인 (exit code 검사)
-            import ctypes
-            kernel32 = ctypes.windll.kernel32
-            handle = kernel32.OpenProcess(0x400 | 0x1000, False, old_pid)
-            if handle:
-                try:
-                    exit_code = ctypes.c_ulong()
-                    alive = (kernel32.GetExitCodeProcess(handle, ctypes.byref(exit_code))
-                             and exit_code.value == 259)  # STILL_ACTIVE
-                finally:
-                    kernel32.CloseHandle(handle)
-                if alive:
-                    print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
-                    sys.exit(0)
+            if _is_pid_alive(old_pid):
+                print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
+                sys.exit(0)
         except (ValueError, OSError):
             pass
-    # 새 lockfile 작성
-    with open(lock_path, "w") as f:
-        f.write(str(os.getpid()))
+    # 새 lockfile 작성 — O_EXCL 원자적 생성 시도, 실패 시 덮어쓰기
+    try:
+        fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+    except FileExistsError:
+        # 이미 stale lockfile이 남아있는 경우 (위에서 PID 검사 통과)
+        with open(lock_path, "w") as f:
+            f.write(str(os.getpid()))
     return lock_path
 
 
