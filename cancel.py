@@ -7,6 +7,7 @@ thread_channels: thread_ts → channel_id 매핑
 
 import json
 import os
+import tempfile
 import threading
 
 from process import kill_process_tree
@@ -24,7 +25,8 @@ def cancel(thread_ts: str):
         cancelled_threads.add(thread_ts)
         for proc in active_processes.get(thread_ts, []):
             try:
-                kill_process_tree(proc)
+                if proc.returncode is None:
+                    kill_process_tree(proc)
             except Exception:
                 pass
 
@@ -40,14 +42,19 @@ def cancel_channel(channel_id: str):
 
 def is_cancelled(thread_ts: str) -> bool:
     """취소 여부 확인."""
-    return thread_ts in cancelled_threads
+    with _lock:
+        return thread_ts in cancelled_threads
 
 
 def register_process(thread_ts: str, proc):
-    """실행 중인 subprocess를 등록."""
+    """실행 중인 subprocess를 등록. 종료된 프로세스는 제거."""
     with _lock:
         if thread_ts not in active_processes:
             active_processes[thread_ts] = []
+        # 종료된 프로세스 정리 (PID 재사용 방지)
+        active_processes[thread_ts] = [
+            p for p in active_processes[thread_ts] if p.returncode is None
+        ]
         active_processes[thread_ts].append(proc)
 
 
@@ -68,10 +75,19 @@ def cleanup(thread_ts: str):
 
 
 def _save_active():
-    """활성 스레드를 파일에 저장 (lock 내부에서 호출)."""
+    """활성 스레드를 파일에 저장 (lock 내부에서 호출). atomic write."""
     try:
-        with open(_ACTIVE_FILE, "w") as f:
-            json.dump(thread_channels, f)
+        dir_name = os.path.dirname(_ACTIVE_FILE)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_name, suffix=".tmp")
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump(thread_channels, f)
+            os.replace(tmp_path, _ACTIVE_FILE)
+        except Exception:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
     except Exception:
         pass
 
