@@ -195,6 +195,13 @@ if __name__ == "__main__":
     import faulthandler
     faulthandler.enable()  # segfault 등 치명적 오류 시 traceback 출력
 
+    # Windows cp949 콘솔에서 이모지/한글 인코딩 실패 방지
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+
     print("=" * 50)
     print("Slack Multi-Agent Bot 시작")
     print(f"  Debate Channel : {DEBATE_CHANNEL_ID}")
