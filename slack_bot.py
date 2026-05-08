@@ -57,6 +57,26 @@ def check_clis() -> list[tuple[str, bool, str]]:
         return [f.result() for f in futures]
 
 
+# Slack message subtype 중 처리할 화이트리스트.
+# - None             : 일반 텍스트 메시지
+# - file_share       : 파일/이미지 첨부 (텍스트 캡션 동반 가능). 멀티모달 입력 처리에 필수.
+# - thread_broadcast : 스레드 답글을 채널에도 브로드캐스트한 메시지. 일반 답글과 동일하게 처리.
+# 그 외 message_changed/message_deleted/channel_join/bot_message 등은 봇 동작 대상이 아님.
+_PROCESS_SUBTYPES = {None, "file_share", "thread_broadcast"}
+
+
+def should_process_event(event: dict, own_bot_id: str | None) -> bool:
+    """Slack message 이벤트 처리 여부 결정.
+
+    자기 봇 메시지는 무시하고, 처리 대상 subtype 만 통과시킨다.
+    텍스트+이미지를 한 번에 보내면 Slack 이 subtype='file_share' 로 보내므로,
+    여기서 통과시키지 않으면 멀티모달 입력이 전부 차단된다.
+    """
+    if event.get("bot_id") and own_bot_id and event.get("bot_id") == own_bot_id:
+        return False
+    return event.get("subtype") in _PROCESS_SUBTYPES
+
+
 app = App(token=SLACK_BOT_TOKEN)
 
 # 자기 자신의 bot_id 조회
@@ -103,12 +123,7 @@ def _run_async(coro, client=None, channel=None, thread_ts=None):
 def handle_message(event, say, client):
     print(f"[EVENT] channel={event.get('channel')} text={event.get('text', '')[:30]}")
 
-    # 자기 자신의 메시지만 무시 (다른 봇 메시지는 처리)
-    if event.get("bot_id") and event.get("bot_id") == _OWN_BOT_ID:
-        return
-
-    # message_changed, message_deleted 등 서브타입 무시
-    if event.get("subtype"):
+    if not should_process_event(event, _OWN_BOT_ID):
         return
 
     channel = event.get("channel")
