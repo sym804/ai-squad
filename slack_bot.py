@@ -29,43 +29,6 @@ _CLI_CHECKS = [
 ]
 
 
-def check_vision_setup() -> list[tuple[str, bool, str]]:
-    """비전(이미지 첨부) 호출에 필요한 SDK·키 점검.
-
-    - anthropic SDK + ANTHROPIC_API_KEY  → Claude 이미지 분석
-    - google-genai SDK + GEMINI_API_KEY/GOOGLE_API_KEY → Gemini 이미지 분석
-    둘 다 미설정이면 이미지 첨부 시 텍스트 안내만 가능.
-    """
-    import os as _os
-    results: list[tuple[str, bool, str]] = []
-
-    try:
-        import anthropic  # noqa: F401
-        sdk_ok = True
-        sdk_msg = "anthropic SDK ok"
-    except ImportError:
-        sdk_ok = False
-        sdk_msg = "anthropic SDK 미설치"
-    has_key = bool(_os.environ.get("ANTHROPIC_API_KEY"))
-    ok = sdk_ok and has_key
-    detail = f"{sdk_msg}, ANTHROPIC_API_KEY: {'있음' if has_key else '없음'}"
-    results.append(("Claude Vision", ok, detail))
-
-    try:
-        from google import genai  # noqa: F401
-        gsdk_ok = True
-        gsdk_msg = "google-genai SDK ok"
-    except ImportError:
-        gsdk_ok = False
-        gsdk_msg = "google-genai SDK 미설치"
-    g_key = _os.environ.get("GEMINI_API_KEY") or _os.environ.get("GOOGLE_API_KEY")
-    g_ok = gsdk_ok and bool(g_key)
-    g_detail = f"{gsdk_msg}, GEMINI_API_KEY/GOOGLE_API_KEY: {'있음' if g_key else '없음 (ADC 시도)'}"
-    results.append(("Gemini Vision", gsdk_ok, g_detail))
-
-    return results
-
-
 def _check_one_cli(name: str, cmd: list[str]) -> tuple[str, bool, str]:
     """단일 CLI의 --version 실행 결과. (name, ok, detail)."""
     try:
@@ -182,13 +145,21 @@ def handle_message(event, say, client):
 
         Slack Bolt 이벤트 핸들러에서 `extract_images` 를 직접 호출하면 큰 첨부
         파일 다운로드가 핸들러 응답을 30초까지 지연시킬 수 있어, 다운로드 자체를
-        작업 스레드로 밀어넣는다.
+        작업 스레드로 밀어넣는다. 작업 종료 후 임시 디렉토리는 정리.
         """
         def _runner():
-            images = extract_images(event, SLACK_BOT_TOKEN)
-            if images:
-                print(f"[EVENT] 이미지 {len(images)}장 첨부됨: " + ", ".join(i["name"] for i in images))
-            _run_async(make_coro(images), client, channel, target_ts)
+            import tempfile, shutil
+            tmp_dir = tempfile.mkdtemp(prefix=f"slack_imgs_{target_ts}_")
+            try:
+                images = extract_images(event, SLACK_BOT_TOKEN, tmp_dir)
+                if images:
+                    print(f"[EVENT] 이미지 {len(images)}장 첨부됨: " + ", ".join(i["name"] for i in images))
+                _run_async(make_coro(images), client, channel, target_ts)
+            finally:
+                try:
+                    shutil.rmtree(tmp_dir, ignore_errors=True)
+                except Exception:
+                    pass
         threading.Thread(target=_runner, daemon=True).start()
 
     # 스레드 답글 → 추가 토론/질문
@@ -239,12 +210,6 @@ if __name__ == "__main__":
         print(f"  {mark} {name}: {detail}")
         if not ok:
             failures.append((name, detail))
-
-    # 비전 SDK·키 헬스체크 (이미지 첨부 분석에 필요)
-    print("[HEALTH] 비전 SDK 확인 중...")
-    for name, ok, detail in check_vision_setup():
-        mark = "✅" if ok else "⚠️"
-        print(f"  {mark} {name}: {detail}")
     if failures and _OWN_BOT_ID:
         try:
             lines = ["⚠️ *CLI 헬스체크 실패* — 일부 에이전트 사용 불가:"]

@@ -179,20 +179,19 @@ class CodexAgent(AgentBase):
 
     @staticmethod
     def _augment_with_image_note(prompt: str, images: list[dict] | None) -> str:
-        """Codex CLI는 멀티모달 미지원. 이미지 첨부 사실만 텍스트로 알린다.
+        """Codex CLI 에 이미지 첨부 절대경로를 prompt 로 전달.
 
-        이렇게 하지 않으면 Codex 가 "이미지가 있긴 하지만 못 본다"는 메타 답변을
-        반복하거나, 거꾸로 첨부 사실을 모른 채 검색 결과로 환각 분석을 하게 된다.
+        Codex CLI 는 `--full-auto` (workspace-write 샌드박스) 모드에서 prompt 안의
+        절대경로를 자체 read 도구로 읽어 multimodal 입력으로 처리한다. 이미지
+        분석을 모델이 직접 지원하지 않더라도 OCR/구조 인식 등은 가능.
         """
         if not images:
             return prompt
-        names = ", ".join(img.get("name", "image") for img in images)
+        paths_block = "\n".join(f"- {img['path']}" for img in images)
         note = (
-            f"\n\n[참고: 사용자가 이미지 {len(images)}장({names})을 첨부했습니다. "
-            "Codex CLI는 이미지 직접 분석을 지원하지 않으므로, 이미지의 내용을 추측하거나 "
-            "환각 분석을 하지 마세요. '이미지를 직접 보지는 못한다'고 명시한 뒤, "
-            "다른 에이전트(Claude, Gemini)가 비전으로 분석한 결과를 참고하거나, "
-            "텍스트 정보만으로 답할 수 있는 부분만 다루세요.]"
+            f"\n\n[첨부 이미지 ({len(images)}개)]\n{paths_block}\n"
+            "위 절대경로의 이미지 파일을 read 도구로 읽고 시각적으로 분석한 뒤 답변하세요. "
+            "이미지를 직접 볼 수 없다면 그 사실을 명시하고 다른 에이전트의 분석 결과를 참고하세요."
         )
         return prompt + note
 

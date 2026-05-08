@@ -15,11 +15,17 @@
 | v0.5.0 | 2026-04-13 | 에이전트 실행 안정화 + CLI 헬스체크 + 단위 테스트 |
 | v0.5.1 | 2026-04-21 | 부팅 크래시 루프 핫픽스 |
 | v0.6.0 | 2026-05-08 | 이미지 첨부 분석 (Claude/Gemini Vision SDK) |
+| v0.6.1 | 2026-05-08 | 이미지 첨부를 CLI prompt 첨부 방식으로 정정 (API 키 의존 제거) |
+
+## v0.6.1 (2026-05-08)
+
+### 버그 수정
+- **[Major]** 이미지 첨부 분석을 SDK 직호출에서 CLI prompt 첨부 방식으로 정정. v0.6.0 이 Anthropic/google-genai SDK 직호출로 구현되어 사용자 운영 모델(Claude Code / Codex / Gemini CLI 의 OAuth 구독)과 불일치, API 키가 새로 필요해진 회귀를 해결. 이제 Slack 첨부 이미지를 임시 파일로 저장하고 절대경로를 각 CLI 의 첨부 syntax 로 prompt 에 끼워 넣어 호출한다 (Claude: 절대경로 + Read 도구, Gemini: `@<path>`, Codex: 절대경로 + read 도구). 의존성에서 anthropic, google-genai 제거.
 
 ## v0.6.0 (2026-05-08)
 
 ### 개선
-- **[Major]** Slack 첨부 이미지 분석 지원 — Claude(Anthropic SDK) / Gemini(google-genai SDK) Vision 호출. Codex는 멀티모달 미지원이라 prompt 노트만 추가. Debate / Coding / Bridge 3개 모드 모두 적용. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`(또는 `GOOGLE_API_KEY`) 환경변수 필요. Vision 모델은 `CLAUDE_VISION_MODEL` 환경변수로 override 가능.
+- **[Major]** Slack 첨부 이미지 분석 지원 (Debate / Coding / Bridge 3개 모드). v0.6.1 에서 호출 방식 정정.
 
 ## v0.5.1 (2026-04-21)
 
