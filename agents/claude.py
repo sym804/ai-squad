@@ -6,6 +6,13 @@ from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
 from config import make_filtered_env
 
+# stream-json 한 라인 최대 크기. asyncio 기본은 64KB 인데, Claude Code 가
+# Read 도구로 이미지를 읽으면 user/tool_result 블록 한 줄에 base64 또는
+# 큰 텍스트가 통째로 들어가서 64KB 를 쉽게 넘긴다. 그러면 readline 이
+# `LimitOverrunError: Separator is not found, and chunk exceed the limit`
+# 으로 죽고 에이전트가 통째로 실패. 이미지 멀티모달 입력에 대비해 16MB 로 확대.
+_STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
 
 def _format_token_usage(data: dict) -> str:
     """JSON 출력에서 토큰 사용량을 k 단위 문자열로 변환."""
@@ -90,6 +97,7 @@ class ClaudeAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
             if self._current_thread_ts:
@@ -134,6 +142,7 @@ class ClaudeAgent(AgentBase):
                 stderr=asyncio.subprocess.PIPE,
                 env=make_filtered_env(),
                 cwd=self._cwd,
+                limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
             if self._current_thread_ts:

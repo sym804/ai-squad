@@ -59,6 +59,13 @@ _CODEX_NOISE_EXACT = {"exec", "user", "codex"}
 # Windows 절대경로 라인 (C:\Users\... 또는 D:/path/...)
 _WIN_ABS_PATH_LINE = re.compile(r'^[A-Za-z]:[\\/]\S*$')
 
+# Codex CLI 의 플래그 deprecation 경고. 일반적 "is deprecated" 문장이 답변
+# 본문에 등장할 수 있어 substring 매치는 부작용 위험. 이 패턴은 정확히
+# `warning: `--<flag>` is deprecated;` 형태일 때만 매치.
+_CODEX_DEPRECATION_LINE = re.compile(
+    r'^\s*warning:\s+`--[\w-]+`\s+is\s+deprecated', re.IGNORECASE,
+)
+
 # 파일:라인 또는 파일:라인:내용 (ripgrep/grep -n / cat -n 스타일)
 # 예: routers/payment.py:188:    con = sqlite3.connect(...)
 #     app.js:323
@@ -135,6 +142,8 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
             continue
         if any(noise in line for noise in _CODEX_NOISE_CONTAINS):
             continue
+        if _CODEX_DEPRECATION_LINE.match(line):
+            continue
         # 디렉토리 목록 (d-----  또는 -a---- 패턴)
         if stripped.startswith(("d-----", "d-r---", "d--hsl", "-a----")):
             continue
@@ -175,7 +184,10 @@ class CodexAgent(AgentBase):
     emoji = "🟢"
 
     def _build_cmd(self, tmp: str) -> list[str]:
-        return ["codex", "exec", "--full-auto", "--skip-git-repo-check"]
+        # `--full-auto` 는 Codex CLI 0.129 부터 deprecated. 명시적으로
+        # `-s workspace-write` 를 사용하면 같은 동작이며 stdout 에 deprecation
+        # 경고가 찍히지 않는다. (이전 경고 텍스트가 응답 본문에 누출되던 문제)
+        return ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check"]
 
     @staticmethod
     def _augment_with_image_note(prompt: str, images: list[dict] | None) -> str:

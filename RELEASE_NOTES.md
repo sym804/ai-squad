@@ -17,6 +17,21 @@
 | v0.6.0 | 2026-05-08 | 이미지 첨부 분석 (Claude/Gemini Vision SDK) |
 | v0.6.1 | 2026-05-08 | 이미지 첨부를 CLI prompt 첨부 방식으로 정정 (API 키 의존 제거) |
 | v0.6.2 | 2026-05-08 | file_share/thread_broadcast subtype 차단 회귀 수정 (텍스트+이미지 라우팅 복구) |
+| v0.6.3 | 2026-05-09 | Claude readline 64KB 한계 수정 + Codex/Gemini 노이즈 누출 정리 + Gemini vision 가드 |
+
+## v0.6.3 (2026-05-09)
+
+### 버그 수정
+- **[Critical]** Claude 가 이미지 첨부 입력에서 항상 `[Claude] 오류: Separator is not found, and chunk exceed the limit` 으로 실패하던 회귀 수정. asyncio `proc.stdout.readline()` 의 기본 64KB 라인 한도를 16MB 로 키워(`_STREAM_LINE_LIMIT`) 이미지 Read tool_result 한 줄이 한도를 넘기는 stream-json 파싱 실패 차단. `_run_cli` / `ask_with_progress` 양쪽에 적용.
+- **[Major]** Codex CLI 응답 머리에 `warning: --full-auto is deprecated; use --sandbox workspace-write instead.` 가 그대로 노출되던 문제 해결. `_build_cmd` 에서 `--full-auto` → `-s workspace-write` 로 교체하고, 방어선으로 `_CODEX_DEPRECATION_LINE` 정규식(`^\s*warning:\s+\`--<flag>\`\s+is\s+deprecated`)을 노이즈 필터에 추가. 일반 답변 본문의 deprecation 언급은 보존.
+- **[Minor]** Gemini CLI 응답 머리에 `Ripgrep is not available. Falling back to GrepTool.` 가 노출되던 문제 해결. `_NOISE_KEYWORDS` 와 `_run_progress_once` 의 라인별 키워드 양쪽에 추가.
+
+### 개선
+- **[Minor]** Gemini-3-flash-preview 가 차트 이미지의 종목을 잘못 식별(현대차 → 토스)하던 vision 한계 보강. `_augment_with_image_paths` 머리에 종목명/티커/현재가 식별을 먼저 명시하고 신뢰도가 낮으면 '식별 불확실' 로 표기하도록 가드 prompt 추가.
+
+### 검증
+- 단위 테스트 9건 추가 (Claude limit / Codex sandbox / Codex deprecation 정규식 / Gemini ripgrep 노이즈), 전체 159 passed
+- Codex 교차 검증 → generic deprecation substring 부작용 지적 받아 정규식으로 좁힘
 
 ## v0.6.2 (2026-05-08)
 

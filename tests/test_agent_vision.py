@@ -72,6 +72,33 @@ class TestClaudeImageAugment:
         stream_cmd = agent._build_stream_cmd()
         assert "Read" in stream_cmd
 
+    @pytest.mark.asyncio
+    async def test_subprocess_uses_large_stream_buffer(self, monkeypatch):
+        """이미지 Read 의 stream-json 한 줄이 64KB 를 넘겨도 죽지 않도록 limit 을 키운다.
+
+        2026-05-09 회귀: 이미지 첨부 시 Read tool_result 한 줄이 64KB 를 넘겨
+        asyncio readline 이 LimitOverrunError(`Separator is not found, and chunk
+        exceed the limit`)를 던지면서 Claude 가 매번 실패하던 문제. limit 을
+        16MB 이상으로 올려야 멀티모달이 정상 동작한다.
+        """
+        captured = {"limit": None}
+
+        async def fake_proc(*a, **kw):
+            captured["limit"] = kw.get("limit")
+            class _P:
+                returncode = 0
+                async def communicate(self, input=None):
+                    return b'{"result":"ok"}', b""
+            return _P()
+
+        monkeypatch.setattr("agents.claude.asyncio.create_subprocess_exec", fake_proc)
+        agent = ClaudeAgent()
+        await agent._run_cli("hi", images=[_img(path=r"C:\\imgs\\chart.png")])
+        assert captured["limit"] is not None, "limit 이 명시되지 않음"
+        assert captured["limit"] >= 1024 * 1024, (
+            f"limit 이 너무 작음 ({captured['limit']}). 64KB 기본값으로 떨어지면 회귀."
+        )
+
 
 # ── GeminiAgent ────────────────────────────────────────────────────────
 
@@ -126,3 +153,12 @@ class TestCodexImageNote:
         assert "(2개)" in out
         assert r"C:\\imgs\\a.png" in out
         assert r"C:\\imgs\\b.jpg" in out
+
+    def test_uses_workspace_write_sandbox_not_full_auto(self):
+        """`--full-auto` deprecated. `-s workspace-write` 로 교체해서 stdout
+        deprecation 경고 누출을 차단해야 한다.
+        """
+        cmd = CodexAgent()._build_cmd("/tmp/x")
+        assert "--full-auto" not in cmd, "deprecated 플래그가 다시 들어감"
+        assert "-s" in cmd or "--sandbox" in cmd
+        assert "workspace-write" in cmd
