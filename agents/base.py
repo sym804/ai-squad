@@ -57,7 +57,7 @@ class AgentBase:
                 except Exception:
                     pass
 
-    async def ask(self, prompt: str, timeout: int = None) -> str:
+    async def ask(self, prompt: str, timeout: int = None, images: list[dict] | None = None) -> str:
         t = timeout or CLI_TIMEOUT
         # 취소 확인
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
@@ -66,7 +66,7 @@ class AgentBase:
             return f"[{self.name}] 작업 취소됨"
         try:
             result = await asyncio.wait_for(
-                self._run_cli(prompt),
+                self._run_cli(prompt, images=images),
                 timeout=t
             )
             self.timed_out = False
@@ -106,14 +106,14 @@ class AgentBase:
         """타임아웃 또는 치명적 오류로 대체가 필요한지 반환."""
         return getattr(self, 'timed_out', False) or getattr(self, 'has_error', False)
 
-    async def _run_cli(self, prompt: str) -> str:
+    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
         raise NotImplementedError
 
     def _build_cmd(self, tmp: str) -> list[str]:
         """서브프로세스 실행 명령어를 리스트로 반환. 서브클래스에서 구현."""
         raise NotImplementedError
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, images: list[dict] | None = None) -> str:
         """stdout+stderr를 동시에 읽으며 on_progress 콜백 호출."""
         t = timeout or CLI_TIMEOUT
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):

@@ -6,6 +6,15 @@ from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
 from config import make_filtered_env
 
+# Anthropic SDK 비전 호출용. 텍스트 only 경로에서는 import 비용 없음 (lazy).
+#
+# Vision 모델 ID 는 Anthropic 모델 alias 가 시기에 따라 바뀌므로 환경변수
+# `CLAUDE_VISION_MODEL` 로 오버라이드 가능. 기본값은 Sonnet 4.6 alias.
+# Sonnet 4.6 이 환경에서 인식되지 않으면 `claude-sonnet-4-5` 또는 datestamp
+# 버전(`claude-sonnet-4-20250514`)으로 교체.
+_VISION_MODEL = os.environ.get("CLAUDE_VISION_MODEL", "claude-sonnet-4-6")
+_VISION_MAX_TOKENS = 4096
+
 
 def _format_token_usage(data: dict) -> str:
     """JSON 출력에서 토큰 사용량을 k 단위 문자열로 변환."""
@@ -60,7 +69,9 @@ class ClaudeAgent(AgentBase):
                     "--allowedTools", "WebSearch", "WebFetch"])
         return cmd
 
-    async def _run_cli(self, prompt: str) -> str:
+    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
+        if images:
+            return await self._run_vision(prompt, images)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -91,14 +102,27 @@ class ClaudeAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
-        """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱."""
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, images: list[dict] | None = None) -> str:
+        """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱.
+
+        images 가 있으면 Anthropic SDK 비전 호출 경로로 분기. Claude CLI 는
+        stdin 으로 이미지 바이너리 전달이 불가하므로 SDK 직호출이 유일한 선택지.
+        """
         from config import CLI_TIMEOUT
         from cancel import register_process, is_cancelled
         t = timeout or CLI_TIMEOUT
 
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
+
+        if images:
+            # 비전 호출은 SDK 한 번에 끝. progress 콜백으로 시작 알림만 전달.
+            if on_progress:
+                try:
+                    on_progress(f"이미지 {len(images)}장 분석 중...")
+                except Exception:
+                    pass
+            return await self._run_vision(prompt, images, timeout=t)
 
         tmp = self._write_temp(prompt)
         try:
@@ -201,3 +225,78 @@ class ClaudeAgent(AgentBase):
             return f"[{self.name}] 오류: {str(e)}"
         finally:
             os.unlink(tmp)
+
+    async def _run_vision(self, prompt: str, images: list[dict], timeout: int | None = None) -> str:
+        """Anthropic SDK 비전 호출. images = [{name, mime, data(base64)}, ...]."""
+        try:
+            from anthropic import Anthropic
+        except ImportError:
+            self.has_error = True
+            self.last_usage = ""
+            return f"[{self.name}] anthropic SDK 미설치 — pip install anthropic 필요"
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            self.has_error = True
+            self.last_usage = ""
+            return f"[{self.name}] ANTHROPIC_API_KEY 환경변수 없음 — 비전 호출 불가"
+
+        content_blocks: list[dict] = []
+        for img in images:
+            content_blocks.append({
+                "type": "image",
+                "source": {
+                    "type": "base64",
+                    "media_type": img.get("mime", "image/png"),
+                    "data": img["data"],
+                },
+            })
+        content_blocks.append({"type": "text", "text": prompt})
+
+        def _call():
+            client = Anthropic(api_key=api_key)
+            return client.messages.create(
+                model=_VISION_MODEL,
+                max_tokens=_VISION_MAX_TOKENS,
+                messages=[{"role": "user", "content": content_blocks}],
+            )
+
+        try:
+            if timeout:
+                resp = await asyncio.wait_for(asyncio.to_thread(_call), timeout=timeout)
+            else:
+                resp = await asyncio.to_thread(_call)
+        except asyncio.TimeoutError:
+            self.timed_out = True
+            self.has_error = False
+            self.last_usage = ""
+            return f"[{self.name}] 비전 응답 시간 초과 ({timeout}초)"
+        except Exception as e:
+            self.timed_out = False
+            self.has_error = True
+            self.last_usage = ""
+            return f"[{self.name}] 비전 호출 오류: {str(e)[:300]}"
+
+        parts = []
+        for block in resp.content:
+            if getattr(block, "type", None) == "text":
+                parts.append(block.text)
+        text = "\n".join(parts).strip()
+
+        try:
+            usage_dict = {
+                "usage": {
+                    "input_tokens": resp.usage.input_tokens,
+                    "output_tokens": resp.usage.output_tokens,
+                    "cache_read_input_tokens": getattr(resp.usage, "cache_read_input_tokens", 0) or 0,
+                    "cache_creation_input_tokens": getattr(resp.usage, "cache_creation_input_tokens", 0) or 0,
+                },
+                "total_cost_usd": 0,
+            }
+            self.last_usage = _format_token_usage(usage_dict)
+        except Exception:
+            self.last_usage = ""
+
+        self.timed_out = False
+        self.has_error = self._is_fatal_error(text) if text else False
+        return text

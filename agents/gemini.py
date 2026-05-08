@@ -23,7 +23,13 @@ _NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_reje
                     "YOLO mode is enabled", "Loaded cached credentials",
                     "All tool calls will be automatically approved",
                     # Gemini CLI 내부 재시도 로그 — 재시도 성공 시엔 최종 출력에 포함시키면 안 됨
-                    "Attempt ", "Retrying after"]
+                    "Attempt ", "Retrying after",
+                    # Gemini CLI extension/hook 로그 — 정상 실행 시에도 stdout에 찍힘
+                    "Warning: Skipping extension", "Configuration file not found",
+                    "Created execution plan for", "Expanding hook command",
+                    "Hook execution for",
+                    # Gemini CLI 터미널 색상 경고 — non-TTY 환경에서 항상 찍힘
+                    "256-color support not detected"]
 
 
 def _clean_output(text: str) -> str:
@@ -125,7 +131,9 @@ class GeminiAgent(AgentBase):
                 return True
         return bool(_RATE_LIMIT_REGEX.search(low))
 
-    async def _run_cli(self, prompt: str) -> str:
+    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
+        if images:
+            return await self._run_vision(prompt, images)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -238,7 +246,11 @@ class GeminiAgent(AgentBase):
 
                 decoded = line.decode("utf-8", errors="replace")
                 if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
-                        "YOLO mode", "Loaded cached credentials", "automatically approved")):
+                        "YOLO mode", "Loaded cached credentials", "automatically approved",
+                        "Warning: Skipping extension", "Configuration file not found",
+                        "Created execution plan for", "Expanding hook command",
+                        "Hook execution for",
+                        "256-color support not detected")):
                     continue
                 # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트만 기록
                 if any(kw in decoded for kw in _RETRY_NOISE):
@@ -263,14 +275,26 @@ class GeminiAgent(AgentBase):
         rate_limited = (exit_code != 0 and saw_rate_limit_noise)
         return output, rate_limited
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None) -> str:
-        """Gemini용: stdout+stderr 읽되 노이즈 필터링 + 429 재시도."""
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, images: list[dict] | None = None) -> str:
+        """Gemini용: stdout+stderr 읽되 노이즈 필터링 + 429 재시도.
+
+        images 가 있으면 google-genai SDK 비전 호출 경로로 분기. Gemini CLI 는
+        stdin 파이프로 이미지 바이너리를 받지 않으므로 SDK 직호출이 유일한 길.
+        """
         t = timeout or CLI_TIMEOUT
         self.timed_out = False
         self.has_error = False
 
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
+
+        if images:
+            if on_progress:
+                try:
+                    on_progress(f"이미지 {len(images)}장 분석 중...")
+                except Exception:
+                    pass
+            return await self._run_vision(prompt, images, timeout=t)
 
         tmp = self._write_temp(prompt)
         try:
@@ -321,3 +345,68 @@ class GeminiAgent(AgentBase):
             return f"[{self.name}] 오류: {str(e)}"
         finally:
             os.unlink(tmp)
+
+    async def _run_vision(self, prompt: str, images: list[dict], timeout: int | None = None) -> str:
+        """google-genai SDK 비전 호출. images = [{name, mime, data(base64)}, ...].
+
+        API key 우선 (GEMINI_API_KEY 또는 GOOGLE_API_KEY), 없으면 ADC fallback.
+        Pro 구독자는 `gcloud auth application-default login` 으로 cloud-platform
+        스코프를 받아두면 ADC 경로로도 호출 가능.
+        """
+        try:
+            from google import genai
+            from google.genai import types as genai_types
+        except ImportError:
+            self.has_error = True
+            return f"[{self.name}] google-genai SDK 미설치 — pip install google-genai 필요"
+
+        import base64 as _b64
+        api_key = os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
+
+        # 모델은 비전 지원 모델 중 사용 가능한 첫 번째.
+        # gemini-3-flash-preview 가 primary, 2.5-flash-lite 가 fallback (CLI와 동일).
+        model = _available_models()[0]
+
+        contents: list = []
+        for img in images:
+            contents.append(genai_types.Part.from_bytes(
+                data=_b64.b64decode(img["data"]),
+                mime_type=img.get("mime", "image/png"),
+            ))
+        contents.append(prompt)
+
+        def _call():
+            client = genai.Client(api_key=api_key) if api_key else genai.Client()
+            return client.models.generate_content(
+                model=model,
+                contents=contents,
+            )
+
+        try:
+            async with _gemini_concurrency:
+                if timeout:
+                    resp = await asyncio.wait_for(asyncio.to_thread(_call), timeout=timeout)
+                else:
+                    resp = await asyncio.to_thread(_call)
+        except asyncio.TimeoutError:
+            self.timed_out = True
+            self.has_error = False
+            return f"[{self.name}] 비전 응답 시간 초과 ({timeout}초)"
+        except Exception as e:
+            self.has_error = True
+            return f"[{self.name}] 비전 호출 오류: {str(e)[:300]}"
+
+        try:
+            text = (resp.text or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            try:
+                parts = resp.candidates[0].content.parts
+                text = "\n".join(p.text for p in parts if getattr(p, "text", None)).strip()
+            except Exception:
+                text = ""
+
+        self.timed_out = False
+        self.has_error = self._is_fatal_error(text) if text else False
+        return text

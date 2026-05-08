@@ -20,7 +20,7 @@ class TestPrefixRouting:
 
         await bridge.handle("C1", "ts1", "codex: write tests")
 
-        bridge._call_codex.assert_called_once_with("write tests")
+        bridge._call_codex.assert_called_once_with("write tests", images=None)
         bridge._call_claude.assert_not_called()
 
     @pytest.mark.asyncio
@@ -87,4 +87,4 @@ class TestFollowup:
         bridge = _make_bridge()
         bridge.handle = AsyncMock()
         await bridge.followup("C1", "ts1", "follow up question")
-        bridge.handle.assert_called_once_with("C1", "ts1", "follow up question")
+        bridge.handle.assert_called_once_with("C1", "ts1", "follow up question", images=None)

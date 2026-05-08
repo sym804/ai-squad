@@ -14,6 +14,12 @@
 | v0.4.2 | 2026-04-12 | 토론 응답 즉시 포스트 |
 | v0.5.0 | 2026-04-13 | 에이전트 실행 안정화 + CLI 헬스체크 + 단위 테스트 |
 | v0.5.1 | 2026-04-21 | 부팅 크래시 루프 핫픽스 |
+| v0.6.0 | 2026-05-08 | 이미지 첨부 분석 (Claude/Gemini Vision SDK) |
+
+## v0.6.0 (2026-05-08)
+
+### 개선
+- **[Major]** Slack 첨부 이미지 분석 지원 — Claude(Anthropic SDK) / Gemini(google-genai SDK) Vision 호출. Codex는 멀티모달 미지원이라 prompt 노트만 추가. Debate / Coding / Bridge 3개 모드 모두 적용. `ANTHROPIC_API_KEY`, `GEMINI_API_KEY`(또는 `GOOGLE_API_KEY`) 환경변수 필요. Vision 모델은 `CLAUDE_VISION_MODEL` 환경변수로 override 가능.
 
 ## v0.5.1 (2026-04-21)
 

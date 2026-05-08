@@ -177,7 +177,27 @@ class CodexAgent(AgentBase):
     def _build_cmd(self, tmp: str) -> list[str]:
         return ["codex", "exec", "--full-auto", "--skip-git-repo-check"]
 
-    async def _run_cli(self, prompt: str) -> str:
+    @staticmethod
+    def _augment_with_image_note(prompt: str, images: list[dict] | None) -> str:
+        """Codex CLI는 멀티모달 미지원. 이미지 첨부 사실만 텍스트로 알린다.
+
+        이렇게 하지 않으면 Codex 가 "이미지가 있긴 하지만 못 본다"는 메타 답변을
+        반복하거나, 거꾸로 첨부 사실을 모른 채 검색 결과로 환각 분석을 하게 된다.
+        """
+        if not images:
+            return prompt
+        names = ", ".join(img.get("name", "image") for img in images)
+        note = (
+            f"\n\n[참고: 사용자가 이미지 {len(images)}장({names})을 첨부했습니다. "
+            "Codex CLI는 이미지 직접 분석을 지원하지 않으므로, 이미지의 내용을 추측하거나 "
+            "환각 분석을 하지 마세요. '이미지를 직접 보지는 못한다'고 명시한 뒤, "
+            "다른 에이전트(Claude, Gemini)가 비전으로 분석한 결과를 참고하거나, "
+            "텍스트 정보만으로 답할 수 있는 부분만 다루세요.]"
+        )
+        return prompt + note
+
+    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
+        prompt = self._augment_with_image_note(prompt, images)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -201,10 +221,12 @@ class CodexAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt, on_progress=None, timeout=None):
+    async def ask_with_progress(self, prompt, on_progress=None, timeout=None, images: list[dict] | None = None):
         """base의 ask_with_progress 호출 후 노이즈 제거. progress 콜백도 정제."""
+        prompt = self._augment_with_image_note(prompt, images)
         def _filtered_progress(raw_text):
             if on_progress:
                 on_progress(_clean_codex_output(raw_text, prompt))
+        # images 는 base 호출에 전달하지 않는다 (CodexAgent는 멀티모달 미지원).
         result = await super().ask_with_progress(prompt, _filtered_progress, timeout)
         return _clean_codex_output(result, prompt)

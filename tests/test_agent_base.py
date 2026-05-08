@@ -15,7 +15,7 @@ class FakeAgent(AgentBase):
         self._cli_response = "정상 응답"
         self._cli_delay = 0
 
-    async def _run_cli(self, prompt: str) -> str:
+    async def _run_cli(self, prompt: str, images=None) -> str:
         if self._cli_delay > 0:
             await asyncio.sleep(self._cli_delay)
         return self._cli_response

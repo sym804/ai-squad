@@ -1,7 +1,7 @@
 """GeminiAgent 단위 테스트 — rate-limit 탐지 로직."""
 
 import pytest
-from agents.gemini import GeminiAgent, _GEMINI_MODELS
+from agents.gemini import GeminiAgent, _GEMINI_MODELS, _clean_output
 
 
 class TestRateLimitDetection:
@@ -90,3 +90,30 @@ class TestModelConfiguration:
             assert model in benchmarked_ok, (
                 f"{model}: 벤치마크에서 검증되지 않음. 등록 전 성능 측정 필요"
             )
+
+
+class TestCleanOutput:
+    """`_clean_output`: Gemini CLI extension/hook 로그가 Slack으로 새어나가지 않도록 필터.
+
+    2026-04-19 발견: task-monitor 확장에 gemini-extension.json이 없어 "Warning: Skipping
+    extension..." 경고 2줄이, maestro 확장이 SessionEnd hook 실행 로그 3줄을 stdout에
+    남겨서 Slack 답변 끝에 같이 출력되는 사고.
+    """
+
+    @pytest.mark.parametrize("noise_line", [
+        "Warning: Skipping extension in C:\\Users\\ymseo\\.gemini\\extensions\\task-monitor: Configuration file not found at C:\\Users\\ymseo\\.gemini\\extensions\\task-monitor\\gemini-extension.json",
+        "Created execution plan for SessionEnd: 1 hook(s) to execute in parallel",
+        "Expanding hook command: node C:\\Users\\ymseo\\.gemini\\extensions\\maestro/hooks/hook-runner.js gemini session-end (cwd: C:\\Users\\ymseo\\Documents\\slack-multi-agent)",
+        "Hook execution for SessionEnd: 1 hooks executed successfully, total duration: 283ms",
+        # 2026-04-26 발견: non-TTY 환경에서 Gemini CLI가 매 호출마다 stdout 머리에 찍는 색상 경고
+        "Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.",
+    ])
+    def test_extension_hook_noise_filtered(self, noise_line):
+        raw = f"{noise_line}\n실제 답변 본문입니다.\n"
+        cleaned = _clean_output(raw)
+        assert noise_line not in cleaned
+        assert "실제 답변 본문입니다." in cleaned
+
+    def test_answer_preserved_when_no_noise(self):
+        raw = "1. 나이키 보메로 18\n2. 뉴발란스 9060\n3. 호카 클리프톤 9\n"
+        assert _clean_output(raw).strip() == raw.strip()

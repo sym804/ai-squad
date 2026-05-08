@@ -133,8 +133,11 @@ class CodingMode:
         parts.append("\n위 스레드 내용을 참고하여 사용자의 지시에 응답하세요.")
         return "\n".join(parts)
 
-    async def followup(self, channel, thread_ts, question):
-        """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달."""
+    async def followup(self, channel, thread_ts, question, images: list[dict] | None = None):
+        """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달.
+
+        images 가 있으면 비전 지원 에이전트(Claude/Gemini) 호출에 전달.
+        """
         self._bind_thread(thread_ts, question)
         if getattr(self, '_rejected_thread', None) == thread_ts:
             reason = getattr(self, '_rejected_reason', '')
@@ -149,7 +152,7 @@ class CodingMode:
 
         if len(agents) == 1:
             response, used_agent = await self._ask_with_backup(
-                agents[0], prompt, channel, thread_ts
+                agents[0], prompt, channel, thread_ts, images=images,
             )
             self._post(channel, thread_ts, used_agent.format_message(response))
         else:
@@ -167,7 +170,7 @@ class CodingMode:
 
             async def _ask_agent(a):
                 stop, cb = handlers[a.name]
-                result = await a.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+                result = await a.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
                 stop.set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -189,7 +192,7 @@ class CodingMode:
                             text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                         )
                         bstop, bcb = self._make_progress_handler(channel, thread_ts, thinking["ts"], backup)
-                        backup_response = await backup.ask_with_progress(prompt, on_progress=bcb, timeout=CLI_TIMEOUT_CODING)
+                        backup_response = await backup.ask_with_progress(prompt, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, images=images)
                         bstop.set()
                         try:
                             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
@@ -297,14 +300,18 @@ class CodingMode:
         t.start()
         return stop_event, on_progress
 
-    async def _ask_with_backup(self, agent, prompt, channel, thread_ts):
-        """에이전트 호출 후 오류/타임아웃 시 백업 투입."""
+    async def _ask_with_backup(self, agent, prompt, channel, thread_ts, images: list[dict] | None = None):
+        """에이전트 호출 후 오류/타임아웃 시 백업 투입.
+
+        images 가 있으면 비전 지원 에이전트는 분석에 사용하고, 미지원 에이전트는
+        프롬프트 노트로만 인지한다 (CodexAgent 측에서 처리).
+        """
         thinking = self.slack.chat_postMessage(
             channel=channel, thread_ts=thread_ts,
             text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
         )
         stop, cb = self._make_progress_handler(channel, thread_ts, thinking["ts"], agent)
-        response = await agent.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+        response = await agent.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
         stop.set()
         await asyncio.sleep(1)  # 타이머 스레드 종료 대기
         try:
@@ -321,7 +328,7 @@ class CodingMode:
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                 )
-                response = await backup.ask(prompt)
+                response = await backup.ask(prompt, images=images)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                 except Exception as e:
@@ -360,7 +367,7 @@ class CodingMode:
             return True
         return False
 
-    async def _parallel_start(self, channel, thread_ts, request, agents):
+    async def _parallel_start(self, channel, thread_ts, request, agents, images: list[dict] | None = None):
         """복수 에이전트 병렬 실행 모드."""
         names = " / ".join(f"{a.emoji} {a.name}" for a in agents)
         self._post(channel, thread_ts, f"*병렬 모드 시작* :zap:\n참여: {names}")
@@ -378,7 +385,7 @@ class CodingMode:
 
         async def _ask_agent(a):
             stop, cb = handlers[a.name]
-            result = await a.ask_with_progress(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING)
+            result = await a.ask_with_progress(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
             stop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -403,7 +410,7 @@ class CodingMode:
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
                     bstop, bcb = self._make_progress_handler(channel, thread_ts, bthinking["ts"], backup)
-                    backup_response = await backup.ask_with_progress(request, on_progress=bcb, timeout=CLI_TIMEOUT_CODING)
+                    backup_response = await backup.ask_with_progress(request, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, images=images)
                     bstop.set()
                     await asyncio.sleep(1)
                     try:
@@ -443,7 +450,7 @@ class CodingMode:
         self._post(channel, thread_ts, f"📋 *최종 보고서*\n{summary}")
         self._post(channel, thread_ts, "*✅ 병렬 모드 완료*")
 
-    async def start(self, channel, thread_ts, request):
+    async def start(self, channel, thread_ts, request, images: list[dict] | None = None):
         self._bind_thread(thread_ts, request)
         if getattr(self, '_rejected_thread', None) == thread_ts:
             reason = getattr(self, '_rejected_reason', '')
@@ -453,7 +460,7 @@ class CodingMode:
         # 복수 에이전트 지정 시 병렬 모드
         agents = self._pick_agents(request)
         if len(agents) > 1:
-            await self._parallel_start(channel, thread_ts, request, agents)
+            await self._parallel_start(channel, thread_ts, request, agents, images=images)
             return
 
         # 당일 이전 결론을 컨텍스트로 수집
@@ -475,7 +482,8 @@ class CodingMode:
         claude_code, used_agent = await self._ask_with_backup(
             self.claude,
             f"{context_prefix}다음 요청에 대해 기획, 설계, 그리고 완성된 코드를 작성해 주세요.\n\n요청: {request}",
-            channel, thread_ts
+            channel, thread_ts,
+            images=images,
         )
         self._post(channel, thread_ts, used_agent.format_message(claude_code))
 
@@ -488,7 +496,8 @@ class CodingMode:
         review, used_agent = await self._ask_with_backup(
             self.codex,
             f"다음 코드를 리뷰해 주세요. 버그, 보안 이슈, 개선 사항을 찾아 주세요.\n\n{claude_code}",
-            channel, thread_ts
+            channel, thread_ts,
+            images=images,
         )
         self._post(channel, thread_ts, used_agent.format_message(review))
 
@@ -511,7 +520,7 @@ class CodingMode:
 
         async def _phase3_ask(agent, prompt, label):
             pstop, pcb = handlers[agent.name]
-            result = await agent.ask_with_progress(prompt, on_progress=pcb, timeout=CLI_TIMEOUT_CODING)
+            result = await agent.ask_with_progress(prompt, on_progress=pcb, timeout=CLI_TIMEOUT_CODING, images=images)
             pstop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[agent.name])
@@ -546,6 +555,7 @@ class CodingMode:
                         f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
                         on_progress=bcb,
                         timeout=CLI_TIMEOUT_CODING,
+                        images=images,
                     )
                     bstop.set()
                     try:

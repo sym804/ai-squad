@@ -18,17 +18,21 @@ class BridgeMode:
         self.slack = slack_client
         self.work_dir = work_dir
 
-    async def handle(self, channel: str, thread_ts: str, text: str):
-        """메시지를 CLI에 전달하고 응답을 스레드로 반환."""
+    async def handle(self, channel: str, thread_ts: str, text: str, images: list[dict] | None = None):
+        """메시지를 CLI에 전달하고 응답을 스레드로 반환.
+
+        images 가 있으면 Claude 분기는 SDK 비전 호출(--continue 컨텍스트는 끊김),
+        Codex 분기는 프롬프트에 첨부 노트만 추가한 채 CLI 호출.
+        """
         self._thread_ts = thread_ts
         text = text.strip()
-        if not text:
+        if not text and not images:
             return
 
         # codex: 접두어 판별
         if text.lower().startswith("codex:"):
             prompt = text[6:].strip()
-            if not prompt:
+            if not prompt and not images:
                 return
             agent_name = "Codex"
             emoji = "🟢"
@@ -43,8 +47,10 @@ class BridgeMode:
             text=f"💭 {emoji} *[{agent_name}]* 생각 중..."
         )
 
-        if agent_name == "Codex":
-            response = await self._call_codex(prompt)
+        if images and agent_name == "Claude":
+            response = await self._call_claude_vision(prompt, images)
+        elif agent_name == "Codex":
+            response = await self._call_codex(prompt, images=images)
         else:
             response = await self._call_claude(prompt)
 
@@ -61,9 +67,16 @@ class BridgeMode:
         header = f"{emoji} *[{agent_name}]*\n"
         self._post_long(channel, thread_ts, header + response)
 
-    async def followup(self, channel: str, thread_ts: str, text: str):
+    async def followup(self, channel: str, thread_ts: str, text: str, images: list[dict] | None = None):
         """스레드 답글 → --continue로 대화 이어감. 동일 로직."""
-        await self.handle(channel, thread_ts, text)
+        await self.handle(channel, thread_ts, text, images=images)
+
+    async def _call_claude_vision(self, prompt: str, images: list[dict]) -> str:
+        """이미지 첨부 시 ClaudeAgent SDK 비전 경로 위임. --continue 컨텍스트는 끊김."""
+        from agents.claude import ClaudeAgent
+        agent = ClaudeAgent(continue_mode=False)
+        agent._cwd = self.work_dir
+        return await agent.ask(prompt, images=images, timeout=CLI_TIMEOUT * 2)
 
     async def _call_claude(self, prompt: str) -> str:
         """claude --continue -p 로 호출."""
@@ -77,8 +90,11 @@ class BridgeMode:
         finally:
             os.unlink(tmp)
 
-    async def _call_codex(self, prompt: str) -> str:
-        """codex exec 로 호출."""
+    async def _call_codex(self, prompt: str, images: list[dict] | None = None) -> str:
+        """codex exec 로 호출. Codex CLI는 멀티모달 미지원이므로 이미지는 노트로만 전달."""
+        if images:
+            from agents.codex import CodexAgent
+            prompt = CodexAgent._augment_with_image_note(prompt, images)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
