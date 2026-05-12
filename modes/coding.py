@@ -2,12 +2,23 @@ import asyncio
 import random
 import datetime
 import re
+import threading
+import uuid
 
 from agents import ClaudeAgent, CodexAgent, GeminiAgent, ClaudeBackupAgent, CodexBackupAgent
 from config import MAX_DEBATE_ROUNDS, CLI_TIMEOUT_CODING
 from cancel import is_cancelled, cleanup
 
 CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
+# AWAIT_USER 태그는 줄 단위로 한정 (한 줄에 태그만 있는 경우만 인식).
+# 사유에는 줄바꿈/'>'/'-' 단독을 허용하지 않아 코드 블록 안에 우연히 포함된
+# 비슷한 문자열이 게이트를 트리거하지 못하게 한다.
+AWAIT_USER_PATTERN = re.compile(
+    r"(?m)^[ \t]*<!--AWAIT_USER(?::([^>\n]*))?-->[ \t]*$"
+)
+# fenced code block (``` ... ```). LLM 이 예시로 태그를 코드 블록 안에 보여줄
+# 경우 게이트가 잘못 트리거되지 않도록 검사 전에 제거한다.
+_FENCED_BLOCK = re.compile(r"```.*?```", re.DOTALL)
 
 def _strip_consensus(text: str) -> str:
     return CONSENSUS_PATTERN.sub('', text).strip()
@@ -22,7 +33,131 @@ def _parse_consensus(text: str) -> dict | None:
     except json.JSONDecodeError:
         return None
 
+
+def _has_await_user(text: str) -> bool:
+    """Claude 응답에 사용자 답변 대기 신호 태그가 포함됐는지 검사.
+
+    fenced code block 내부의 태그는 LLM 이 예시로 보여주는 것일 수 있으므로
+    매칭에서 제외한다.
+    """
+    if not text:
+        return False
+    cleaned = _FENCED_BLOCK.sub('', text)
+    return bool(AWAIT_USER_PATTERN.search(cleaned))
+
+
+def _strip_await_user(text: str) -> str:
+    """응답 표시 전 AWAIT_USER 태그 제거.
+
+    fenced code block 안의 태그는 사용자에게 예시로 보여줄 수 있으므로 보존.
+    placeholder 는 호출마다 새 UUID 로 만들어 사용자 텍스트와의 충돌을 차단한다.
+    """
+    if not text:
+        return ''
+    fenced_blocks: list[str] = []
+    sentinel = f"\x00FENCED_{uuid.uuid4().hex}_"
+
+    def _stash(m):
+        fenced_blocks.append(m.group(0))
+        return f"{sentinel}{len(fenced_blocks) - 1}\x00"
+
+    stashed = _FENCED_BLOCK.sub(_stash, text)
+    stripped = AWAIT_USER_PATTERN.sub('', stashed)
+    for i, block in enumerate(fenced_blocks):
+        stripped = stripped.replace(f"{sentinel}{i}\x00", block)
+    return stripped.strip()
+
+
 MAX_FIX_ROUNDS = 3
+
+# Phase 1 게이트: Claude 가 코드 대신 사용자에게 추가 정보를 요청한 스레드를 보관.
+# CodingMode 는 메시지마다 새 인스턴스가 생성되므로 (slack_bot.py 참고) 상태는
+# 모듈 전역에 둔다. 사용자가 답변하면 followup 에서 다시 Claude 호출 후
+# 태그가 사라졌을 때 Phase 2/3 으로 자동 진입한다.
+#
+# 동일 스레드에서 사용자가 답변을 연속으로 보내면 Slack Bolt 가 별도 OS 스레드로
+# 핸들러를 실행해 race 가 발생할 수 있다. claim() 으로 진입을 직렬화한다.
+_PENDING_THREADS: dict[str, dict] = {}
+_PENDING_LOCK = threading.Lock()
+_RESUMING_THREADS: set[str] = set()
+# Phase 1 (start 또는 _resume_pending) 진행 중인 thread_ts.
+# start/followup 가 거의 동시에 들어와 Phase 2/3 가 중복 실행되는 race 를 차단.
+_INFLIGHT_PHASE1: set[str] = set()
+
+
+def _try_enter_inflight(thread_ts: str) -> bool:
+    """Phase 1 진입 시도. 이미 진행 중이면 False."""
+    with _PENDING_LOCK:
+        if thread_ts in _INFLIGHT_PHASE1:
+            return False
+        _INFLIGHT_PHASE1.add(thread_ts)
+        return True
+
+
+def _leave_inflight(thread_ts: str):
+    with _PENDING_LOCK:
+        _INFLIGHT_PHASE1.discard(thread_ts)
+
+
+def _is_inflight(thread_ts: str) -> bool:
+    with _PENDING_LOCK:
+        return thread_ts in _INFLIGHT_PHASE1
+
+
+def _image_key(img: dict):
+    """이미지 dedup key. path → name → object identity 우선순위."""
+    return img.get("path") or img.get("name") or f"id_{id(img)}"
+
+
+def _claim_pending(thread_ts: str) -> dict | None:
+    """pending 스레드를 단일 진입자가 가져가도록 보장.
+
+    반환: pending payload (이미 다른 진입자가 처리 중이거나 비어 있으면 None).
+    """
+    with _PENDING_LOCK:
+        if thread_ts in _RESUMING_THREADS:
+            return None
+        payload = _PENDING_THREADS.get(thread_ts)
+        if not payload:
+            return None
+        _RESUMING_THREADS.add(thread_ts)
+        return payload
+
+
+def _release_pending(thread_ts: str, *, clear: bool):
+    """resume 종료. clear=True 면 pending 도 제거(코드 완성 또는 취소)."""
+    with _PENDING_LOCK:
+        _RESUMING_THREADS.discard(thread_ts)
+        if clear:
+            _PENDING_THREADS.pop(thread_ts, None)
+
+
+def _drop_pending(thread_ts: str):
+    """cancel 등 외부 경로에서 pending 을 즉시 정리할 때 사용."""
+    with _PENDING_LOCK:
+        _PENDING_THREADS.pop(thread_ts, None)
+        _RESUMING_THREADS.discard(thread_ts)
+
+
+def _store_pending(thread_ts: str, payload: dict):
+    with _PENDING_LOCK:
+        _PENDING_THREADS[thread_ts] = payload
+
+PHASE1_PROMPT_SUFFIX = (
+    "\n\n[중요 진행 규칙]\n"
+    "- 요구사항이 명확하면 기획, 설계, 그리고 곧바로 완성된 코드까지 한 응답에 담아 주세요.\n"
+    "- 요구사항이 모호해서 사용자에게 추가 정보를 물어야 한다면, 응답 마지막 줄에 "
+    "`<!--AWAIT_USER:사유-->` 태그를 정확히 한 번 추가하세요. 이 태그가 있으면 "
+    "후속 코드 리뷰/테스트 단계는 보류되고 사용자 답변을 기다립니다.\n"
+    "- 코드를 작성한 응답에는 이 태그를 절대 붙이지 마세요."
+)
+
+PHASE1_FOLLOWUP_SUFFIX = (
+    "\n\n[중요 진행 규칙]\n"
+    "- 사용자 답변을 반영하여 가능하면 이번 응답에서 기획 확정 + 완성된 코드까지 작성하세요.\n"
+    "- 아직 결정해야 할 항목이 더 있으면 응답 마지막에 `<!--AWAIT_USER:사유-->` 태그를 추가하세요.\n"
+    "- 코드를 작성한 응답에는 이 태그를 절대 붙이지 마세요."
+)
 
 
 class CodingMode:
@@ -147,6 +282,21 @@ class CodingMode:
         if self._check_cancel(channel, thread_ts):
             return
 
+        # Phase 1 진행 중이면 race 방지를 위해 안내 후 종료.
+        # 사용자는 봇 응답을 기다린 후 다시 답변하면 된다.
+        if _is_inflight(thread_ts):
+            self._post(channel, thread_ts,
+                "⏳ *Claude 응답 처리 중입니다. 잠시 후 다시 답변해 주세요.*")
+            return
+
+        # Phase 1 보류 상태였다면 사용자 답변을 받아 Phase 1 재개.
+        # 사용자가 명시적으로 다른 에이전트(codex/gemini)를 호출하면 일반 followup
+        # 흐름으로 빠지게 둔다.
+        mentions_other = bool(re.search(r"(?i)\b(codex|gemini)\b", question or ""))
+        if thread_ts in _PENDING_THREADS and not mentions_other:
+            await self._resume_pending(channel, thread_ts, question, images=images)
+            return
+
         prompt = self._build_followup_prompt(channel, thread_ts, question)
         agents = self._pick_agents(question)
 
@@ -200,6 +350,93 @@ class CodingMode:
                             pass
                         self._post(channel, thread_ts, backup.format_message(backup_response))
                         self._replace_agent(agent, channel, thread_ts, reason)
+
+    async def _resume_pending(self, channel, thread_ts, user_answer, images=None):
+        """Phase 1 보류 상태에서 사용자 답변 수신 → Claude 재호출.
+
+        - claim/release + inflight guard 로 동일 스레드 동시 followup race 차단
+        - 최초 start 의 첨부 이미지를 followup 이미지와 병합하여 Claude/Phase 2/3 전달
+        - Claude 응답에 AWAIT_USER 태그가 사라지면 Phase 2/3 으로 자동 진입
+        """
+        pending = _claim_pending(thread_ts)
+        if not pending:
+            return
+        # claim 이후 inflight 진입. 다른 start/resume 이 이미 inflight 면 양보.
+        if not _try_enter_inflight(thread_ts):
+            _release_pending(thread_ts, clear=False)
+            self._post(channel, thread_ts,
+                "⏳ *Claude 응답 처리 중입니다. 잠시 후 다시 답변해 주세요.*")
+            return
+        try:
+            request = pending["request"]
+            context_prefix = pending.get("context_prefix", "")
+            original_images = pending.get("images") or []
+            followup_images = images or []
+            # path → name → id 순으로 dedup. 순서 보존 (최초 첨부 우선).
+            seen = set()
+            merged_images: list[dict] = []
+            for img in list(original_images) + list(followup_images):
+                key = _image_key(img)
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged_images.append(img)
+            merged_images = merged_images or None
+
+            history = self._fetch_thread_history(channel, thread_ts)
+            history_text = ""
+            if history:
+                lines = [f"- {h['name']}: {h['text'][:500]}" for h in history[-20:]]
+                history_text = "\n[스레드 대화 내용]\n" + "\n".join(lines) + "\n"
+
+            self._post(channel, thread_ts,
+                "━━━ Phase 1 재개: 사용자 답변 반영 → 기획 + 코드 작성 (Claude) ━━━")
+
+            phase1_prompt = (
+                f"{context_prefix}다음은 사용자의 원래 요청과 그동안의 대화입니다. "
+                f"사용자 답변을 반영하여 기획을 확정하고 완성된 코드까지 작성해 주세요.\n\n"
+                f"[원래 요청] {request}\n"
+                f"{history_text}"
+                f"\n[사용자 추가 지시] {user_answer}"
+                f"{PHASE1_FOLLOWUP_SUFFIX}"
+            )
+
+            claude_code, used_agent = await self._ask_with_backup(
+                self.claude, phase1_prompt, channel, thread_ts, images=merged_images,
+            )
+            display_code = _strip_await_user(claude_code)
+            self._post(channel, thread_ts, used_agent.format_message(display_code))
+
+            if self._check_cancel(channel, thread_ts):
+                _release_pending(thread_ts, clear=True)
+                return
+
+            if _has_await_user(claude_code):
+                # 다음 사용자 답변을 위해 pending 은 그대로 두고 자원만 푼다.
+                # 단, 이미 다음 사이클을 위한 이미지가 누적되도록 갱신해 둔다.
+                _store_pending(thread_ts, {
+                    "channel": channel,
+                    "request": request,
+                    "context_prefix": context_prefix,
+                    "images": merged_images,
+                })
+                self._post(channel, thread_ts, (
+                    "⏸️ *Phase 1 보류 유지* — Claude 가 추가 정보를 더 요청했습니다. "
+                    "답변해 주시면 다시 시도합니다."
+                ))
+                _release_pending(thread_ts, clear=False)
+                return
+
+            _release_pending(thread_ts, clear=True)
+            await self._run_review_and_test(
+                channel, thread_ts, request, claude_code, images=merged_images,
+            )
+        except BaseException:
+            # 예외 발생 시 lock 누수 방지
+            _release_pending(thread_ts, clear=False)
+            raise
+        finally:
+            _leave_inflight(thread_ts)
 
     def _broadcast(self, channel, thread_ts, text):
         try:
@@ -360,10 +597,15 @@ class CodingMode:
             return []
 
     def _check_cancel(self, channel, thread_ts):
-        """취소 확인. 취소됐으면 True 반환."""
+        """취소 확인. 취소됐으면 True 반환.
+
+        취소가 감지되면 cancel cleanup 외에 pending 상태도 함께 정리해 stale
+        pending 이 다음 일반 답변을 잘못된 Phase 1 재개로 흘리지 않도록 한다.
+        """
         if is_cancelled(thread_ts):
             self._post(channel, thread_ts, "🛑 *작업이 취소되었습니다*")
             cleanup(thread_ts)
+            _drop_pending(thread_ts)
             return True
         return False
 
@@ -457,11 +699,24 @@ class CodingMode:
             self._post(channel, thread_ts, f"🛑 *작업 거부: {reason}*")
             return
 
-        # 복수 에이전트 지정 시 병렬 모드
+        # 복수 에이전트 지정 시 병렬 모드 (Phase 1 게이트 우회)
         agents = self._pick_agents(request)
         if len(agents) > 1:
             await self._parallel_start(channel, thread_ts, request, agents, images=images)
             return
+
+        # 동일 thread_ts 로 start 가 중복 진입하는 것을 차단.
+        # Slack 자체 dedup 으로 거의 발생하지 않지만 안전망.
+        if not _try_enter_inflight(thread_ts):
+            self._post(channel, thread_ts,
+                "⚠️ *동일 스레드의 다른 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.*")
+            return
+        try:
+            await self._start_inner(channel, thread_ts, request, images)
+        finally:
+            _leave_inflight(thread_ts)
+
+    async def _start_inner(self, channel, thread_ts, request, images):
 
         # 당일 이전 결론을 컨텍스트로 수집
         today_conclusions = self._fetch_today_conclusions(channel, thread_ts)
@@ -472,24 +727,53 @@ class CodingMode:
         self._post(channel, thread_ts, (
             "*코딩 모드 시작* :computer:\n"
             "• *Claude* — 기획 + 설계 + 코드 작성\n"
-            "• *Codex* — 코드 리뷰\n"
-            "• *Codex (리더) / Claude / Gemini* — 테스트 작성"
+            "• *Codex* — 코드 리뷰 (Claude 코드 완성 후 자동 진입)\n"
+            "• *Codex (리더) / Claude / Gemini* — 테스트 작성 (Phase 2 이후)"
         ))
 
         # Phase 1 — Claude: 기획 + 설계 + 코드 작성
         self._post(channel, thread_ts, "━━━ Phase 1: 기획 + 설계 + 코드 작성 (Claude) ━━━")
 
-        claude_code, used_agent = await self._ask_with_backup(
-            self.claude,
-            f"{context_prefix}다음 요청에 대해 기획, 설계, 그리고 완성된 코드를 작성해 주세요.\n\n요청: {request}",
-            channel, thread_ts,
-            images=images,
+        phase1_prompt = (
+            f"{context_prefix}다음 요청에 대해 기획, 설계, 그리고 완성된 코드를 작성해 주세요.\n\n"
+            f"요청: {request}"
+            f"{PHASE1_PROMPT_SUFFIX}"
         )
-        self._post(channel, thread_ts, used_agent.format_message(claude_code))
+        claude_code, used_agent = await self._ask_with_backup(
+            self.claude, phase1_prompt, channel, thread_ts, images=images,
+        )
+        display_code = _strip_await_user(claude_code)
+        self._post(channel, thread_ts, used_agent.format_message(display_code))
 
         if self._check_cancel(channel, thread_ts):
             return
 
+        # 게이트: Claude 가 사용자에게 추가 정보를 물어본 경우 Phase 2/3 진입을 보류.
+        # 사용자가 답변하면 followup 에서 다시 Phase 1 을 진행하고, 그때 코드가
+        # 나오면 자동으로 Phase 2/3 으로 진입한다.
+        if _has_await_user(claude_code):
+            _store_pending(thread_ts, {
+                "channel": channel,
+                "request": request,
+                "context_prefix": context_prefix,
+                "images": images,
+            })
+            self._post(channel, thread_ts, (
+                "⏸️ *Phase 1 보류* — Claude 가 추가 정보를 요청했습니다. "
+                "답변해 주시면 코드 완성 후 Codex 리뷰와 테스트가 자동으로 이어집니다."
+            ))
+            return
+
+        # 코드가 나왔으니 Phase 2/3 진행
+        await self._run_review_and_test(
+            channel, thread_ts, request, claude_code, images=images,
+        )
+
+    async def _run_review_and_test(self, channel, thread_ts, request, claude_code, images=None):
+        """Phase 2 (Codex 리뷰) + Phase 3 (테스트 3병렬) + 이슈 수정 루프 + 최종 보고서.
+
+        Phase 1 에서 Claude 가 코드를 완성했을 때만 호출된다.
+        """
         # Phase 2 — Codex: 코드 리뷰
         self._post(channel, thread_ts, "━━━ Phase 2: 코드 리뷰 (Codex) ━━━")
 

@@ -18,8 +18,25 @@
 | v0.6.1 | 2026-05-08 | 이미지 첨부를 CLI prompt 첨부 방식으로 정정 (API 키 의존 제거) |
 | v0.6.2 | 2026-05-08 | file_share/thread_broadcast subtype 차단 회귀 수정 (텍스트+이미지 라우팅 복구) |
 | v0.6.3 | 2026-05-09 | Claude readline 64KB 한계 수정 + Codex/Gemini 노이즈 누출 정리 + Gemini vision 가드 |
+| v0.6.4 | 2026-05-12 | 코딩 모드 Phase 1 게이트 (Claude 코드 완성 전 Codex/Gemini 자동 진입 차단) |
 
-## v0.6.3 (2026-05-09)
+## v0.6.4 (2026-05-12)
+
+### 버그 수정
+- **[Major]** 코딩 모드에서 Phase 1 Claude 가 요구사항을 되묻는 질문 응답을 줬을 때, 봇이 그것을 그대로 "코드"로 간주하여 Phase 2 Codex 리뷰가 곧장 시작되고 Codex 가 엉뚱한 stockradar stacktrace 같은 컨텍스트를 끌어와 응답하던 회귀 수정. Phase 2 가 묶여 있는 동안 Phase 3 Gemini 는 도달조차 못 해 응답이 없던 사용자 보고가 원인. `modes/coding.py` 에 Phase 1 게이트 도입:
+  - `AWAIT_USER_PATTERN` (`<!--AWAIT_USER:사유-->`) 줄 단위 정규식 + Phase 1 프롬프트 suffix 로 Claude 에게 "추가 정보 필요하면 응답 마지막 줄에 태그를 추가하라" 지시
+  - 모듈 전역 `_PENDING_THREADS` + `_PENDING_LOCK` + `_RESUMING_THREADS` + `_INFLIGHT_PHASE1` 으로 동시 start/followup race 직렬화
+  - `start()` 본문을 `_start_inner()` 로 분리하고 `_try_enter_inflight` / `_leave_inflight` 가드를 try/finally 로 감쌈
+  - `_run_review_and_test()` 메서드로 Phase 2/3 분리. Phase 1 응답에 태그가 있으면 `_PENDING_THREADS` 에 첨부 이미지 포함 등록 후 Phase 2/3 호출 없이 종료
+  - `followup()` 진입 시 pending + 명시적 codex/gemini 호출 아닐 경우 `_resume_pending()` 호출. 사용자 답변과 스레드 히스토리를 합쳐 Claude 재호출, 응답에 태그가 사라지면 Phase 2/3 자동 트리거
+  - fenced code block 안 단독 태그 오탐 방지 (`_FENCED_BLOCK.sub('', text)` 후 매칭), `_strip_await_user` 는 UUID sentinel 로 fenced block 보존
+  - `_image_key()` (path → name → id) 헬퍼로 최초 이미지 + followup 이미지 dedup 병합
+  - `_check_cancel()` 이 cancel cleanup 외에 `_drop_pending()` 호출하여 stale pending 차단
+
+### 검증
+- 단위 테스트 23건 추가 (`tests/test_coding_gate.py`): AWAIT_USER 정규식 / fenced 보존 / placeholder 충돌 안전성 / start 게이트 / followup pending 트리거 / cancel 정리 / 동시 followup 직렬화 / start inflight 가드 / image key 우선순위
+- 인접 회귀 38건 전부 통과 (총 61 passed)
+- Codex 교차 검증 3차 라운드 → 미통과 → race / cancel / fenced 오탐 / image key / placeholder 충돌 등 5개 이슈 전부 반영 후 통과
 
 ### 버그 수정
 - **[Critical]** Claude 가 이미지 첨부 입력에서 항상 `[Claude] 오류: Separator is not found, and chunk exceed the limit` 으로 실패하던 회귀 수정. asyncio `proc.stdout.readline()` 의 기본 64KB 라인 한도를 16MB 로 키워(`_STREAM_LINE_LIMIT`) 이미지 Read tool_result 한 줄이 한도를 넘기는 stream-json 파싱 실패 차단. `_run_cli` / `ask_with_progress` 양쪽에 적용.
