@@ -53,6 +53,45 @@ class TestDebateReplacement:
                 assert agent in mode.agents
 
 
+class TestDynamicBackupDiversity:
+    """이중 장애 시 살아있는 에이전트 계열 다양성이 붕괴되지 않아야 함."""
+
+    def test_double_failure_keeps_distinct_families(self):
+        mode = DebateMode(_make_mock_slack())
+        # Codex 장애 → 교체
+        codex = mode.agents[1]
+        assert codex.name == "Codex"
+        mode._replace_agent(codex, "C1", "ts1")
+        # Gemini 장애 → 교체 (현재 살아있는 에이전트 기준 동적 선택)
+        gemini = next(a for a in mode.agents if a.name == "Gemini")
+        b2 = mode._get_backup(gemini)
+        mode._replace_agent(gemini, "C1", "ts1")
+
+        families = [a.base_family for a in mode.agents]
+        # Claude·Claude-B·Claude-B 같은 붕괴가 아니라 3계열 유지
+        assert len(set(families)) == 3, families
+        # 정적 매핑(Gemini→Claude-B)이 아니라 동적으로 codex 계열 선택
+        assert b2.base_family == "codex"
+
+    def test_single_failure_avoids_failing_family(self):
+        mode = DebateMode(_make_mock_slack())
+        claude = mode.agents[0]
+        backup = mode._get_backup(claude)
+        # Claude 장애 시 같은 claude 계열 백업을 고르지 않음 (장애 원인 공유 회피)
+        assert backup.base_family != "claude"
+
+    def test_triple_failure_no_duplicate_instance(self):
+        """3개 모두 순차 장애여도 동일 백업 인스턴스가 중복되면 안 됨 (Codex F1)."""
+        mode = DebateMode(_make_mock_slack())
+        for name in ("Codex", "Gemini", "Claude"):
+            agent = next(a for a in mode.agents if a.name == name)
+            mode._replace_agent(agent, "C1", "ts1")
+
+        ids = [id(a) for a in mode.agents]
+        assert len(set(ids)) == 3, f"중복 인스턴스: {[a.name for a in mode.agents]}"
+        assert len({a.base_family for a in mode.agents}) == 3
+
+
 class TestCodingReplacement:
     def test_backup_map_covers_all_agents(self):
         mode = CodingMode(_make_mock_slack())

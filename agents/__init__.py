@@ -3,5 +3,9 @@ from agents.codex import CodexAgent
 from agents.gemini import GeminiAgent
 from agents.claude_backup import ClaudeBackupAgent
 from agents.codex_backup import CodexBackupAgent
+from agents.gemini_backup import GeminiBackupAgent
 
-__all__ = ["ClaudeAgent", "CodexAgent", "GeminiAgent", "ClaudeBackupAgent", "CodexBackupAgent"]
+__all__ = [
+    "ClaudeAgent", "CodexAgent", "GeminiAgent",
+    "ClaudeBackupAgent", "CodexBackupAgent", "GeminiBackupAgent",
+]

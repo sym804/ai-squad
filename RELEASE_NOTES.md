@@ -19,6 +19,25 @@
 | v0.6.2 | 2026-05-08 | file_share/thread_broadcast subtype 차단 회귀 수정 (텍스트+이미지 라우팅 복구) |
 | v0.6.3 | 2026-05-09 | Claude readline 64KB 한계 수정 + Codex/Gemini 노이즈 누출 정리 + Gemini vision 가드 |
 | v0.6.4 | 2026-05-12 | 코딩 모드 Phase 1 게이트 (Claude 코드 완성 전 Codex/Gemini 자동 진입 차단) |
+| v0.7.0 | 2026-05-19 | 토론 시스템 6대 개선 (교착 재설계, 백업 풀 분산, 파싱 견고화, 통합문 분리, 난이도 라우팅, 조건부 반박) |
+
+## v0.7.0 (2026-05-19)
+
+토론(debate) 시스템 품질/안정성 6개 항목 개선. AI 멀티에이전트 토론 결과 검토에서 도출된 결함을 코드 대조로 확인 후 일괄 수정.
+
+### 버그 수정
+- **[Major]** 교착 감지(`_is_stalemate`) 사실상 미발동: 메시지 앞 100자 문자열 set 비교는 매 라운드 도입부가 달라 `overlap>=2`가 사실상 불가. 전원 합의 실패 시 `MAX_DEBATE_ROUNDS(10)`까지 불필요 진행. 라운드별 `{agrees, diverged}` 스냅샷 기반(최근 2라운드 정체+발산 시 교착)으로 재설계, 시그니처 `history -> round_history`.
+- **[Major]** 백업 풀 비대칭 + 이중 장애 다양성 붕괴: 정적 매핑이 Codex/Gemini 모두 Claude-B로 수렴해 동시/순차 장애 시 살아있는 에이전트가 동일 모델 3중. `GeminiBackupAgent` 신설 + `base_family` 속성 + 실패/생존 계열 회피 동적 선택. 이미 live인 백업 인스턴스는 후보에서 제외(없으면 풀 폴백)해 동일 객체 중복 방지.
+- **[Major]** `_parse_consensus` 무음 실패: JSON 파싱 실패 시 조용히 None 반환으로 합의 누락. salvage 단계화(trailing comma 제거 재시도 -> agree/summary 정규식 추출) + 실패 시 WARNING 로깅.
+- **[Minor]** 최종 통합문 `self.agents[0]` 단독 생성으로 교체된 백업 모델 편향. `_select_final_answer_agent()`로 교체 안 된 원본 우선 선택, 원본 전멸 시 LLM 없이 결정론적 머지 폴백.
+
+### 개선
+- **[Major]** 조건부 반박 강제(challenge-once 반동조 게이트): 라운드2+ 프롬프트를 "의견 갈리면 상대 주장 구체 인용해 지적, 같으면 같다고(억지 반박 금지)"로 변경, CONSENSUS에 `disagreements` 필드 추가. 요약 발산(min-pair Jaccard) 시 전원 agree인데 아무도 차이를 안 다루면 1회 교전 라운드만 강제 후 미해결 쟁점 명시하고 종료(영구 차단 아님).
+- **[Minor]** 난이도 기반 라운드 라우팅: `_classify_difficulty` 휴리스틱(길이/코드·기술 키워드/다항/실시간)으로 단순=조기 종료 허용, 복잡=`COMPLEX_MIN_ROUNDS(3)` 전 조기 종료 금지. followup은 원주제+질문 합산 분류. 3개 AI 교차검증은 유지하고 비용만 절감.
+
+### 검증
+- 신규 단위 테스트: `tests/test_debate_improvements.py`, `tests/test_debate_gates.py`, `tests/test_agent_family.py` + `test_consensus.py`/`test_replacement.py` 갱신. 비라이브 전체 154 passed.
+- Codex 교차 검증: 1차에서 5개 이슈 지적(백업 인스턴스 중복, 평균 Jaccard로 2:1 발산 미감지, 정상 합의 false-positive 차단, followup 난이도 원주제 무시, disagreements 구조 검증). 전부 교정 + 해당 버그 회귀 테스트 추가(`triple_failure_no_duplicate_instance`, `two_vs_one_outlier_diverged`, `divergence_forces_one_challenge_round_then_concludes`).
 
 ## v0.6.4 (2026-05-12)
 
