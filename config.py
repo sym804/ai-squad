@@ -11,6 +11,8 @@ SR_AGENT_CHANNEL_ID = os.environ.get("SR_AGENT_CHANNEL_ID", "")
 TC_AGENT_CHANNEL_ID = os.environ.get("TC_AGENT_CHANNEL_ID", "")
 MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))
 CONSENSUS_EARLY_ROUNDS = int(os.environ.get("CONSENSUS_EARLY_ROUNDS", "5"))
+# 복잡한 주제는 만장일치여도 이 라운드 전엔 조기 종료 금지 (반동조)
+COMPLEX_MIN_ROUNDS = int(os.environ.get("COMPLEX_MIN_ROUNDS", "3"))
 CLI_TIMEOUT = 180
 CLI_TIMEOUT_CODING = 300  # 코딩 모드는 5분
 

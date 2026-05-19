@@ -46,6 +46,7 @@ def _format_token_usage(data: dict) -> str:
 class ClaudeAgent(AgentBase):
     name = "Claude"
     emoji = "🟠"
+    base_family = "claude"
 
     def __init__(self, continue_mode=False):
         self.continue_mode = continue_mode

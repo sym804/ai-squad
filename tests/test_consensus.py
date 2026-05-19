@@ -64,58 +64,35 @@ class TestStripConsensus:
         assert _strip_consensus(text) == "ABC"
 
 
-# ── _is_stalemate ───────────────────────────────────────────────
+# ── _is_stalemate (신규 계약: round_history 스냅샷 기반) ─────────
+# 구 계약(history 앞 100자 set 비교)은 폐기. 라운드별
+# {"agrees": int, "diverged": bool} 스냅샷 최근 2개로 교착 판정.
 
 class TestIsStalemate:
-    def test_not_enough_messages(self):
-        history = [{"name": "Agent", "text": f"msg{i}"} for i in range(5)]
-        assert DebateMode._is_stalemate(history) is False
+    def test_fewer_than_two_snapshots(self):
+        assert DebateMode._is_stalemate([]) is False
+        assert DebateMode._is_stalemate([{"agrees": 1, "diverged": True}]) is False
 
-    def test_no_stalemate_different_content(self):
-        history = [{"name": "A", "text": f"unique-{i}" * 20} for i in range(6)]
-        assert DebateMode._is_stalemate(history) is False
+    def test_stagnant_and_diverged_is_stalemate(self):
+        rh = [{"agrees": 1, "diverged": True}, {"agrees": 1, "diverged": True}]
+        assert DebateMode._is_stalemate(rh) is True
 
-    def test_stalemate_repeated_content(self):
-        # set 비교이므로 교집합 >= 2가 되려면 최소 2개의 서로 다른 공통 항목이 필요
-        # 모든 텍스트가 완전히 동일하면 set 크기=1 → overlap=1 → not stalemate
-        # 에이전트별로 다른 텍스트가 있되, 라운드 간 반복되어야 교착
-        texts = ["반복A " * 20, "반복B " * 20, "반복C " * 20]
-        history = [
-            {"name": "A", "text": texts[0]},
-            {"name": "B", "text": texts[1]},
-            {"name": "C", "text": texts[2]},
-            {"name": "A", "text": texts[0]},
-            {"name": "B", "text": texts[1]},
-            {"name": "C", "text": texts[2]},
+    def test_agrees_increasing_not_stalemate(self):
+        rh = [{"agrees": 1, "diverged": True}, {"agrees": 2, "diverged": True}]
+        assert DebateMode._is_stalemate(rh) is False
+
+    def test_not_diverged_not_stalemate(self):
+        rh = [{"agrees": 2, "diverged": False}, {"agrees": 2, "diverged": False}]
+        assert DebateMode._is_stalemate(rh) is False
+
+    def test_uses_last_two_snapshots_only(self):
+        rh = [
+            {"agrees": 0, "diverged": True},
+            {"agrees": 3, "diverged": False},
+            {"agrees": 2, "diverged": True},
+            {"agrees": 2, "diverged": True},
         ]
-        assert DebateMode._is_stalemate(history) is True
-
-    def test_user_messages_excluded(self):
-        # 사용자 메시지는 교착 판단에서 제외
-        history = [
-            {"name": "사용자", "text": "질문"},
-            *[{"name": f"A{i}", "text": f"unique-{i}" * 20} for i in range(4)],
-        ]
-        assert DebateMode._is_stalemate(history) is False
-
-    def test_exactly_2_overlap_is_stalemate(self):
-        # recent set = {"공통A...", "공통B..."}, prev set = {"공통A...", "공통B...", "다른..."}
-        # overlap = 2 → stalemate
-        history = [
-            {"name": "A", "text": "공통A " * 20},
-            {"name": "B", "text": "공통B " * 20},
-            {"name": "C", "text": "다른 내용 " * 20},
-            {"name": "A", "text": "공통A " * 20},
-            {"name": "B", "text": "공통B " * 20},
-            {"name": "C", "text": "또 다른 내용 " * 20},
-        ]
-        assert DebateMode._is_stalemate(history) is True
-
-    def test_all_identical_not_stalemate(self):
-        """모든 메시지가 동일 → set 크기 1 → overlap 1 → 교착 아님 (구현 특성)."""
-        same = "동일 내용 " * 20
-        history = [{"name": f"A{i}", "text": same} for i in range(6)]
-        assert DebateMode._is_stalemate(history) is False
+        assert DebateMode._is_stalemate(rh) is True
 
 
 # ── _build_conclusion ───────────────────────────────────────────

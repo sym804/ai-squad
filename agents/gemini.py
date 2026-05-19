@@ -22,15 +22,15 @@ _NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_reje
                     "_digitIsSub", "maxLength:", "maxSubParamsLength:", "currentState:",
                     "YOLO mode is enabled", "Loaded cached credentials",
                     "All tool calls will be automatically approved",
-                    # Gemini CLI 내부 재시도 로그 — 재시도 성공 시엔 최종 출력에 포함시키면 안 됨
+                    # Gemini CLI 내부 재시도 로그, 재시도 성공 시엔 최종 출력에 포함시키면 안 됨
                     "Attempt ", "Retrying after",
-                    # Gemini CLI extension/hook 로그 — 정상 실행 시에도 stdout에 찍힘
+                    # Gemini CLI extension/hook 로그, 정상 실행 시에도 stdout에 찍힘
                     "Warning: Skipping extension", "Configuration file not found",
                     "Created execution plan for", "Expanding hook command",
                     "Hook execution for",
-                    # Gemini CLI 터미널 색상 경고 — non-TTY 환경에서 항상 찍힘
+                    # Gemini CLI 터미널 색상 경고, non-TTY 환경에서 항상 찍힘
                     "256-color support not detected",
-                    # Gemini CLI 도구 폴백 안내 — Windows 등 ripgrep 미설치 환경에서
+                    # Gemini CLI 도구 폴백 안내, Windows 등 ripgrep 미설치 환경에서
                     # 매 실행마다 stdout 첫 줄로 찍혀 응답 본문 앞에 노출됨
                     "Ripgrep is not available", "Falling back to GrepTool"]
 
@@ -74,10 +74,10 @@ _BACKOFF_BASE = 10
 # 모델 선택 근거 (2026-04-11 벤치마크, 각 모델 × 2회, 동일 프롬프트):
 #   gemini-2.5-flash-lite          →   9.1s  (fallback)
 #   gemini-3-flash-preview         →  11.8s  (primary)
-#   gemini-3.1-flash-lite-preview  →  54.9s  (재시도 5회 — 불안정)
-#   gemini-2.5-flash               →  65.5s  (가장 느림 — 제외)
+#   gemini-3.1-flash-lite-preview  →  54.9s  (재시도 5회, 불안정)
+#   gemini-2.5-flash               →  65.5s  (가장 느림, 제외)
 # Google AI Pro 구독으로 모든 모델에 접근 가능, 일일 quota도 충분(99%+ 남음).
-# gemini-3-flash-preview를 primary로 선정 — 2.5-flash-lite보다 2.7초만 느리고,
+# gemini-3-flash-preview를 primary로 선정: 2.5-flash-lite보다 2.7초만 느리고,
 # Gemini 3세대 최신 모델이라 추론·맥락 이해 품질 우위. 속도 차이가 미미하면
 # 최신 모델을 쓰는 것이 future-proof.
 _GEMINI_MODELS = [
@@ -89,7 +89,7 @@ _GEMINI_MODELS = [
 # 전역 동시 호출 제한: 초기에는 OAuth 무료 티어 가정으로 Semaphore(1) 직렬화
 # 했으나, (1) Google AI Pro 구독으로 실제 quota가 충분하고, (2) primary 모델을
 # `gemini-2.5-flash-lite`로 바꿔 호출당 소요가 9초 수준으로 짧아져서 burst 부담이
-# 크지 않다. 그래서 `Semaphore(3)`으로 완화 — 최대 3개 동시 Gemini 호출만 허용.
+# 크지 않다. 그래서 `Semaphore(3)`으로 완화: 최대 3개 동시 Gemini 호출만 허용.
 # 이 정도면 병렬 debate 2개도 bottleneck 없이 돌고, 갑작스런 burst만 방어.
 _gemini_concurrency = asyncio.Semaphore(3)
 
@@ -114,6 +114,7 @@ def _mark_failed(model: str):
 class GeminiAgent(AgentBase):
     name = "Gemini"
     emoji = "🔵"
+    base_family = "gemini"
 
     def _build_cmd(self, tmp: str) -> list[str]:
         return ["gemini", "-m", _available_models()[0], "-y", "-p", ""]
@@ -240,7 +241,7 @@ class GeminiAgent(AgentBase):
             readline_timeout = 60
             overall_timeout = t * 2
 
-            # 내부 재시도 로그 키워드 — output에 포함하지 않고 rate-limit 힌트로만 기록
+            # 내부 재시도 로그 키워드, output에 포함하지 않고 rate-limit 힌트로만 기록
             _RETRY_NOISE = ("Attempt ", "Retrying after")
 
             while True:

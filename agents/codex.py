@@ -182,6 +182,7 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
 class CodexAgent(AgentBase):
     name = "Codex"
     emoji = "🟢"
+    base_family = "codex"
 
     def _build_cmd(self, tmp: str) -> list[str]:
         # `--full-auto` 는 Codex CLI 0.129 부터 deprecated. 명시적으로
