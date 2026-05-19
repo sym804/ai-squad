@@ -20,6 +20,16 @@
 | v0.6.3 | 2026-05-09 | Claude readline 64KB 한계 수정 + Codex/Gemini 노이즈 누출 정리 + Gemini vision 가드 |
 | v0.6.4 | 2026-05-12 | 코딩 모드 Phase 1 게이트 (Claude 코드 완성 전 Codex/Gemini 자동 진입 차단) |
 | v0.7.0 | 2026-05-19 | 토론 시스템 6대 개선 (교착 재설계, 백업 풀 분산, 파싱 견고화, 통합문 분리, 난이도 라우팅, 조건부 반박) |
+| v0.7.1 | 2026-05-19 | 자기-반복(no-progress) 조기 종료 (실시간/사실 주제 무한 반복·토큰 낭비 차단) |
+
+## v0.7.1 (2026-05-19)
+
+### 버그 수정
+- **[Major]** 실시간/사실 주제(예: "오늘 코스피 매수?")에서 라운드 3부터 핵심 권고가 3사 동일한데도 MAX 라운드까지 진행해 토큰을 낭비하던 결함 수정(실측 1건 7라운드 ~$4). 근본 원인: `_summaries_diverge`가 summary 전체(인용 수치·출처 포함) 어휘 Jaccard를 비교해, 권고가 수렴해도 인용부 차이로 `diverged=True`가 영구 고착. 동시에 에이전트들이 곁가지 쟁점으로 `agree=false`를 유지하면 `agrees<2`라 challenge-once(>=3)/`_is_stalemate`(>=2+비증가) 출구가 모두 미발동. 수정: agree 플래그·cross-agent 발산에 무관한 자기-반복 신호 `_no_progress(prev, curr)` 도입(양 라운드 공통 에이전트의 자기 summary 토큰 Jaccard 최소값 >= `NO_PROGRESS_THRESHOLD` 0.6, 공통 2명 미만이면 False). `start()`/`followup()` 양 루프에 `prev_summaries` 추적 + `_is_stalemate` elif 다음에 `elif can_conclude and no_progress:` 추가. agree>=2면 "다수 합의 (수렴)", 아니면 "합의 불발 (추가 진전 없음)"으로 조기 종료. `min_rounds`(난이도 게이트) 이후에만 작동하고 정상 합의/교착 경로보다 후순위라 조기 가로채기 없음.
+
+### 검증
+- 신규 단위 테스트 `TestNoProgress`(5) + KOSPI 낭비 재현 통합 테스트 `TestConvergenceEarlyExit`(RED: 라운드 10 완주 → GREEN: 라운드 ≤4 종료). `TestMaxRoundsExhaustion`을 정정된 조기 종료 동작에 맞춰 갱신. 비라이브 전체 160 passed.
+- Codex 교차검증: 플러그인 공유 런타임이 23시간 좀비화로 디스패치 불가(좀비 프로세스 6종 회수 조치). 메모리 원칙(인프라 실패 시 테스트 근거로 진행)에 따라 RED→GREEN 재현 테스트로 갈음.
 
 ## v0.7.0 (2026-05-19)
 

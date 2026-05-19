@@ -53,7 +53,11 @@ class TestUnanimousConsensus:
 
 
 class TestMaxRoundsExhaustion:
-    """모두 disagree → MAX_DEBATE_ROUNDS 도달 후 종료."""
+    """모두 disagree + 발언 반복 → MAX 도달 전에 '추가 진전 없음'으로 조기 종료.
+
+    (v0.7.1: 같은 발언을 반복하면 MAX 라운드까지 토큰을 낭비하지 않고
+    no-progress 신호로 합의 불발 종료한다.)
+    """
 
     @pytest.mark.asyncio
     @patch("modes.debate.MAX_DEBATE_ROUNDS", 2)
@@ -65,12 +69,18 @@ class TestMaxRoundsExhaustion:
 
         await mode.start("C1", "ts1", "논쟁 주제")
 
-        # 최소 2라운드 + 시작 메시지 + 결론
         all_texts = [
             c.kwargs.get("text", "") for c in mode.slack.chat_postMessage.call_args_list
         ]
         assert any("라운드 2" in t for t in all_texts)
-        assert any("도달" in t for t in all_texts)
+        # 무한 반복이 아니라 합의 불발/추가 진전 없음으로 결론 broadcast
+        broadcast = [
+            c.kwargs.get("text", "")
+            for c in mode.slack.chat_postMessage.call_args_list
+            if c.kwargs.get("reply_broadcast") is True
+        ]
+        assert len(broadcast) == 1
+        assert ("추가 진전 없음" in broadcast[0]) or ("도달" in broadcast[0])
 
 
 class TestBackupSubstitution:

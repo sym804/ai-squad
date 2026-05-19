@@ -105,6 +105,42 @@ class TestGroupthinkGate:
         assert "최대 라운드" not in bc[0]
 
 
+class TestConvergenceEarlyExit:
+    """KOSPI 사례 재현: 각 에이전트가 곁가지로 agree=false를 유지하며
+    같은 권고를 매 라운드 반복하면, agrees<2라 stalemate/challenge-once가
+    트리거 못 해 MAX까지 토큰을 낭비한다. no-progress 조기 종료로 해소.
+    """
+
+    @pytest.mark.asyncio
+    @patch("modes.debate.MAX_DEBATE_ROUNDS", 10)
+    async def test_repeating_no_consensus_exits_early(self):
+        mode = _make_mode()
+        # 3사 서로 다른 summary(=cross-agent 발산 영구), 전원 agree=false,
+        # 매 라운드 자기 발언을 그대로 반복
+        responses = [
+            _resp(False, "오늘 신규매수 0% 관망 5/20 엔비디아 실적 후 장기자금만 분할 진입"),
+            _resp(False, "오늘 전액 대기 변동성 극심 외국인 매도 지속 리스크 회피 우선"),
+            _resp(False, "완전 관망 코스피 7254 급락 추세 붕괴 5/21 삼성 파업 변수"),
+        ]
+        for agent, r in zip(mode.agents, responses):
+            agent.ask = AsyncMock(return_value="통합 답변")
+            agent.ask_with_progress = AsyncMock(return_value=r)
+        for b in mode._backup_pool:
+            b.ask = AsyncMock(return_value="통합 답변")
+            b.ask_with_progress = AsyncMock(return_value=r)
+
+        await mode.start("C1", "ts1", "오늘 코스피 매수할까 더 기다릴까?")
+
+        bc = _broadcast_texts(mode)
+        assert len(bc) == 1
+        # 핵심: MAX(10)까지 안 가고 조기 종료 (자기-반복 = 토큰 낭비 신호)
+        assert "라운드 10" not in bc[0]
+        assert "최대 라운드" not in bc[0]
+        import re as _re
+        m = _re.search(r"라운드 (\d+)\)", bc[0])
+        assert m and int(m.group(1)) <= 4, f"너무 늦게 종료: {bc[0][:120]}"
+
+
 class TestFinalAnswerNonBackup:
     """통합문 생성은 교체된 백업이 아닌 원본 에이전트가 맡아야 함."""
 

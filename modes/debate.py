@@ -130,6 +130,39 @@ def _summaries_diverge(round_consensuses: list[dict]) -> tuple[bool, str]:
     return True, note
 
 
+# 자기-반복 임계: 직전 라운드 대비 토큰 Jaccard 가 이 값 이상이면 "그대로 반복"
+NO_PROGRESS_THRESHOLD = 0.6
+
+
+def _round_summaries(round_consensuses: list[dict]) -> dict[str, str]:
+    """그 라운드의 {에이전트명: summary} 매핑 (summary 있는 항목만)."""
+    out: dict[str, str] = {}
+    for r in round_consensuses:
+        c = r.get("consensus")
+        if c and c.get("summary"):
+            out[r.get("agent_name", "?")] = c["summary"]
+    return out
+
+
+def _no_progress(prev: dict[str, str], curr: dict[str, str]) -> bool:
+    """직전 라운드 대비 진전이 없는지(모든 에이전트가 자기 발언을 반복).
+
+    cross-agent 발산이나 agree 플래그에 의존하지 않는다. 양 라운드에 모두
+    존재하는 에이전트만 비교하고, 그중 **가장 많이 바뀐** 에이전트조차
+    NO_PROGRESS_THRESHOLD 이상 자기 유사하면(= 아무도 실질적으로 안 바뀜)
+    진전 없음으로 판정. 비교 가능한 에이전트가 2명 미만이면 False.
+    """
+    common = [name for name in curr if name in prev]
+    if len(common) < 2:
+        return False
+    sims = []
+    for name in common:
+        a, b = _tokens(prev[name]), _tokens(curr[name])
+        union = a | b
+        sims.append((len(a & b) / len(union)) if union else 1.0)
+    return min(sims) >= NO_PROGRESS_THRESHOLD
+
+
 def _classify_difficulty(topic: str) -> str:
     """질문 난이도 휴리스틱 분류. LLM 호출 없음. 'simple' | 'complex'."""
     t = topic or ""
@@ -275,6 +308,7 @@ class DebateMode:
         round_history: list[dict] = []
         pending_issue: str | None = None
         divergence_challenged = False
+        prev_summaries: dict[str, str] | None = None
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
             if is_cancelled(thread_ts):
@@ -355,6 +389,9 @@ class DebateMode:
             diverged, issue_note = _summaries_diverge(round_consensuses)
             agrees = _count_agrees(round_consensuses)
             round_history.append({"agrees": len(agrees), "diverged": diverged})
+            curr_summaries = _round_summaries(round_consensuses)
+            no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
+            prev_summaries = curr_summaries
             can_conclude = round_num >= min_rounds
 
             if can_conclude and len(agrees) >= 3:
@@ -372,6 +409,18 @@ class DebateMode:
             elif can_conclude and len(agrees) >= 2 and self._is_stalemate(round_history):
                 header = self._build_conclusion(
                     f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question,
+                    round_consensuses, issue_note=issue_note if diverged else None,
+                )
+                final = await self._generate_final_answer(question, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
+                return
+            elif can_conclude and no_progress:
+                # 모든 에이전트가 직전 라운드를 그대로 반복 = 추가 토론은 토큰 낭비
+                title = (f"추가 토론 다수 합의 (수렴, {len(agrees)}/3 동의)"
+                         if len(agrees) >= 2
+                         else "추가 토론 종료 (합의 불발, 추가 진전 없음)")
+                header = self._build_conclusion(
+                    title, round_num, question,
                     round_consensuses, issue_note=issue_note if diverged else None,
                 )
                 final = await self._generate_final_answer(question, history, round_consensuses)
@@ -525,6 +574,7 @@ class DebateMode:
         round_history: list[dict] = []  # 라운드별 {"agrees", "diverged"} 스냅샷
         pending_issue: str | None = None  # 다음 라운드에 주입할 미해결 쟁점
         divergence_challenged = False  # 발산 교전 라운드를 이미 1회 강제했는지
+        prev_summaries: dict[str, str] | None = None  # 직전 라운드 summary (자기-반복 감지용)
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
             if is_cancelled(thread_ts):
@@ -618,7 +668,10 @@ class DebateMode:
             diverged, issue_note = _summaries_diverge(round_consensuses)
             agrees = _count_agrees(round_consensuses)
             round_history.append({"agrees": len(agrees), "diverged": diverged})
-            print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged}")
+            curr_summaries = _round_summaries(round_consensuses)
+            no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
+            prev_summaries = curr_summaries
+            print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged} no_progress={no_progress}")
 
             can_conclude = round_num >= min_rounds
 
@@ -640,6 +693,19 @@ class DebateMode:
                 # 2개 동의 + 교착 상태: 다수결 종료 (미해결 쟁점 명시)
                 header = self._build_conclusion(
                     f"다수 합의 (교착 상태, {len(agrees)}/3 동의)", round_num, topic,
+                    round_consensuses, issue_note=issue_note if diverged else None,
+                )
+                final = await self._generate_final_answer(topic, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
+                return
+            elif can_conclude and no_progress:
+                # 모든 에이전트가 직전 라운드를 그대로 반복 = 추가 토론은 토큰 낭비.
+                # agree/발산에 무관하게 종료 (실시간/사실 주제의 무한 반복 방지).
+                title = (f"다수 합의 (수렴, {len(agrees)}/3 동의)"
+                         if len(agrees) >= 2
+                         else "토론 종료 (합의 불발, 추가 진전 없음)")
+                header = self._build_conclusion(
+                    title, round_num, topic,
                     round_consensuses, issue_note=issue_note if diverged else None,
                 )
                 final = await self._generate_final_answer(topic, history, round_consensuses)
