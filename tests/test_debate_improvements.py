@@ -9,6 +9,7 @@ from modes.debate import (
     _summaries_diverge,
     _classify_difficulty,
     _parse_consensus,
+    _no_progress,
     DebateMode,
 )
 
@@ -86,6 +87,45 @@ class TestParseConsensusSalvage:
             result = _parse_consensus(text)
         assert result is None
         assert any("CONSENSUS" in r.message for r in caplog.records)
+
+
+# ── _no_progress (자기-반복 감지: 토큰 낭비 방지) ────────────────
+
+class TestNoProgress:
+    def test_all_agents_repeat_themselves_is_no_progress(self):
+        prev = {"Claude": "오늘 신규매수 0% 관망 5/20 엔비디아 후 분할",
+                "Codex": "오늘 0% 대기 변동성 큼 장기자금만 분할",
+                "Gemini": "완전 관망 코스피 7254 급락 추세 붕괴"}
+        curr = dict(prev)  # 각자 직전 라운드 그대로 반복
+        assert _no_progress(prev, curr) is True
+
+    def test_substantive_change_is_progress(self):
+        prev = {"Claude": "전액 매수 적극 추천 지금이 바닥",
+                "Codex": "분할 매수 30~40% 진입 추천"}
+        curr = {"Claude": "관망 전환 신규매수 0% 리스크 회피",
+                "Codex": "완전 대기 5/21 이벤트 후 재검토"}
+        assert _no_progress(prev, curr) is False
+
+    def test_fewer_than_two_comparable_is_not_no_progress(self):
+        prev = {"Claude": "관망 추천 동일 내용 반복"}
+        curr = {"Claude": "관망 추천 동일 내용 반복"}
+        assert _no_progress(prev, curr) is False
+
+    def test_one_agent_still_moving_is_not_no_progress(self):
+        # 보수적: 한 명이라도 실질 변화 중이면 진전 있음으로 본다
+        prev = {"Claude": "오늘 0% 관망 동일 문장 반복 유지",
+                "Codex": "분할 30% 진입 추천 적극적 매수 의견"}
+        curr = {"Claude": "오늘 0% 관망 동일 문장 반복 유지",
+                "Codex": "완전 관망 0% 으로 입장 선회 리스크 회피"}
+        assert _no_progress(prev, curr) is False
+
+    def test_compares_only_intersection_agents(self):
+        prev = {"Claude": "관망 0% 동일 결론 반복",
+                "Codex": "대기 장기자금만 분할 동일"}
+        curr = {"Claude": "관망 0% 동일 결론 반복",
+                "Codex": "대기 장기자금만 분할 동일",
+                "Gemini-B": "신규 투입 백업 의견"}  # prev에 없음 → 교집합만 비교
+        assert _no_progress(prev, curr) is True
 
 
 # ── _classify_difficulty ────────────────────────────────────────
