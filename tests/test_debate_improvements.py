@@ -227,6 +227,21 @@ class TestPairOutlier:
                _rc("Claude-B", False, "백업이라 무시되어야 함")]
         assert _pair_outlier(rcs) == "Gemini"
 
+    def test_skip_names_excludes_superseded_originals(self):
+        """Codex F1 회귀 방지: 원본이 부분 응답 + 백업이 별도 응답 시 원본을
+        skip_names 로 제외하면 백업이 정상 반영되어야 한다.
+        (skip 안 하면 첫 3개 [Claude, Codex, Gemini(원본 부분응답)] 가 잡혀
+        Gemini-B 의 실제 답변이 무시된다.)"""
+        common = "공통 입장 출처 검증 필수 라멘 돈코츠 국물"
+        rcs = [_rc("Claude", False, common),
+               _rc("Codex",  False, common),
+               _rc("Gemini", True,  "타임아웃 직전 부분 응답 무관 내용 다른 어휘"),
+               _rc("Gemini-B", False, common)]
+        # skip_names 없이는 원본 Gemini 가 outlier 로 잡힘
+        assert _pair_outlier(rcs) == "Gemini"
+        # skip_names 로 원본 제외 시 Claude+Codex+Gemini-B 셋이 모두 같은 입장 → outlier 없음
+        assert _pair_outlier(rcs, skip_names={"Gemini"}) is None
+
 
 class TestPersistentOutlier:
     def test_under_two_rounds_no_persistence(self):

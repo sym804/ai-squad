@@ -141,7 +141,7 @@ NO_PROGRESS_THRESHOLD = 0.6
 PAIR_AGREE_THRESHOLD = 0.30
 
 
-def _pair_outlier(round_consensuses: list[dict]) -> str | None:
+def _pair_outlier(round_consensuses: list[dict], skip_names: set[str] | None = None) -> str | None:
     """3-에이전트 토론에서 2-vs-1 outlier 감지.
 
     각 페어 Jaccard 를 계산해 (1) 최고 페어 sim >= PAIR_AGREE_THRESHOLD 이고
@@ -150,12 +150,20 @@ def _pair_outlier(round_consensuses: list[dict]) -> str | None:
 
     예: A·B 가 sim=0.45 로 묶이고 (A,C)=0.10, (B,C)=0.08 이면 C 가 outlier.
     페어가 3개 미만(=summary 가 3명 다 안 들어옴)이면 None (판정 불가).
+
+    skip_names: 이번 라운드에 백업으로 교체된 원본 에이전트 이름. 이들의 consensus 는
+    무시한다 (Codex F1 회귀 방지: 원본이 부분 응답 + 백업 별도 응답 시 둘 다
+    valid 에 들어가면 첫 3개 가져갈 때 원본이 잡혀 backup 가 무시되는 사고).
     """
     valid = []
+    skip = skip_names or set()
     for r in round_consensuses:
+        name = r.get("agent_name", "?")
+        if name in skip:
+            continue
         c = r.get("consensus")
         if c and c.get("summary"):
-            valid.append((r.get("agent_name", "?"), c["summary"]))
+            valid.append((name, c["summary"]))
     if len(valid) < 3:
         return None
     # 첫 3명만 사용 (백업 투입 등으로 4+ 인 경우 안전)
@@ -454,7 +462,7 @@ class DebateMode:
             curr_summaries = _round_summaries(round_consensuses)
             no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
             prev_summaries = curr_summaries
-            outlier_history.append(_pair_outlier(round_consensuses))
+            outlier_history.append(_pair_outlier(round_consensuses, skip_names=self._replaced))
             persistent_outlier = _persistent_outlier(outlier_history)
             can_conclude = round_num >= min_rounds
 
@@ -745,7 +753,7 @@ class DebateMode:
             curr_summaries = _round_summaries(round_consensuses)
             no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
             prev_summaries = curr_summaries
-            outlier_history.append(_pair_outlier(round_consensuses))
+            outlier_history.append(_pair_outlier(round_consensuses, skip_names=self._replaced))
             persistent_outlier = _persistent_outlier(outlier_history)
             print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged} no_progress={no_progress} outlier={outlier_history[-1]} persistent={persistent_outlier}")
 
