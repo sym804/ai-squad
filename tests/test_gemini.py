@@ -1,10 +1,15 @@
-"""GeminiAgent 단위 테스트 - rate-limit 탐지 로직 + agy 분기."""
+"""GeminiAgent 단위 테스트 - rate-limit 탐지 로직 + agy 분기 + 이벤트 루프 격리."""
 
+import asyncio
 import importlib
 
 import pytest
 
-from agents.gemini import GeminiAgent, _GEMINI_MODELS, _clean_output, _build_subprocess_args
+import agents.gemini as gemini_mod  # 런타임 참조 (importlib.reload 이후에도 최신 dict 보장)
+from agents.gemini import (
+    GeminiAgent, _GEMINI_MODELS, _clean_output, _build_subprocess_args,
+    _GEMINI_CONCURRENCY_LIMIT,
+)
 
 
 class TestRateLimitDetection:
@@ -234,3 +239,77 @@ class TestBinarySelection:
         meta_prompt = 'echo & dir | findstr "x" > %TEMP%\\x.txt < input.txt'
         cmd, _ = gemini_mod._build_subprocess_args("__agy_default__", meta_prompt)
         assert cmd[-1] == meta_prompt
+
+
+class TestConcurrencyPerLoop:
+    """`_get_gemini_concurrency`: per-loop lazy init 검증.
+
+    v0.7.3.2 회귀 방지: asyncio.Semaphore 가 첫 사용 이벤트 루프에 묶여 두 번째
+    이벤트 루프에서 호출 시 'bound to a different event loop' 에러로 hang 되던
+    슬랙 thread 1779275130 (33분 멈춤) 사고 재발 차단.
+
+    주의: TestBinarySelection 의 autouse importlib.reload 가 모듈 dict 를 새로
+    바인딩하므로, 본 테스트는 항상 ``gemini_mod`` (런타임 참조) 를 통해 최신 객체를
+    가져온다. 직접 import 한 심볼은 reload 후 stale 됨.
+    """
+
+    def setup_method(self):
+        """각 테스트 격리: 캐시 비움 (런타임 모듈 참조)."""
+        gemini_mod._gemini_concurrency_per_loop.clear()
+
+    def test_returns_semaphore_with_correct_limit(self):
+        async def _check():
+            sem = gemini_mod._get_gemini_concurrency()
+            assert isinstance(sem, asyncio.Semaphore)
+            assert sem._value == gemini_mod._GEMINI_CONCURRENCY_LIMIT
+        asyncio.run(_check())
+
+    def test_same_loop_returns_same_instance(self):
+        async def _check():
+            a = gemini_mod._get_gemini_concurrency()
+            b = gemini_mod._get_gemini_concurrency()
+            assert a is b, "같은 이벤트 루프 내 호출은 동일 Semaphore 반환해야 함"
+        asyncio.run(_check())
+
+    def test_different_loops_get_independent_semaphores(self):
+        """두 개의 다른 이벤트 루프가 서로 독립된 Semaphore 인스턴스를 받아야 함.
+
+        과거 사고 재현 차단: 첫 루프에서 만든 Semaphore 를 두 번째 루프에서 재사용
+        하면 `acquire()` 호출 시 "Semaphore is bound to a different event loop" 발생.
+        """
+        captured: list[asyncio.Semaphore] = []
+
+        async def _capture():
+            captured.append(gemini_mod._get_gemini_concurrency())
+
+        asyncio.run(_capture())
+        asyncio.run(_capture())  # 새 이벤트 루프
+        assert len(captured) == 2
+        assert captured[0] is not captured[1], "다른 이벤트 루프는 다른 Semaphore 인스턴스를 받아야 함"
+
+    def test_acquire_succeeds_after_loop_replacement(self):
+        """새 루프에서 acquire/release 가 에러 없이 동작 (실제 사고 시나리오 재현)."""
+        async def _acquire_test():
+            sem = gemini_mod._get_gemini_concurrency()
+            async with sem:
+                pass  # 정상 acquire/release
+
+        # 첫 번째 루프
+        asyncio.run(_acquire_test())
+        # 두 번째 루프: 이전 fix 전엔 여기서 'bound to a different event loop' 에러
+        asyncio.run(_acquire_test())
+        # 세 번째 루프도 안전
+        asyncio.run(_acquire_test())
+
+    def test_cache_keyed_by_loop_not_grow_unbounded(self):
+        """한 루프 내 반복 호출이 idempotent: 호출마다 새 Semaphore 만들어 동시성 무력화 안 됨."""
+        async def _spam():
+            first = gemini_mod._get_gemini_concurrency()
+            for _ in range(49):
+                assert gemini_mod._get_gemini_concurrency() is first
+            # 현재 루프 엔트리가 정확히 1개 (이전 테스트의 GC 안 된 weakref 가 다른 루프 키로
+            # 잔존할 수 있어 전체 len 으로 단정 안 함)
+            loop = asyncio.get_running_loop()
+            keys_for_this_loop = [k for k in gemini_mod._gemini_concurrency_per_loop if k is loop]
+            assert len(keys_for_this_loop) == 1
+        asyncio.run(_spam())

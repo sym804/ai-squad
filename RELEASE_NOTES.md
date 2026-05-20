@@ -24,6 +24,28 @@
 | v0.7.2 | 2026-05-20 | Antigravity CLI(agy) 마이그레이션 준비: GEMINI_CLI_BINARY 환경변수 토글 + agy 분기 |
 | v0.7.2.1 | 2026-05-20 | Codex 교차검증 피드백 반영: cmd /c 셸 파싱 우회 + argv 길이 가드 + _build_cmd 안전성 강화 |
 | v0.7.3 | 2026-05-20 | 2-vs-1 deadlock 조기 종료: agree=true 의미 완화 + 페어 outlier 명시 감지 |
+| v0.7.3.2 | 2026-05-20 | Gemini 이벤트 루프 회귀(Semaphore 멀티-루프 바인딩) 핫픽스 + 외부 timeout 가드 |
+
+## v0.7.3.2 (2026-05-20)
+
+v0.7.3 라이브 검증(2차 5개 토론)에서 발견된 Major 2건 즉시 교정.
+
+### 버그 수정
+- **[Major]** `asyncio.Semaphore` 이벤트 루프 바인딩 회귀. `agents/gemini.py` 의 모듈 전역 `_gemini_concurrency = asyncio.Semaphore(3)` 가 첫 사용 이벤트 루프에 묶이는 Python asyncio 한계 때문에, Slack Bolt 가 새 이벤트 루프에서 호출하면 매번 `<asyncio.locks.Semaphore object at 0x... [locked, waiters:1]> is bound to a different event loop` 에러로 acquire 자체가 실패하거나 영구 block. 2차 라이브 5/5 토론 모두 R1 또는 R2 에서 Gemini 응답 손실 확인.
+  - 수정: per-loop lazy init 구조로 재설계. `_GEMINI_CONCURRENCY_LIMIT = 3` + `WeakKeyDictionary[loop, Semaphore]` 캐시 + `_get_gemini_concurrency()` 헬퍼. 호출 시점에 현재 이벤트 루프의 세마포어를 lazy-create. 두 호출 사이트(`_run_cli`, `_run_progress_once`) 갱신. 루프 GC 시 WeakKeyDictionary 가 캐시 엔트리 자동 해제.
+- **[Major]** 토론 33분 hang 사고. Semaphore acquire 단계에서 block 되면 `_run_progress_once` 의 `while True` 루프 자체에 진입 못 해 내부 `overall_timeout(t*2)` 검사가 발동 못 함. 슬랙 thread 1779275130 (등산 vs 헬스 토픽) 에서 Gemini "작업 중 2019초(33분)" 표시 + R1 종료 마크 없이 영구 멈춤.
+  - 수정: `ask_with_progress` 의 `_run_progress_once` 호출을 `asyncio.wait_for(timeout=t * 2.5)` 외부 가드로 래핑. 내부 timeout 이 발동 못 해도 외부 가드가 강제 cancel + `_kill_registered_processes()` 로 subprocess 정리 + `[Gemini] 외부 가드 시간 초과 (~450초, 내부 hang 감지)` 메시지 반환. 백업 투입 경로 정상 작동.
+
+### 검증
+- 신규 단위 테스트 `tests/test_gemini.py::TestConcurrencyPerLoop` 5건:
+  - `test_returns_semaphore_with_correct_limit`: 임계값 3 보장
+  - `test_same_loop_returns_same_instance`: idempotent
+  - `test_different_loops_get_independent_semaphores`: 핵심 회귀 차단(다른 루프 = 다른 인스턴스)
+  - `test_acquire_succeeds_after_loop_replacement`: 실제 사고 시나리오(3회 연속 새 루프 acquire) 재현 후 정상 동작 확인
+  - `test_cache_keyed_by_loop_not_grow_unbounded`: 한 루프 내 50회 호출 후 캐시 1개 유지
+- 전체 비-라이브 테스트 250 passed (+5 신규, 회귀 없음)
+- 봇 재시작 후 라이브 재검증 권장(현재 코드는 main 반영, watchdog 가 자동 재시작)
+- Codex 교차검증: 본 변경의 WeakKeyDictionary 사용 안전성·outer timeout cancel 경로·thread-safety 를 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록)
 
 ## v0.7.3 (2026-05-20)
 

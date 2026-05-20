@@ -2,6 +2,7 @@ import asyncio
 import os
 import re
 import time
+import weakref
 from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
 from config import CLI_TIMEOUT, GEMINI_CLI_BINARY, make_filtered_env
@@ -91,7 +92,24 @@ _GEMINI_MODELS = [
 # `gemini-2.5-flash-lite`로 바꿔 호출당 소요가 9초 수준으로 짧아져서 burst 부담이
 # 크지 않다. 그래서 `Semaphore(3)`으로 완화: 최대 3개 동시 Gemini 호출만 허용.
 # 이 정도면 병렬 debate 2개도 bottleneck 없이 돌고, 갑작스런 burst만 방어.
-_gemini_concurrency = asyncio.Semaphore(3)
+#
+# v0.7.3.2: per-loop lazy init. asyncio.Semaphore 는 자기 처음 사용된 이벤트 루프에
+# 묶이는데, Slack Bolt 가 토론마다 새 이벤트 루프 컨텍스트에서 호출하면 매번
+# "Semaphore is bound to a different event loop" 에러로 acquire 자체가 실패하거나
+# block 된다(슬랙 thread 1779275130 등에서 33분 hang 재현). 현재 루프의 세마포어를
+# WeakKeyDictionary 로 캐시해 루프별 독립 인스턴스 + 루프 GC 시 자동 해제.
+_GEMINI_CONCURRENCY_LIMIT = 3
+_gemini_concurrency_per_loop: "weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore]" = weakref.WeakKeyDictionary()
+
+
+def _get_gemini_concurrency() -> asyncio.Semaphore:
+    """현재 실행 중인 이벤트 루프의 Gemini 동시성 세마포어. 루프별 lazy init."""
+    loop = asyncio.get_running_loop()
+    sem = _gemini_concurrency_per_loop.get(loop)
+    if sem is None:
+        sem = asyncio.Semaphore(_GEMINI_CONCURRENCY_LIMIT)
+        _gemini_concurrency_per_loop[loop] = sem
+    return sem
 
 # 모델 가용성 캐시: 429 난 모델은 5분간 스킵
 _model_cooldown: dict[str, float] = {}  # {model: expire_timestamp}
@@ -217,7 +235,7 @@ class GeminiAgent(AgentBase):
                 cmd = platform_cmd(cmd_raw)
                 for attempt in range(_MAX_RETRIES):
                     # 전역 직렬화: 병렬 debate에서 Gemini 호출이 동시에 터지지 않도록.
-                    async with _gemini_concurrency:
+                    async with _get_gemini_concurrency():
                         proc = await asyncio.create_subprocess_exec(
                             *cmd,
                             stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
@@ -384,8 +402,20 @@ class GeminiAgent(AgentBase):
                     if self._current_thread_ts and is_cancelled(self._current_thread_ts):
                         return f"[{self.name}] 작업 취소됨"
 
-                    result, rate_limited = await self._run_progress_once(
-                        stdin_data, on_progress, t, model, prompt=prompt)
+                    # 외부 가드: _run_progress_once 내부 overall_timeout(t*2)이 어떤
+                    # 이유로든 발동 못 하면(예: Semaphore acquire 단계 hang) 봇 전체가
+                    # 멈춘다. asyncio.wait_for 로 t*2.5 하드 캡 적용해 무한 hang 차단.
+                    try:
+                        result, rate_limited = await asyncio.wait_for(
+                            self._run_progress_once(
+                                stdin_data, on_progress, t, model, prompt=prompt),
+                            timeout=t * 2.5,
+                        )
+                    except asyncio.TimeoutError:
+                        self.timed_out = True
+                        self.has_error = False
+                        self._kill_registered_processes()
+                        return f"[{self.name}] 외부 가드 시간 초과 ({int(t * 2.5)}초, 내부 hang 감지)"
 
                     if self.timed_out:
                         return result
