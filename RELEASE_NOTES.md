@@ -25,6 +25,24 @@
 | v0.7.2.1 | 2026-05-20 | Codex 교차검증 피드백 반영: cmd /c 셸 파싱 우회 + argv 길이 가드 + _build_cmd 안전성 강화 |
 | v0.7.3 | 2026-05-20 | 2-vs-1 deadlock 조기 종료: agree=true 의미 완화 + 페어 outlier 명시 감지 |
 | v0.7.3.2 | 2026-05-20 | Gemini 이벤트 루프 회귀(Semaphore 멀티-루프 바인딩) 핫픽스 + 외부 timeout 가드 |
+| v0.7.3.3 | 2026-05-20 | v0.7.3.2 Codex 교차검증 Block/Major 핫픽스: _run_progress_once 누락 교체 + cancel cleanup |
+
+## v0.7.3.3 (2026-05-20)
+
+v0.7.3.2 직후 Codex 교차검증에서 Block 1건 + Major 1건 발견, 즉시 교정.
+
+### 버그 수정
+- **[Block]** `agents/gemini.py:293` 의 `_run_progress_once` 가 v0.7.3.2 fix 에서 누락되어 여전히 모듈 전역 `_gemini_concurrency` 를 참조. 모듈 reload 후 해당 심볼이 더 이상 정의되어 있지 않아 첫 호출에 `NameError` 로 모든 Gemini 진행성 호출(`ask_with_progress`)이 즉시 실패. 토론·코딩 모드 전반 영향. `replace_all=true` 가 들여쓰기 차이로 한 곳만 잡고 다른 한 곳은 놓친 사고. `_get_gemini_concurrency()` 로 교체.
+- **[Major]** `_run_progress_once` 의 subprocess lifecycle 에 cancellation cleanup 부재. 외부 `wait_for` cancel 또는 `_current_thread_ts` 미설정 환경에서 spawn 직후~register 이전 cancel window 가 발생하면 `_kill_registered_processes` 가 해당 proc 을 못 찾아 좀비 프로세스 leak. spawn 이후 try/finally 로 `proc.returncode is None` 확인 후 `kill_process_tree(proc) + asyncio.wait_for(proc.wait(), timeout=2)` 정리 보장. `_run_cli` 의 `proc.communicate(input=stdin_data)` 호출도 같은 패턴(`except BaseException` cleanup + `raise`)으로 보강.
+
+### 검증
+- 전체 비-라이브 250 passed (회귀 없음)
+- import 시 NameError 부재 확인 (`python -c "import agents.gemini"`)
+- 봇 재시작 시 v0.7.3.3 자동 반영, watchdog 정상 동작
+
+### Codex Minor 후속 추적
+- `_get_gemini_concurrency()` 의 thread-safety: 현재 async-only 호출이지만, Slack 핸들러가 worker thread 띄울 가능성 고려해 `threading.Lock` 추가 검토 (별도 이슈)
+- `_run_progress_once` 단위 테스트 부재(subprocess mocking 필요): Block 버그를 잡지 못한 원인. 후속 작업으로 분리
 
 ## v0.7.3.2 (2026-05-20)
 

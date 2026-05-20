@@ -247,8 +247,19 @@ class GeminiAgent(AgentBase):
                         )
                         if self._current_thread_ts:
                             register_process(self._current_thread_ts, proc)
-                        stdout, stderr = await proc.communicate(input=stdin_data)
-                        exit_code = proc.returncode
+                        try:
+                            stdout, stderr = await proc.communicate(input=stdin_data)
+                            exit_code = proc.returncode
+                        except (asyncio.CancelledError, BaseException):
+                            # 외부 wait_for cancel 또는 _current_thread_ts 미설정 등으로
+                            # _kill_registered_processes 가 못 닿는 경우 대비 직접 정리.
+                            if proc.returncode is None:
+                                kill_process_tree(proc)
+                                try:
+                                    await asyncio.wait_for(proc.wait(), timeout=2)
+                                except Exception:
+                                    pass
+                            raise
                     out_text = stdout.decode("utf-8", errors="replace").strip()
                     err_text = stderr.decode("utf-8", errors="replace").strip()
                     last_output = out_text or err_text
@@ -290,7 +301,7 @@ class GeminiAgent(AgentBase):
 
         # 전역 직렬화: 병렬 debate에서 Gemini 호출 동시 폭주 방지.
         # 전체 subprocess 수명(spawn → read loop → wait)을 감싸야 실효성 있음.
-        async with _gemini_concurrency:
+        async with _get_gemini_concurrency():
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE if effective_stdin is not None else asyncio.subprocess.DEVNULL,
@@ -300,76 +311,89 @@ class GeminiAgent(AgentBase):
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                register_process(self._current_thread_ts, proc)
-            if effective_stdin is not None:
-                proc.stdin.write(effective_stdin)
-                await proc.stdin.drain()
-                proc.stdin.close()
+            # v0.7.3.3: 외부 wait_for cancel(또는 _current_thread_ts 미설정으로
+            # _kill_registered_processes 가 못 닿는 경우)에도 spawn 된 subprocess 가
+            # leak 되지 않도록 try/finally 로 cleanup. spawn 이후~register 이전 cancel
+            # window 차단.
+            try:
+                if self._current_thread_ts:
+                    register_process(self._current_thread_ts, proc)
+                if effective_stdin is not None:
+                    proc.stdin.write(effective_stdin)
+                    await proc.stdin.drain()
+                    proc.stdin.close()
 
-            output = ""
-            last_callback = time.time()
-            start_time = time.time()
-            saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
-            readline_timeout = 60
-            overall_timeout = t * 2
+                output = ""
+                last_callback = time.time()
+                start_time = time.time()
+                saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
+                readline_timeout = 60
+                overall_timeout = t * 2
 
-            # 내부 재시도 로그 키워드, output에 포함하지 않고 rate-limit 힌트로만 기록
-            _RETRY_NOISE = ("Attempt ", "Retrying after")
+                # 내부 재시도 로그 키워드, output에 포함하지 않고 rate-limit 힌트로만 기록
+                _RETRY_NOISE = ("Attempt ", "Retrying after")
 
-            while True:
-                elapsed = time.time() - start_time
-                if elapsed > overall_timeout:
-                    kill_process_tree(proc)
-                    await proc.wait()
-                    self.timed_out = True
-                    self.has_error = False
-                    return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
+                while True:
+                    elapsed = time.time() - start_time
+                    if elapsed > overall_timeout:
+                        kill_process_tree(proc)
+                        await proc.wait()
+                        self.timed_out = True
+                        self.has_error = False
+                        return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
 
-                try:
-                    line = await asyncio.wait_for(
-                        proc.stdout.readline(), timeout=readline_timeout
-                    )
-                except asyncio.TimeoutError:
-                    # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
-                    if proc.returncode is None and time.time() - start_time < overall_timeout:
-                        if on_progress and output:
-                            on_progress(_clean_output(output))
+                    try:
+                        line = await asyncio.wait_for(
+                            proc.stdout.readline(), timeout=readline_timeout
+                        )
+                    except asyncio.TimeoutError:
+                        # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
+                        if proc.returncode is None and time.time() - start_time < overall_timeout:
+                            if on_progress and output:
+                                on_progress(_clean_output(output))
+                            continue
+                        kill_process_tree(proc)
+                        await proc.wait()
+                        self.timed_out = True
+                        self.has_error = False
+                        return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
+
+                    if not line:
+                        break
+
+                    decoded = line.decode("utf-8", errors="replace")
+                    if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
+                            "YOLO mode", "Loaded cached credentials", "automatically approved",
+                            "Warning: Skipping extension", "Configuration file not found",
+                            "Created execution plan for", "Expanding hook command",
+                            "Hook execution for",
+                            "256-color support not detected",
+                            "Ripgrep is not available", "Falling back to GrepTool")):
                         continue
-                    kill_process_tree(proc)
-                    await proc.wait()
-                    self.timed_out = True
-                    self.has_error = False
-                    return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
+                    # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트로만 기록
+                    if any(kw in decoded for kw in _RETRY_NOISE):
+                        if self._is_rate_limited(decoded):
+                            saw_rate_limit_noise = True
+                        continue
 
-                if not line:
-                    break
-
-                decoded = line.decode("utf-8", errors="replace")
-                if any(kw in decoded for kw in ("xterm.js", "Int32Array", "Uint16Array",
-                        "YOLO mode", "Loaded cached credentials", "automatically approved",
-                        "Warning: Skipping extension", "Configuration file not found",
-                        "Created execution plan for", "Expanding hook command",
-                        "Hook execution for",
-                        "256-color support not detected",
-                        "Ripgrep is not available", "Falling back to GrepTool")):
-                    continue
-                # Gemini CLI 내부 재시도 로그는 output에 남기지 않되 rate-limit 힌트만 기록
-                if any(kw in decoded for kw in _RETRY_NOISE):
                     if self._is_rate_limited(decoded):
                         saw_rate_limit_noise = True
-                    continue
 
-                if self._is_rate_limited(decoded):
-                    saw_rate_limit_noise = True
+                    output += decoded
 
-                output += decoded
+                    if on_progress and time.time() - last_callback >= 10:
+                        on_progress(_clean_output(output))
+                        last_callback = time.time()
 
-                if on_progress and time.time() - last_callback >= 10:
-                    on_progress(_clean_output(output))
-                    last_callback = time.time()
-
-            exit_code = await proc.wait()
+                exit_code = await proc.wait()
+            finally:
+                # spawn 됐는데 returncode 미설정(외부 cancel 등)이면 잔존 프로세스 정리
+                if proc.returncode is None:
+                    kill_process_tree(proc)
+                    try:
+                        await asyncio.wait_for(proc.wait(), timeout=2)
+                    except Exception:
+                        pass
 
         # 최종 판정: exit_code 0이면 CLI 내부 재시도(최대 5회)가 성공한 것이므로
         # stream 중 429 노이즈가 있었어도 최종 결과를 신뢰하고 rate_limited = False.
