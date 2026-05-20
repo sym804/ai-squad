@@ -13,7 +13,7 @@ from concurrent.futures import ThreadPoolExecutor
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS
+from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY
 from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
@@ -22,10 +22,13 @@ from slack_files import extract_images
 import cancel
 
 
+# Gemini 계열 헬스체크는 활성 바이너리(GEMINI_CLI_BINARY)를 그대로 따른다.
+# agy 로 토글된 환경에서도 "gemini --version" 을 호출하면 PATH 에 없을 수 있어
+# 부팅 직후 헬스체크가 항상 실패로 보고됨.
 _CLI_CHECKS = [
     ("claude", ["claude", "--version"]),
     ("codex",  ["codex",  "--version"]),
-    ("gemini", ["gemini", "--version"]),
+    (GEMINI_CLI_BINARY, [GEMINI_CLI_BINARY, "--version"]),
 ]
 
 

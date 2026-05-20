@@ -4,7 +4,7 @@ import re
 import time
 from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
-from config import CLI_TIMEOUT, make_filtered_env
+from config import CLI_TIMEOUT, GEMINI_CLI_BINARY, make_filtered_env
 from cancel import register_process, is_cancelled
 
 # xterm.js 터미널 이스케이프 코드 및 노이즈 패턴
@@ -99,16 +99,36 @@ _COOLDOWN_SEC = 300  # 5분
 
 
 def _available_models() -> list[str]:
-    """쿨다운 중인 모델을 제외한 사용 가능 모델 목록 반환."""
+    """쿨다운 중인 모델을 제외한 사용 가능 모델 목록 반환.
+
+    agy(Antigravity CLI)는 모델 선택 플래그(-m)가 없어 단일 placeholder만 반환.
+    이렇게 하면 호출부의 모델 fallback 루프가 1회만 돌고 종료된다.
+    """
+    if GEMINI_CLI_BINARY == "agy":
+        return ["__agy_default__"]
     now = time.time()
     available = [m for m in _GEMINI_MODELS if _model_cooldown.get(m, 0) < now]
     return available or [_GEMINI_MODELS[-1]]  # 전부 쿨다운이면 최종 fallback 강제 사용
 
 
 def _mark_failed(model: str):
-    """모델을 쿨다운에 등록."""
+    """모델을 쿨다운에 등록 (agy 분기에서는 무의미하므로 무시)."""
+    if GEMINI_CLI_BINARY == "agy":
+        return
     _model_cooldown[model] = time.time() + _COOLDOWN_SEC
     print(f"[Gemini] {model} 쿨다운 ({_COOLDOWN_SEC}초)")
+
+
+def _build_subprocess_args(model: str, prompt: str) -> tuple[list[str], bytes | None]:
+    """현재 GEMINI_CLI_BINARY 에 맞춘 (raw_cmd_list, stdin_bytes_or_None).
+
+    gemini: ``["gemini","-m",model,"-y","-p",""]`` + prompt 는 stdin 으로 전달
+    agy:    ``["agy","--dangerously-skip-permissions","-p",prompt]`` + stdin 없음
+            (agy 는 -m 미지원, -p 인자 필수, 첫 호출 시 인터랙티브 OAuth 1회 필요)
+    """
+    if GEMINI_CLI_BINARY == "agy":
+        return ["agy", "--dangerously-skip-permissions", "-p", prompt], None
+    return ["gemini", "-m", model, "-y", "-p", ""], prompt.encode("utf-8")
 
 
 class GeminiAgent(AgentBase):
@@ -117,7 +137,17 @@ class GeminiAgent(AgentBase):
     base_family = "gemini"
 
     def _build_cmd(self, tmp: str) -> list[str]:
-        return ["gemini", "-m", _available_models()[0], "-y", "-p", ""]
+        # AgentBase.ask_with_progress 의 폴백용. GeminiAgent 는 ask_with_progress 를
+        # 오버라이드하므로 실제 호출 경로엔 거의 영향 없음. tmp 파일 내용을 직접
+        # prompt 인자로 못 넘기는 한계가 있어, gemini 경로일 때만 의미있는 cmd 를
+        # 돌려주고 agy 경로는 빈 prompt 로 위임 (직접 사용되는 일이 없어야 함).
+        try:
+            with open(tmp, "r", encoding="utf-8") as fh:
+                prompt = fh.read()
+        except Exception:
+            prompt = ""
+        cmd_raw, _ = _build_subprocess_args(_available_models()[0], prompt)
+        return cmd_raw
 
     @staticmethod
     def _is_rate_limited(output: str) -> bool:
@@ -164,16 +194,16 @@ class GeminiAgent(AgentBase):
         prompt = self._augment_with_image_paths(prompt, images)
         tmp = self._write_temp(prompt)
         try:
-            stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             last_output = ""
             for model in _available_models():
-                cmd = platform_cmd(["gemini", "-m", model, "-y", "-p", ""])
+                cmd_raw, stdin_data = _build_subprocess_args(model, prompt)
+                cmd = platform_cmd(cmd_raw)
                 for attempt in range(_MAX_RETRIES):
                     # 전역 직렬화: 병렬 debate에서 Gemini 호출이 동시에 터지지 않도록.
                     async with _gemini_concurrency:
                         proc = await asyncio.create_subprocess_exec(
                             *cmd,
-                            stdin=asyncio.subprocess.PIPE,
+                            stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
                             env=make_filtered_env(),
@@ -204,7 +234,7 @@ class GeminiAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def _run_progress_once(self, stdin_data: bytes, on_progress, t: int, model: str = None):
+    async def _run_progress_once(self, stdin_data: bytes, on_progress, t: int, model: str = None, prompt: str = ""):
         """1회 실행. (output, is_rate_limited) 반환.
 
         타임아웃 전략 (agents/claude.py와 동일 패턴):
@@ -213,15 +243,22 @@ class GeminiAgent(AgentBase):
         Gemini CLI는 복잡한 프롬프트에서 2~3분 버퍼링 후 한 번에 출력하는 경우가
         있어서 단일 타임아웃(180초)으로는 종종 끊긴다. readline이 만료돼도
         프로세스가 살아있고 전체 시간이 남아있으면 계속 폴링.
+
+        agy(Antigravity CLI) 분기: prompt 를 -p 인자로 직접 전달하므로 stdin 사용 안함.
+        ``stdin_data`` 는 gemini 분기에서만 의미가 있고, agy 일 때는 무시되고 ``prompt``
+        가 ``_build_subprocess_args`` 를 통해 명령어 인자로 들어간다.
         """
-        cmd = platform_cmd(["gemini", "-m", model or _GEMINI_MODELS[0], "-y", "-p", ""])
+        cmd_raw, agy_stdin = _build_subprocess_args(model or _GEMINI_MODELS[0], prompt)
+        cmd = platform_cmd(cmd_raw)
+        # gemini: stdin_data 그대로, agy: stdin 없음
+        effective_stdin = stdin_data if GEMINI_CLI_BINARY != "agy" else None
 
         # 전역 직렬화: 병렬 debate에서 Gemini 호출 동시 폭주 방지.
         # 전체 subprocess 수명(spawn → read loop → wait)을 감싸야 실효성 있음.
         async with _gemini_concurrency:
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
-                stdin=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.PIPE if effective_stdin is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
                 env=make_filtered_env(),
@@ -230,9 +267,10 @@ class GeminiAgent(AgentBase):
             )
             if self._current_thread_ts:
                 register_process(self._current_thread_ts, proc)
-            proc.stdin.write(stdin_data)
-            await proc.stdin.drain()
-            proc.stdin.close()
+            if effective_stdin is not None:
+                proc.stdin.write(effective_stdin)
+                await proc.stdin.drain()
+                proc.stdin.close()
 
             output = ""
             last_callback = time.time()
@@ -330,7 +368,7 @@ class GeminiAgent(AgentBase):
                         return f"[{self.name}] 작업 취소됨"
 
                     result, rate_limited = await self._run_progress_once(
-                        stdin_data, on_progress, t, model)
+                        stdin_data, on_progress, t, model, prompt=prompt)
 
                     if self.timed_out:
                         return result

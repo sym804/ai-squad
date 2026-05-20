@@ -21,6 +21,33 @@
 | v0.6.4 | 2026-05-12 | 코딩 모드 Phase 1 게이트 (Claude 코드 완성 전 Codex/Gemini 자동 진입 차단) |
 | v0.7.0 | 2026-05-19 | 토론 시스템 6대 개선 (교착 재설계, 백업 풀 분산, 파싱 견고화, 통합문 분리, 난이도 라우팅, 조건부 반박) |
 | v0.7.1 | 2026-05-19 | 자기-반복(no-progress) 조기 종료 (실시간/사실 주제 무한 반복·토큰 낭비 차단) |
+| v0.7.2 | 2026-05-20 | Antigravity CLI(agy) 마이그레이션 준비: GEMINI_CLI_BINARY 환경변수 토글 + agy 분기 |
+
+## v0.7.2 (2026-05-20)
+
+Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 사용자 대상 Gemini CLI 서비스가 종료되고 Antigravity CLI(`agy`)로 통합된다. 사전에 코드 경로를 분기 가능하도록 준비. 안전 기본값 `gemini` 유지로 즉시 배포해도 기존 동작은 그대로.
+
+### 개선
+- **[Major]** `agents/gemini.py` 에 `agy` 분기 추가. `config.GEMINI_CLI_BINARY` 환경변수(기본 `gemini`, 허용 값 `gemini`/`agy`, 그 외는 안전하게 `gemini` 폴백)로 런타임 토글.
+  - 신규 헬퍼 `_build_subprocess_args(model, prompt) -> (cmd_list, stdin_bytes | None)`: gemini 면 `["gemini","-m",model,"-y","-p",""]` + prompt 를 stdin 으로, agy 면 `["agy","--dangerously-skip-permissions","-p",prompt]` + stdin 사용 안함.
+  - agy 는 `-m` 미지원이라 `_available_models()` 가 placeholder `["__agy_default__"]` 만 반환해 모델 fallback 루프가 1회만 돈다. `_mark_failed()` 는 agy 경로에서 no-op.
+  - `_run_cli`, `_run_progress_once` 가 헬퍼와 `asyncio.subprocess.DEVNULL` 조건부 분기를 사용. 기존 gemini 경로 동작은 변경 없음(서명/세마포어/취소/재시도/타임아웃 그대로).
+  - 마이그레이션 트리거 변경 없음: 사용자가 `agy` 를 한 번 인터랙티브 실행해 OAuth 마치고 `GEMINI_CLI_BINARY=agy` 설정 후 봇 재기동하면 전환 완료.
+
+### 마이그레이션 가이드
+1. Antigravity CLI 설치 (Windows PowerShell): `irm https://antigravity.google/cli/install.ps1 | iex`
+2. 새 터미널 열어 `agy --version` 으로 PATH 확인 (현재 1.0.0)
+3. Gemini 익스텐션/설정 import: `agy plugin import gemini`
+4. `agy -i` 한 번 실행해 OAuth 첫 인증 완료 (브라우저 토큰 발급)
+5. `.env` 또는 시스템 환경변수에 `GEMINI_CLI_BINARY=agy` 추가
+6. 봇 재기동 후 슬랙 토론 1회 트리거로 응답 정상 확인
+7. 2026-06-18 이후 Gemini CLI 완전 제거
+
+### 검증
+- 신규 단위 테스트 `tests/test_gemini.py::TestBinarySelection` 6건 (default → gemini, explicit gemini, agy 명령어/플래그/no-stdin, agy `_available_models` placeholder, agy `_mark_failed` no-op, 잘못된 값 안전 폴백). autouse fixture 로 각 테스트 후 모듈 상태를 기본값으로 복구.
+- 전체 비-라이브 테스트 223 passed (회귀 없음).
+- agy CLI 실제 호출 dry-run: 첫 호출에 인터랙티브 OAuth 가 필요해 비대화식 자동화 환경에서 검증 불가. 사용자가 인터랙티브 OAuth 1회 마친 뒤 `GEMINI_CLI_BINARY=agy` 토글 + 실제 슬랙 토론 1회 라이브 확인 필요(이 라이브 확인은 후속 작업으로 분리).
+- Codex 교차검증: 본 변경의 분기 안전성/회귀 위험을 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록).
 
 ## v0.7.1 (2026-05-19)
 

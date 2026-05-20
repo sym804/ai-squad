@@ -1,7 +1,10 @@
-"""GeminiAgent 단위 테스트 — rate-limit 탐지 로직."""
+"""GeminiAgent 단위 테스트 - rate-limit 탐지 로직 + agy 분기."""
+
+import importlib
 
 import pytest
-from agents.gemini import GeminiAgent, _GEMINI_MODELS, _clean_output
+
+from agents.gemini import GeminiAgent, _GEMINI_MODELS, _clean_output, _build_subprocess_args
 
 
 class TestRateLimitDetection:
@@ -120,3 +123,75 @@ class TestCleanOutput:
     def test_answer_preserved_when_no_noise(self):
         raw = "1. 나이키 보메로 18\n2. 뉴발란스 9060\n3. 호카 클리프톤 9\n"
         assert _clean_output(raw).strip() == raw.strip()
+
+
+class TestBinarySelection:
+    """`_build_subprocess_args`: GEMINI_CLI_BINARY 토글에 따른 명령어/stdin 분기.
+
+    2026-06-18 Gemini CLI 종료 대비. 기본은 gemini 유지 (안전). agy 토글 시
+    -m 미지원 + -p 인자 직접 전달 + stdin 사용 안함 + --dangerously-skip-permissions.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _restore_gemini_default(self, monkeypatch):
+        """각 테스트 후 모듈 상태를 기본값(gemini)으로 되돌려 후속 테스트 격리."""
+        yield
+        import importlib
+        monkeypatch.delenv("GEMINI_CLI_BINARY", raising=False)
+        import config
+        import agents.gemini as gemini_mod
+        importlib.reload(config)
+        importlib.reload(gemini_mod)
+
+    def _reload_gemini_module(self, monkeypatch, binary: str):
+        """env var 설정 후 config + agents.gemini 모듈 재로드."""
+        monkeypatch.setenv("GEMINI_CLI_BINARY", binary)
+        import config
+        import agents.gemini as gemini_mod
+        importlib.reload(config)
+        importlib.reload(gemini_mod)
+        return gemini_mod
+
+    def test_default_is_gemini_binary(self, monkeypatch):
+        monkeypatch.delenv("GEMINI_CLI_BINARY", raising=False)
+        gemini_mod = self._reload_gemini_module(monkeypatch, "")
+        cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "안녕")
+        assert cmd[0] == "gemini"
+        assert "-m" in cmd
+        assert "-y" in cmd
+        assert stdin_data == "안녕".encode("utf-8")
+
+    def test_gemini_binary_explicit(self, monkeypatch):
+        gemini_mod = self._reload_gemini_module(monkeypatch, "gemini")
+        cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-2.5-flash-lite", "hello")
+        assert cmd == ["gemini", "-m", "gemini-2.5-flash-lite", "-y", "-p", ""]
+        assert stdin_data == b"hello"
+
+    def test_agy_binary_uses_prompt_arg_and_no_stdin(self, monkeypatch):
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        cmd, stdin_data = gemini_mod._build_subprocess_args("__agy_default__", "테스트 프롬프트")
+        assert cmd[0] == "agy"
+        assert "--dangerously-skip-permissions" in cmd
+        assert "-p" in cmd
+        assert "테스트 프롬프트" in cmd
+        assert "-m" not in cmd
+        assert "-y" not in cmd
+        assert stdin_data is None
+
+    def test_agy_available_models_returns_placeholder(self, monkeypatch):
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        models = gemini_mod._available_models()
+        assert models == ["__agy_default__"]
+
+    def test_agy_mark_failed_is_noop(self, monkeypatch):
+        """agy 는 모델 fallback 자체가 없으므로 _mark_failed 가 쿨다운에 등록하면 안 된다."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        gemini_mod._mark_failed("__agy_default__")
+        assert "__agy_default__" not in gemini_mod._model_cooldown
+
+    def test_invalid_binary_falls_back_to_gemini(self, monkeypatch):
+        """오타/미지원 값은 안전 기본값(gemini)로 폴백."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "antigravity")  # 잘못된 별명
+        cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "x")
+        assert cmd[0] == "gemini"
+        assert stdin_data == b"x"

@@ -16,6 +16,15 @@ COMPLEX_MIN_ROUNDS = int(os.environ.get("COMPLEX_MIN_ROUNDS", "3"))
 CLI_TIMEOUT = 180
 CLI_TIMEOUT_CODING = 300  # 코딩 모드는 5분
 
+# Gemini 계열 CLI 바이너리 선택 (2026-06-18 Gemini CLI 서비스 종료 대비)
+# - "gemini" (기본): 기존 Gemini CLI. stdin pipe + -m model fallback + -y.
+# - "agy": Antigravity CLI (Gemini CLI 공식 후계). -p "prompt" 인자 직접 전달,
+#   모델 선택 플래그(-m) 미지원, 권한 자동승인은 --dangerously-skip-permissions.
+#   첫 호출 시 인터랙티브 OAuth 1회 필요. 환경변수로 토글해 안전 마이그레이션.
+GEMINI_CLI_BINARY = os.environ.get("GEMINI_CLI_BINARY", "gemini").strip().lower()
+if GEMINI_CLI_BINARY not in ("gemini", "agy"):
+    GEMINI_CLI_BINARY = "gemini"
+
 # Bridge mode working directories (환경변수에서 로드)
 BRIDGE_CHANNELS = {}
 if SR_AGENT_CHANNEL_ID:
