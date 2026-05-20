@@ -30,8 +30,9 @@ SYSTEM_PROMPT = (
     "- 상대 에이전트 검토 여부는 각 라운드 지시문에 따르세요. 지시 없이 임의로 '다른 에이전트'를 언급/추측하지 마세요.\n"
     "\n답변 마지막에 반드시 아래 형식의 합의 JSON을 포함하세요:\n"
     '<!--CONSENSUS:{"agree": true/false, "summary": "사용자 질문에 대한 구체적 답변 (상품명, 수치 등 포함, 1~3줄)", "disagreements": [{"agent": "에이전트명", "point": "쟁점", "why": "왜 동의하지 않는지"}]}-->\n'
-    "agree=true: 다른 에이전트들과 의견이 충분히 일치한다고 판단할 때.\n"
-    "agree=false: 아직 논의가 더 필요하거나 의견 차이가 있을 때.\n"
+    "agree=true: 본인 입장이 **최소 1명의 다른 에이전트와 충분히 일치**한다고 판단할 때 "
+    "(전원 일치 필요 없음, 2/3 다수 합의 케이스에서도 true).\n"
+    "agree=false: 본인 입장이 다른 모든 에이전트와 갈리거나, 아직 논의가 더 필요하다고 판단할 때.\n"
     "summary에는 단순 '합의함' 이 아니라, 사용자가 원하는 답변 자체를 담으세요.\n"
     "disagreements: 다른 에이전트와 의견이 실제로 갈리는 지점이 있을 때만 채우세요. "
     "의견이 정말로 같으면 빈 배열 []로 두세요(억지 반박 금지). "
@@ -132,6 +133,66 @@ def _summaries_diverge(round_consensuses: list[dict]) -> tuple[bool, str]:
 
 # 자기-반복 임계: 직전 라운드 대비 토큰 Jaccard 가 이 값 이상이면 "그대로 반복"
 NO_PROGRESS_THRESHOLD = 0.6
+
+# 2-vs-1 페어 합의 감지 임계.
+# - 페어 합의(2명 동의) Jaccard 가 이 값 이상이면 그 페어는 충분히 비슷한 입장으로 본다.
+# - 다른 두 페어(outlier 가 끼는 페어)는 이 값보다 낮아야 outlier 확정.
+# 0.30 으로 설정(_summaries_diverge 의 DIVERGE_THRESHOLD 0.25 보다 약간 높음 → 발산 판정 보다 보수적).
+PAIR_AGREE_THRESHOLD = 0.30
+
+
+def _pair_outlier(round_consensuses: list[dict]) -> str | None:
+    """3-에이전트 토론에서 2-vs-1 outlier 감지.
+
+    각 페어 Jaccard 를 계산해 (1) 최고 페어 sim >= PAIR_AGREE_THRESHOLD 이고
+    (2) outlier 가 포함된 나머지 두 페어 sim 모두 max_pair_sim 의 60% 이하이면,
+    outlier 에이전트 이름을 반환. 그 외 None.
+
+    예: A·B 가 sim=0.45 로 묶이고 (A,C)=0.10, (B,C)=0.08 이면 C 가 outlier.
+    페어가 3개 미만(=summary 가 3명 다 안 들어옴)이면 None (판정 불가).
+    """
+    valid = []
+    for r in round_consensuses:
+        c = r.get("consensus")
+        if c and c.get("summary"):
+            valid.append((r.get("agent_name", "?"), c["summary"]))
+    if len(valid) < 3:
+        return None
+    # 첫 3명만 사용 (백업 투입 등으로 4+ 인 경우 안전)
+    valid = valid[:3]
+    names = [n for n, _ in valid]
+    token_sets = [_tokens(s) for _, s in valid]
+
+    def _jacc(a: set[str], b: set[str]) -> float:
+        union = a | b
+        return (len(a & b) / len(union)) if union else 1.0
+
+    # 페어별 sim: (i, j, sim) i<j
+    pairs = [
+        (0, 1, _jacc(token_sets[0], token_sets[1])),
+        (0, 2, _jacc(token_sets[0], token_sets[2])),
+        (1, 2, _jacc(token_sets[1], token_sets[2])),
+    ]
+    # 가장 비슷한 페어
+    best = max(pairs, key=lambda p: p[2])
+    if best[2] < PAIR_AGREE_THRESHOLD:
+        return None  # 그 어떤 페어도 충분히 비슷하지 않음 → 3 갈래 발산
+    outlier_idx = ({0, 1, 2} - {best[0], best[1]}).pop()
+    # outlier 가 끼는 나머지 두 페어 sim 이 best 의 60% 이하라야 outlier 확정
+    other_sims = [p[2] for p in pairs if outlier_idx in (p[0], p[1])]
+    if max(other_sims) > best[2] * 0.6:
+        return None  # outlier 가 충분히 멀지 않음 (애매한 3 갈래)
+    return names[outlier_idx]
+
+
+def _persistent_outlier(outlier_history: list[str | None]) -> str | None:
+    """같은 outlier 가 최근 2R 연속 잡혔는지 확인. 그렇다면 그 이름 반환."""
+    if len(outlier_history) < 2:
+        return None
+    a, b = outlier_history[-2], outlier_history[-1]
+    if a is not None and a == b:
+        return a
+    return None
 
 
 def _round_summaries(round_consensuses: list[dict]) -> dict[str, str]:
@@ -309,6 +370,7 @@ class DebateMode:
         pending_issue: str | None = None
         divergence_challenged = False
         prev_summaries: dict[str, str] | None = None
+        outlier_history: list[str | None] = []  # 라운드별 2-vs-1 outlier 이름(없으면 None)
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
             if is_cancelled(thread_ts):
@@ -392,6 +454,8 @@ class DebateMode:
             curr_summaries = _round_summaries(round_consensuses)
             no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
             prev_summaries = curr_summaries
+            outlier_history.append(_pair_outlier(round_consensuses))
+            persistent_outlier = _persistent_outlier(outlier_history)
             can_conclude = round_num >= min_rounds
 
             if can_conclude and len(agrees) >= 3:
@@ -409,6 +473,15 @@ class DebateMode:
             elif can_conclude and len(agrees) >= 2 and self._is_stalemate(round_history):
                 header = self._build_conclusion(
                     f"추가 토론 다수 합의 ({len(agrees)}/3)", round_num, question,
+                    round_consensuses, issue_note=issue_note if diverged else None,
+                )
+                final = await self._generate_final_answer(question, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
+                return
+            elif can_conclude and persistent_outlier:
+                # 2-vs-1 outlier 2R 연속 (Slack thread 1779271920 패턴 종료용)
+                header = self._build_conclusion(
+                    f"추가 토론 다수 합의 (2/3, {persistent_outlier} 이견 지속)", round_num, question,
                     round_consensuses, issue_note=issue_note if diverged else None,
                 )
                 final = await self._generate_final_answer(question, history, round_consensuses)
@@ -575,6 +648,7 @@ class DebateMode:
         pending_issue: str | None = None  # 다음 라운드에 주입할 미해결 쟁점
         divergence_challenged = False  # 발산 교전 라운드를 이미 1회 강제했는지
         prev_summaries: dict[str, str] | None = None  # 직전 라운드 summary (자기-반복 감지용)
+        outlier_history: list[str | None] = []  # 라운드별 2-vs-1 outlier 이름(없으면 None)
 
         for round_num in range(1, MAX_DEBATE_ROUNDS + 1):
             if is_cancelled(thread_ts):
@@ -671,7 +745,9 @@ class DebateMode:
             curr_summaries = _round_summaries(round_consensuses)
             no_progress = prev_summaries is not None and _no_progress(prev_summaries, curr_summaries)
             prev_summaries = curr_summaries
-            print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged} no_progress={no_progress}")
+            outlier_history.append(_pair_outlier(round_consensuses))
+            persistent_outlier = _persistent_outlier(outlier_history)
+            print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged} no_progress={no_progress} outlier={outlier_history[-1]} persistent={persistent_outlier}")
 
             can_conclude = round_num >= min_rounds
 
@@ -693,6 +769,17 @@ class DebateMode:
                 # 2개 동의 + 교착 상태: 다수결 종료 (미해결 쟁점 명시)
                 header = self._build_conclusion(
                     f"다수 합의 (교착 상태, {len(agrees)}/3 동의)", round_num, topic,
+                    round_consensuses, issue_note=issue_note if diverged else None,
+                )
+                final = await self._generate_final_answer(topic, history, round_consensuses)
+                self._broadcast(channel, thread_ts, f"{header}\n\n💡 *합의된 답변:*\n{final}")
+                return
+            elif can_conclude and persistent_outlier:
+                # 2-vs-1 outlier 가 2R 연속 같은 에이전트: agree 카운트 무관하게
+                # 다수 페어 입장으로 종료 (Slack thread 1779271920 패턴: Claude·Codex 합의,
+                # Gemini 출처 없는 인용 고집해서 agrees<2 로 stalemate 도 발동 안 되던 케이스).
+                header = self._build_conclusion(
+                    f"다수 합의 (2/3, {persistent_outlier} 이견 지속)", round_num, topic,
                     round_consensuses, issue_note=issue_note if diverged else None,
                 )
                 final = await self._generate_final_answer(topic, history, round_consensuses)

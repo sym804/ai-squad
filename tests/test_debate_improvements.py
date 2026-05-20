@@ -10,6 +10,8 @@ from modes.debate import (
     _classify_difficulty,
     _parse_consensus,
     _no_progress,
+    _pair_outlier,
+    _persistent_outlier,
     DebateMode,
 )
 
@@ -174,3 +176,108 @@ class TestIsStalemateNew:
               {"agrees": 2, "diverged": True},
               {"agrees": 2, "diverged": True}]
         assert DebateMode._is_stalemate(rh) is True
+
+
+# ── _pair_outlier (2-vs-1 outlier 명시 감지) ────────────────────
+# v0.7.3 신규. agrees<2 라 _is_stalemate 도 못 잡는 deadlock 잡기.
+# Slack thread 1779271920 패턴(Claude+Codex 합의, Gemini 출처 없는 인용 고집) 대응.
+
+class TestPairOutlier:
+    def test_all_identical_no_outlier(self):
+        """전원 같은 입장이면 outlier 없음."""
+        rcs = [_rc("Claude", True, "출처 없는 인용은 환각 위험"),
+               _rc("Codex", True, "출처 없는 인용은 환각 위험"),
+               _rc("Gemini", True, "출처 없는 인용은 환각 위험")]
+        assert _pair_outlier(rcs) is None
+
+    def test_clear_two_vs_one_returns_outlier_name(self):
+        """A·B 합의 + C 이탈 → C 가 outlier 로 반환."""
+        rcs = [_rc("Claude", False, "출처 없는 인용은 환각 위험이라 동의 불가"),
+               _rc("Codex",  False, "출처 없는 인용은 환각 위험이라 동의 불가"),
+               _rc("Gemini", True,  "정치적 안경 슬로건 매불쇼 2019 출연 정경분리 강조")]
+        assert _pair_outlier(rcs) == "Gemini"
+
+    def test_three_way_divergence_no_outlier(self):
+        """3 갈래 발산: 어느 페어도 충분히 비슷하지 않음 → None."""
+        rcs = [_rc("Claude", False, "라멘 돈코츠 국물"),
+               _rc("Codex",  False, "파스타 올리브 가벼움"),
+               _rc("Gemini", False, "초밥 신선한 단백질")]
+        assert _pair_outlier(rcs) is None
+
+    def test_ambiguous_three_way_no_outlier(self):
+        """outlier 가 best 페어의 60% 이상 sim 가지면 애매 → None."""
+        # A·B 가 거의 같고 C 는 약간 다르지만 너무 가까워서 outlier 확정 못 함
+        rcs = [_rc("A", True, "x y z a b c"),
+               _rc("B", True, "x y z a b c"),
+               _rc("C", True, "x y z a b d")]  # A,B 와 5/6 공통
+        assert _pair_outlier(rcs) is None
+
+    def test_fewer_than_three_summaries_no_outlier(self):
+        """summary 2개 이하면 outlier 판정 불가."""
+        rcs = [_rc("A", True, "라멘"),
+               _rc("B", True, "라멘"),
+               {"agent_name": "C", "agent_emoji": "X", "consensus": None}]
+        assert _pair_outlier(rcs) is None
+
+    def test_backup_agents_only_first_three_considered(self):
+        """백업 투입으로 4명 이상이면 첫 3명만 본다."""
+        rcs = [_rc("Claude", False, "공통 입장 출처 검증 필수"),
+               _rc("Codex",  False, "공통 입장 출처 검증 필수"),
+               _rc("Gemini", True,  "전혀 다른 인용 매불쇼 슬로건"),
+               _rc("Claude-B", False, "백업이라 무시되어야 함")]
+        assert _pair_outlier(rcs) == "Gemini"
+
+
+class TestPersistentOutlier:
+    def test_under_two_rounds_no_persistence(self):
+        assert _persistent_outlier([]) is None
+        assert _persistent_outlier(["Gemini"]) is None
+
+    def test_same_outlier_two_rounds_persistent(self):
+        assert _persistent_outlier(["Gemini", "Gemini"]) == "Gemini"
+        assert _persistent_outlier([None, "Gemini", "Gemini"]) == "Gemini"
+
+    def test_outlier_changes_not_persistent(self):
+        """outlier 가 라운드마다 바뀌면 지속 아님."""
+        assert _persistent_outlier(["Gemini", "Claude"]) is None
+        assert _persistent_outlier(["Claude", "Gemini"]) is None
+
+    def test_outlier_disappears_not_persistent(self):
+        assert _persistent_outlier(["Gemini", None]) is None
+        assert _persistent_outlier([None, None]) is None
+
+    def test_uses_only_last_two(self):
+        """과거 outlier 와 최근 outlier 다르면 지속 아님."""
+        assert _persistent_outlier(["Gemini", "Gemini", "Claude", "Claude"]) == "Claude"
+        assert _persistent_outlier(["Gemini", "Gemini", "Claude", None]) is None
+
+
+class TestSlackThread1779271920Pattern:
+    """슬랙 thread 1779271920 재현: 2-vs-1 deadlock 종료 동작 검증.
+
+    실제 사고: Claude·Codex 가 "출처 없는 Gemini 인용에 동의 불가" 입장 유지,
+    Gemini 가 5R 동안 출처 없이 매번 약간 다른 인용 변형 시도. agrees 가 2 미만이라
+    `_is_stalemate` 분기 발동 안 됨. `no_progress` 만 가까스로 R5에서 발동.
+    v0.7.3 페어 outlier 분기로 R3 에 종료되도록.
+    """
+
+    def test_round_pattern_detects_persistent_gemini_outlier(self):
+        # R2 outlier 감지
+        r2 = [_rc("Claude", False, "출처 URL 없이 인용 반복하는 발언에 동의 불가 환각 위험"),
+              _rc("Codex",  False, "출처 URL 없이 인용 반복하는 발언에 동의 불가 환각 위험"),
+              _rc("Gemini", True,  "정치적 안경 슬로건 매불쇼 2019 출연 정경분리 강조")]
+        # R3 같은 패턴 반복 (Gemini 만 새 인용으로 다른 단어 추가)
+        r3 = [_rc("Claude", False, "여전히 출처 URL 없이 반복 환각 위험 동의 불가"),
+              _rc("Codex",  False, "여전히 출처 URL 없이 반복 환각 위험 동의 불가"),
+              _rc("Gemini", True,  "코리아 디스카운트 상속세 거버넌스 정치적 결단 강조")]
+        outlier_history = [_pair_outlier(r2), _pair_outlier(r3)]
+        assert outlier_history == ["Gemini", "Gemini"]
+        assert _persistent_outlier(outlier_history) == "Gemini"
+
+    def test_outlier_alone_not_enough_one_round_only(self):
+        """한 라운드만 outlier 잡혀도 종료 안 되어야 함 (false-positive 방지)."""
+        r2 = [_rc("Claude", False, "출처 없는 인용 반복 환각 위험 동의 불가"),
+              _rc("Codex",  False, "출처 없는 인용 반복 환각 위험 동의 불가"),
+              _rc("Gemini", True,  "정치적 안경 슬로건 매불쇼 출연 정경분리")]
+        outlier_history = [_pair_outlier(r2)]
+        assert _persistent_outlier(outlier_history) is None

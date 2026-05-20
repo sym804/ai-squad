@@ -23,6 +23,29 @@
 | v0.7.1 | 2026-05-19 | 자기-반복(no-progress) 조기 종료 (실시간/사실 주제 무한 반복·토큰 낭비 차단) |
 | v0.7.2 | 2026-05-20 | Antigravity CLI(agy) 마이그레이션 준비: GEMINI_CLI_BINARY 환경변수 토글 + agy 분기 |
 | v0.7.2.1 | 2026-05-20 | Codex 교차검증 피드백 반영: cmd /c 셸 파싱 우회 + argv 길이 가드 + _build_cmd 안전성 강화 |
+| v0.7.3 | 2026-05-20 | 2-vs-1 deadlock 조기 종료: agree=true 의미 완화 + 페어 outlier 명시 감지 |
+
+## v0.7.3 (2026-05-20)
+
+토론 모드에서 2명이 합의하고 1명이 출처 없이 이견을 고집하는 deadlock 케이스가 MAX_ROUNDS 까지 끌리던 결함 수정. Slack thread 1779271920 (런던고라니 정치-경제 분리 발언 추적) 에서 Claude·Codex 가 "출처 URL 없는 인용에 동의 불가" 입장 유지, Gemini 가 5R 동안 매번 약간 다른 인용 변형 시도. 기존 `_is_stalemate` 분기는 `agrees>=2` 필요한데 Claude/Codex 가 Gemini 와 일치 안 하니 agree=false 마킹해서 발동 불가. 결국 `no_progress` 가 R5 에서 가까스로 발동.
+
+### 개선 (Major) - 두 갈래 보완책
+
+1. **SYSTEM_PROMPT agree=true 의미 완화** (`modes/debate.py` L33-34, prompt-only 변경):
+   - 기존: `"agree=true: 다른 에이전트들과 의견이 충분히 일치"` (전원 일치 묵시)
+   - 신규: `"agree=true: 본인 입장이 **최소 1명의 다른 에이전트와 충분히 일치** (전원 일치 필요 없음, 2/3 다수 합의 케이스에서도 true)"`
+   - 효과: 2/3 동의 케이스에서 `agrees=2` 도달 가능 → 기존 `_is_stalemate` 분기 (`agrees >= 2 + 발산 2R 지속`) 정상 발동
+
+2. **페어 outlier 명시 감지 + 지속 종료 분기 신설** (코드 변경):
+   - 신규 헬퍼 `_pair_outlier(round_consensuses) -> str | None`: 3 에이전트 summary 의 페어와이즈 Jaccard 계산. 최고 페어 sim >= `PAIR_AGREE_THRESHOLD(0.30)` 이고 outlier 가 끼는 두 페어 sim 모두 최고 페어의 60% 이하면 outlier 이름 반환. 그 외 None (3 갈래 발산이나 애매한 케이스).
+   - 신규 헬퍼 `_persistent_outlier(outlier_history)`: 같은 outlier 가 최근 2R 연속 잡혔는지 확인.
+   - `start()` 와 `followup()` 양 루프에 새 조기종료 분기: `elif can_conclude and persistent_outlier:` 발동 시 `"다수 합의 (2/3, {outlier_name} 이견 지속)"` 제목으로 종료. agree 카운트 무관하게 작동해서 LLM 이 프롬프트 변경을 100% 흡수 못 해도 안전망 역할.
+   - 분기 순서: `agrees>=3` → `agrees>=2 + stalemate` → **`persistent_outlier`(신규)** → `no_progress` → 다음 라운드. 기존 보수적 종료가 우선.
+
+### 검증
+- 신규 단위 13건: `TestPairOutlier(6)` + `TestPersistentOutlier(5)` + `TestSlackThread1779271920Pattern(2)` (Gemini outlier 2R 연속 감지 / 1R 만 잡혀선 종료 안 함). 전체 비-라이브 244 passed (회귀 없음).
+- 효과 예측: Slack thread 1779271920 패턴이 v0.7.3 환경에서 R3 에 종료(기존 R5+ → 라운드 비용 40%+ 절감).
+- Codex 교차검증: 본 변경의 분기 순서·임계값·SYSTEM_PROMPT 완화 영향을 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록).
 
 ## v0.7.2.1 (2026-05-20)
 
