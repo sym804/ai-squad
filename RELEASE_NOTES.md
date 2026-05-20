@@ -22,6 +22,27 @@
 | v0.7.0 | 2026-05-19 | 토론 시스템 6대 개선 (교착 재설계, 백업 풀 분산, 파싱 견고화, 통합문 분리, 난이도 라우팅, 조건부 반박) |
 | v0.7.1 | 2026-05-19 | 자기-반복(no-progress) 조기 종료 (실시간/사실 주제 무한 반복·토큰 낭비 차단) |
 | v0.7.2 | 2026-05-20 | Antigravity CLI(agy) 마이그레이션 준비: GEMINI_CLI_BINARY 환경변수 토글 + agy 분기 |
+| v0.7.2.1 | 2026-05-20 | Codex 교차검증 피드백 반영: cmd /c 셸 파싱 우회 + argv 길이 가드 + _build_cmd 안전성 강화 |
+
+## v0.7.2.1 (2026-05-20)
+
+v0.7.2 직후 Codex 교차검증에서 발견된 Major 2건 + Minor 2건 + Trivial 1건을 즉시 교정한 핫픽스.
+
+### 버그 수정
+- **[Major]** `agy` 호출이 `cmd /c agy -p <prompt>` 로 래핑되어 prompt 가 `cmd.exe` 셸 파싱 대상이 됨. Slack 사용자 텍스트에 `&`, `|`, `^`, `%`, `<`, `>` 메타문자가 들어가면 셸이 가로채 인자가 깨짐. `process.py` 의 `platform_cmd()` 에 `_NATIVE_EXE_NAMES` 화이트리스트(현재 `{"agy"}`)를 도입해 네이티브 .exe 는 `cmd /c` 우회하고 `%LOCALAPPDATA%\agy\bin\agy.exe` 절대경로로 직접 실행 (설치 경로에 없으면 PATH 검색 폴백). npm 래퍼(gemini/codex/claude)는 기존대로 `cmd /c`.
+- **[Major]** `agy` 경로의 prompt 가 argv 로 직접 전달되는데 Windows CreateProcess CommandLine 한계 ~32KB. 일반 토론 prompt 는 5KB 이하지만 코딩 모드(Claude 응답+코드 포함) 에서 초과 가능. `agents/gemini.py` 에 `_AGY_PROMPT_ARGV_LIMIT = 25000` 안전 마진 + `_truncate_for_agy_argv()` 헬퍼 추가. 초과 시 머리만 사용 + `[...truncated]` 표식 + stderr 경고.
+- **[Minor]** `_build_cmd()` 인스턴스 메서드(AgentBase.ask_with_progress 폴백용)가 `agy` 경로에서 빈/누락 tmp 에 대해 `["agy",...,"-p",""]` 를 만들 수 있었음. agy 는 `-p ""` 거부하므로 `ValueError` 로 명시적 실패하도록 변경. 실제 호출 경로엔 영향 없음(`GeminiAgent` 가 `ask_with_progress` 오버라이드).
+- **[Minor]** `tests/test_gemini.py::TestBinarySelection::test_default_is_gemini_binary` 가 `setenv("", "")` 후 검증해 "absent env" 가 아닌 "empty value" 폴백을 검증함. `test_default_when_env_absent` 로 진짜 absent 케이스 분리 + `test_default_when_env_empty_string` 으로 빈 문자열 케이스도 별도 보장.
+
+### 개선
+- **[Trivial]** `_run_progress_once` 의 미사용 변수 `agy_stdin` 제거.
+
+### 검증
+- 신규 단위 테스트:
+  - `tests/test_process.py::TestPlatformCmdNativeExeBypass` 4건 (npm 래퍼는 cmd /c 유지, agy 는 절대경로 직접 호출, agy 폴백, Unix 무변경)
+  - `tests/test_gemini.py::TestBinarySelection` 에 5건 추가 (absent env, empty env, argv 길이 잘림, 정상 길이 그대로, 메타문자 prompt 통과)
+- 전체 비-라이브 테스트 231 passed (+8 신규, 회귀 없음).
+- 라이브 검증은 여전히 인터랙티브 OAuth 필요로 v0.7.2 와 동일하게 GitHub Issue #96 에서 추적.
 
 ## v0.7.2 (2026-05-20)
 

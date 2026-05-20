@@ -119,15 +119,34 @@ def _mark_failed(model: str):
     print(f"[Gemini] {model} 쿨다운 ({_COOLDOWN_SEC}초)")
 
 
+# Windows CreateProcess CommandLine 한계는 약 32KB.
+# agy 경로는 prompt 를 argv 로 직접 전달하므로 안전 마진을 두고 25000 바이트로 가드.
+# 초과 시 머리 25000 바이트만 사용하고 [...truncated] 표식. 단순 토론 prompt 는
+# 평균 5KB 이하라 대부분 영향 없으나, 코딩 모드(Claude 응답+코드 포함)에선 가능.
+_AGY_PROMPT_ARGV_LIMIT = 25000
+
+
+def _truncate_for_agy_argv(prompt: str) -> str:
+    """agy 경로의 prompt 가 argv 한계를 넘으면 머리 부분만 사용."""
+    encoded = prompt.encode("utf-8")
+    if len(encoded) <= _AGY_PROMPT_ARGV_LIMIT:
+        return prompt
+    head = encoded[:_AGY_PROMPT_ARGV_LIMIT].decode("utf-8", errors="ignore")
+    print(f"[Gemini] agy prompt {len(encoded)} 바이트 → {_AGY_PROMPT_ARGV_LIMIT} 으로 잘림")
+    return head + "\n[...truncated: 원본 prompt 가 argv 한계를 초과해 머리만 사용]"
+
+
 def _build_subprocess_args(model: str, prompt: str) -> tuple[list[str], bytes | None]:
     """현재 GEMINI_CLI_BINARY 에 맞춘 (raw_cmd_list, stdin_bytes_or_None).
 
     gemini: ``["gemini","-m",model,"-y","-p",""]`` + prompt 는 stdin 으로 전달
     agy:    ``["agy","--dangerously-skip-permissions","-p",prompt]`` + stdin 없음
-            (agy 는 -m 미지원, -p 인자 필수, 첫 호출 시 인터랙티브 OAuth 1회 필요)
+            (agy 는 -m 미지원, -p 인자 필수, 첫 호출 시 인터랙티브 OAuth 1회 필요,
+            argv 한계 초과 시 머리만 사용)
     """
     if GEMINI_CLI_BINARY == "agy":
-        return ["agy", "--dangerously-skip-permissions", "-p", prompt], None
+        safe_prompt = _truncate_for_agy_argv(prompt)
+        return ["agy", "--dangerously-skip-permissions", "-p", safe_prompt], None
     return ["gemini", "-m", model, "-y", "-p", ""], prompt.encode("utf-8")
 
 
@@ -138,14 +157,12 @@ class GeminiAgent(AgentBase):
 
     def _build_cmd(self, tmp: str) -> list[str]:
         # AgentBase.ask_with_progress 의 폴백용. GeminiAgent 는 ask_with_progress 를
-        # 오버라이드하므로 실제 호출 경로엔 거의 영향 없음. tmp 파일 내용을 직접
-        # prompt 인자로 못 넘기는 한계가 있어, gemini 경로일 때만 의미있는 cmd 를
-        # 돌려주고 agy 경로는 빈 prompt 로 위임 (직접 사용되는 일이 없어야 함).
-        try:
-            with open(tmp, "r", encoding="utf-8") as fh:
-                prompt = fh.read()
-        except Exception:
-            prompt = ""
+        # 오버라이드하므로 실제 호출 경로엔 영향 없음. agy 는 -p 빈 인자를 거부하므로
+        # 빈/누락 tmp 에 대해 안전 폴백 cmd 를 만들 수 없다. 호출되면 즉시 오류.
+        with open(tmp, "r", encoding="utf-8") as fh:
+            prompt = fh.read()
+        if GEMINI_CLI_BINARY == "agy" and not prompt:
+            raise ValueError("agy 경로는 빈 prompt 를 거부합니다 (-p 인자 필수)")
         cmd_raw, _ = _build_subprocess_args(_available_models()[0], prompt)
         return cmd_raw
 
@@ -248,7 +265,7 @@ class GeminiAgent(AgentBase):
         ``stdin_data`` 는 gemini 분기에서만 의미가 있고, agy 일 때는 무시되고 ``prompt``
         가 ``_build_subprocess_args`` 를 통해 명령어 인자로 들어간다.
         """
-        cmd_raw, agy_stdin = _build_subprocess_args(model or _GEMINI_MODELS[0], prompt)
+        cmd_raw, _ = _build_subprocess_args(model or _GEMINI_MODELS[0], prompt)
         cmd = platform_cmd(cmd_raw)
         # gemini: stdin_data 그대로, agy: stdin 없음
         effective_stdin = stdin_data if GEMINI_CLI_BINARY != "agy" else None

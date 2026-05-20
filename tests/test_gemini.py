@@ -152,14 +152,24 @@ class TestBinarySelection:
         importlib.reload(gemini_mod)
         return gemini_mod
 
-    def test_default_is_gemini_binary(self, monkeypatch):
+    def test_default_when_env_absent(self, monkeypatch):
+        """GEMINI_CLI_BINARY 환경변수가 아예 없으면 gemini 폴백."""
         monkeypatch.delenv("GEMINI_CLI_BINARY", raising=False)
-        gemini_mod = self._reload_gemini_module(monkeypatch, "")
+        import importlib, config, agents.gemini as gemini_mod
+        importlib.reload(config)
+        importlib.reload(gemini_mod)
         cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "안녕")
         assert cmd[0] == "gemini"
         assert "-m" in cmd
         assert "-y" in cmd
         assert stdin_data == "안녕".encode("utf-8")
+
+    def test_default_when_env_empty_string(self, monkeypatch):
+        """GEMINI_CLI_BINARY="" (빈 문자열) 도 gemini 폴백."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "")
+        cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "x")
+        assert cmd[0] == "gemini"
+        assert stdin_data == b"x"
 
     def test_gemini_binary_explicit(self, monkeypatch):
         gemini_mod = self._reload_gemini_module(monkeypatch, "gemini")
@@ -195,3 +205,32 @@ class TestBinarySelection:
         cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "x")
         assert cmd[0] == "gemini"
         assert stdin_data == b"x"
+
+    def test_agy_truncates_oversized_prompt_to_argv_limit(self, monkeypatch):
+        """agy 경로에서 prompt 가 Windows argv 한계를 넘으면 머리만 사용."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        huge_prompt = "x" * (gemini_mod._AGY_PROMPT_ARGV_LIMIT + 5000)
+        cmd, stdin_data = gemini_mod._build_subprocess_args("__agy_default__", huge_prompt)
+        sent = cmd[-1]
+        assert "[...truncated" in sent
+        assert len(sent.encode("utf-8")) <= gemini_mod._AGY_PROMPT_ARGV_LIMIT + 200
+        assert stdin_data is None
+
+    def test_agy_normal_size_prompt_unchanged(self, monkeypatch):
+        """argv 한계 이하 prompt 는 그대로 전달."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        normal_prompt = "주식 토론 prompt: " + "한글텍스트 " * 200
+        cmd, _ = gemini_mod._build_subprocess_args("__agy_default__", normal_prompt)
+        assert cmd[-1] == normal_prompt
+        assert "[...truncated" not in cmd[-1]
+
+    def test_agy_metacharacter_prompt_passes_through(self, monkeypatch):
+        """cmd /c 우회 후 셸 메타문자(`&`,`|`,`>`,`<`,`%`)가 그대로 argv 로 전달돼야 함.
+
+        이건 _build_subprocess_args 단계의 정상 동작 검증. 실제 cmd /c 우회는
+        test_process.py 의 platform_cmd 테스트에서 검증.
+        """
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        meta_prompt = 'echo & dir | findstr "x" > %TEMP%\\x.txt < input.txt'
+        cmd, _ = gemini_mod._build_subprocess_args("__agy_default__", meta_prompt)
+        assert cmd[-1] == meta_prompt
