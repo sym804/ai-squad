@@ -1,8 +1,8 @@
-"""slack_files.extract_images 단위 테스트.
+"""slack_files.extract_attachments 단위 테스트.
 
 requests.get 을 모킹해 다운로드 흐름·필터링·크기 제한·에러 처리만 검증.
-실제 Slack 호출은 하지 않는다. 이미지는 임시 디렉토리에 파일로 저장되고,
-반환 dict 의 'path' 가 그 절대경로를 가리킨다.
+실제 Slack 호출은 하지 않는다. 첨부 (이미지/PDF) 는 임시 디렉토리에 파일로
+저장되고, 반환 dict 의 'path' 가 그 절대경로를 가리킨다.
 """
 
 import os
@@ -42,7 +42,7 @@ def _make_resp(content: bytes, ok: bool = True):
 
 
 def test_no_files_returns_empty(slack_files, tmp_dir):
-    out = slack_files.extract_images({}, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments({}, "xoxb-token", tmp_dir)
     assert out == []
 
 
@@ -51,7 +51,7 @@ def test_no_token_returns_empty(slack_files, tmp_dir):
     event = _img_event({
         "mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 100,
     })
-    out = slack_files.extract_images(event, "", tmp_dir)
+    out = slack_files.extract_attachments(event, "", tmp_dir)
     assert out == []
 
 
@@ -70,7 +70,7 @@ def test_image_mime_downloaded_to_path(slack_files, tmp_dir, monkeypatch):
         "name": "chart.png",
         "size": 12,
     })
-    out = slack_files.extract_images(event, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 1
     assert out[0]["name"] == "chart.png"
     assert out[0]["mime"] == "image/png"
@@ -82,8 +82,8 @@ def test_image_mime_downloaded_to_path(slack_files, tmp_dir, monkeypatch):
     assert captured["auth"] == "Bearer xoxb-token"
 
 
-def test_non_image_skipped(slack_files, tmp_dir, monkeypatch):
-    """text/* 같은 비이미지 파일은 다운로드 자체를 시도하지 않는다."""
+def test_unsupported_mime_skipped(slack_files, tmp_dir, monkeypatch):
+    """text/* / office 등 지원 외 MIME 은 다운로드 자체를 시도하지 않는다."""
     called = {"n": 0}
 
     def fake_get(*a, **kw):
@@ -93,11 +93,88 @@ def test_non_image_skipped(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event(
         {"mimetype": "text/plain", "url_private": "https://x", "name": "a.txt", "size": 10},
-        {"mimetype": "application/pdf", "url_private": "https://y", "name": "b.pdf", "size": 10},
+        {"mimetype": "application/zip", "url_private": "https://y", "name": "b.zip", "size": 10},
     )
-    out = slack_files.extract_images(event, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert out == []
     assert called["n"] == 0
+
+
+def test_pdf_mime_downloaded_with_kind(slack_files, tmp_dir, monkeypatch):
+    """PDF 첨부도 image 와 동일 흐름으로 다운로드되고 kind='pdf' 가 부여된다."""
+    captured = {}
+
+    def fake_get(url, headers=None, timeout=None):
+        captured["url"] = url
+        return _make_resp(b"%PDF-1.4\n...")
+
+    monkeypatch.setattr(slack_files.requests, "get", fake_get)
+    event = _img_event({
+        "mimetype": "application/pdf",
+        "url_private": "https://files.slack.com/report.pdf",
+        "name": "report.pdf",
+        "size": 1000,
+    })
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert len(out) == 1
+    assert out[0]["kind"] == "pdf"
+    assert out[0]["mime"] == "application/pdf"
+    assert out[0]["path"].lower().endswith(".pdf")
+    assert os.path.exists(out[0]["path"])
+
+
+def test_pdf_size_limit_larger_than_image(slack_files, tmp_dir, monkeypatch):
+    """PDF 는 20MB 까지 허용 (이미지 5MB 보다 큼). 6MB PDF 는 통과해야 한다."""
+    called = {"n": 0}
+
+    def fake_get(*a, **kw):
+        called["n"] += 1
+        return _make_resp(b"%PDF-1.4")
+
+    monkeypatch.setattr(slack_files.requests, "get", fake_get)
+    event = _img_event({
+        "mimetype": "application/pdf",
+        "url_private": "https://x",
+        "name": "doc.pdf",
+        "size": 6 * 1024 * 1024,
+    })
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert len(out) == 1
+    assert called["n"] == 1
+
+
+def test_pdf_size_above_pdf_limit_skipped(slack_files, tmp_dir, monkeypatch):
+    """PDF 도 자기 상한 (20MB) 초과 시 스킵."""
+    called = {"n": 0}
+
+    def fake_get(*a, **kw):
+        called["n"] += 1
+        return _make_resp(b"x")
+
+    monkeypatch.setattr(slack_files.requests, "get", fake_get)
+    event = _img_event({
+        "mimetype": "application/pdf",
+        "url_private": "https://x",
+        "name": "huge.pdf",
+        "size": 50 * 1024 * 1024,
+    })
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert out == []
+    assert called["n"] == 0
+
+
+def test_mixed_image_and_pdf(slack_files, tmp_dir, monkeypatch):
+    """이미지 + PDF 혼합 첨부 시 둘 다 다운로드되고 kind 가 각각 부여된다."""
+    monkeypatch.setattr(slack_files.requests, "get",
+                        lambda *a, **kw: _make_resp(b"data"))
+    event = _img_event(
+        {"mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 10},
+        {"mimetype": "application/pdf", "url_private": "https://y", "name": "b.pdf", "size": 10},
+    )
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert len(out) == 2
+    kinds = sorted(a["kind"] for a in out)
+    assert kinds == ["image", "pdf"]
 
 
 def test_oversize_image_skipped(slack_files, tmp_dir, monkeypatch):
@@ -115,7 +192,7 @@ def test_oversize_image_skipped(slack_files, tmp_dir, monkeypatch):
         "name": "huge.jpg",
         "size": 50 * 1024 * 1024,
     })
-    out = slack_files.extract_images(event, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert out == []
     assert called["n"] == 0
 
@@ -132,7 +209,7 @@ def test_download_error_returns_partial(slack_files, tmp_dir, monkeypatch):
         {"mimetype": "image/png", "url_private": "https://fail/a.png", "name": "a.png", "size": 100},
         {"mimetype": "image/png", "url_private": "https://ok/b.png", "name": "b.png", "size": 100},
     )
-    out = slack_files.extract_images(event, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 1
     assert out[0]["name"] == "b.png"
 
@@ -144,6 +221,6 @@ def test_path_extension_matches_mime(slack_files, tmp_dir, monkeypatch):
     event = _img_event(
         {"mimetype": "image/jpeg", "url_private": "https://x", "name": "photo", "size": 4},
     )
-    out = slack_files.extract_images(event, "xoxb-token", tmp_dir)
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 1
     assert out[0]["path"].lower().endswith(".jpg")

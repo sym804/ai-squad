@@ -357,10 +357,10 @@ class DebateMode:
         self.agents = [backup if a is agent else a for a in self.agents]
         self._replaced.add(agent.name)
 
-    async def followup(self, channel: str, thread_ts: str, question: str, images: list[dict] | None = None):
+    async def followup(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
         """스레드에서 사용자가 추가 질문 → 기존 대화 기반 추가 토론 (합의까지).
 
-        images 가 있으면 각 라운드의 ask_with_progress 호출에 그대로 전달해
+        attachments 가 있으면 각 라운드의 ask_with_progress 호출에 그대로 전달해
         비전 지원 에이전트가 분석하도록 한다.
         """
         self._bind_thread(thread_ts)
@@ -406,7 +406,7 @@ class DebateMode:
 
             async def _ask_followup_and_post(a):
                 stop, cb = handlers[a.name]
-                result = await a.ask_with_progress(prompt, on_progress=cb, images=images)
+                result = await a.ask_with_progress(prompt, on_progress=cb, attachments=attachments)
                 stop.set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -441,7 +441,7 @@ class DebateMode:
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
-                    backup_response = await backup.ask(prompt, images=images)
+                    backup_response = await backup.ask(prompt, attachments=attachments)
                     try:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:
@@ -633,10 +633,10 @@ class DebateMode:
             print(f"[SLACK ERROR] fetch today conclusions: {e}")
             return []
 
-    async def start(self, channel: str, thread_ts: str, topic: str, images: list[dict] | None = None):
+    async def start(self, channel: str, thread_ts: str, topic: str, attachments: list[dict] | None = None):
         """Main entry point for debate mode.
 
-        images 는 사용자 첨부 이미지 base64 리스트. 비전 지원 에이전트가 분석.
+        attachments 는 사용자 첨부 파일 메타데이터 리스트 (이미지/PDF). 지원 에이전트가 분석.
         """
         self._bind_thread(thread_ts)
         self._post(channel, thread_ts, f"*토론을 시작합니다*\n주제: {topic}")
@@ -696,7 +696,7 @@ class DebateMode:
 
             async def _ask_and_post(a):
                 stop, cb = handlers[a.name]
-                result = await a.ask_with_progress(prompt, on_progress=cb, images=images)
+                result = await a.ask_with_progress(prompt, on_progress=cb, attachments=attachments)
                 stop.set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -731,7 +731,7 @@ class DebateMode:
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
-                    backup_response = await backup.ask(prompt, images=images)
+                    backup_response = await backup.ask(prompt, attachments=attachments)
                     try:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:

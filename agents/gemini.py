@@ -201,32 +201,45 @@ class GeminiAgent(AgentBase):
         return bool(_RATE_LIMIT_REGEX.search(low))
 
     @staticmethod
-    def _augment_with_image_paths(prompt: str, images: list[dict] | None) -> str:
-        """이미지 첨부 시 Gemini CLI 의 `@<path>` 첨부 syntax 로 prompt 앞에 추가.
+    def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
+        """첨부 (이미지/PDF) 시 Gemini CLI 의 `@<path>` 첨부 syntax 로 prompt 앞에 추가.
 
         Gemini CLI 는 OAuth (Google AI Pro) 모드에서도 prompt 안의 `@경로` 토큰을
-        파일 첨부로 인식해 multimodal 입력으로 처리한다. SDK/API 키 불필요.
-        경로에 공백이 있으면 큰따옴표로 감싸서 한 토큰으로 인식되도록 한다.
+        파일 첨부로 인식해 multimodal/문서 입력으로 처리한다. 이미지와 PDF 모두
+        `@` 토큰으로 같은 방식 처리. SDK/API 키 불필요. 경로에 공백이 있으면
+        큰따옴표로 감싸서 한 토큰으로 인식되도록 한다.
 
         2026-05-09: Gemini-3-flash-preview 가 차트 이미지의 종목을 잘못 식별하는
         사례가 관찰되어(현대차 차트를 토스로 오인) 분석 전 vision 식별 결과를
-        먼저 명시하도록 가드를 prompt 머리에 추가. 후속 라운드의 합의 정정 단계에
-        의존하지 않도록 첫 응답부터 잘못된 전제를 줄이는 효과를 노린다.
+        먼저 명시하도록 가드를 prompt 머리에 추가. 이미지 첨부일 때만 활성화.
         """
-        if not images:
+        if not attachments:
             return prompt
-        ats = " ".join(f'@"{img["path"]}"' for img in images)
-        guard = (
-            "[이미지 분석 가드]\n"
-            "분석을 시작하기 전에 먼저 이미지에서 다음을 텍스트로 명시하세요: "
-            "(1) 보이는 종목명/티커/심볼, (2) 핵심 수치(가격·날짜 등), "
-            "(3) 식별 신뢰도. 신뢰도가 낮으면 '식별 불확실' 이라고 쓰고, "
-            "근거 없이 종목을 단정하지 마세요. 그 다음에 분석을 이어가세요."
-        )
-        return f"{ats}\n\n{guard}\n\n{prompt}"
+        ats = " ".join(f'@"{a["path"]}"' for a in attachments)
+        has_image = any(a.get('kind') == 'image' for a in attachments)
+        has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
+        guard_lines = []
+        if has_image:
+            guard_lines.append(
+                "[이미지 분석 가드]\n"
+                "분석을 시작하기 전에 먼저 이미지에서 다음을 텍스트로 명시하세요: "
+                "(1) 보이는 종목명/티커/심볼, (2) 핵심 수치(가격·날짜 등), "
+                "(3) 식별 신뢰도. 신뢰도가 낮으면 '식별 불확실' 이라고 쓰고, "
+                "근거 없이 종목을 단정하지 마세요. 그 다음에 분석을 이어가세요."
+            )
+        if has_pdf:
+            guard_lines.append(
+                "[PDF 분석 가드]\n"
+                "PDF 본문에서 답을 도출하세요. 본문 외부 지식으로 추정/보완하지 말고, "
+                "본문에 없으면 '문서에 명시 없음' 이라고 답하세요."
+            )
+        guard = "\n\n".join(guard_lines)
+        if guard:
+            return f"{ats}\n\n{guard}\n\n{prompt}"
+        return f"{ats}\n\n{prompt}"
 
-    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
-        prompt = self._augment_with_image_paths(prompt, images)
+    async def _run_cli(self, prompt: str, attachments: list[dict] | None = None) -> str:
+        prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
             last_output = ""
@@ -401,11 +414,11 @@ class GeminiAgent(AgentBase):
         rate_limited = (exit_code != 0 and saw_rate_limit_noise)
         return output, rate_limited
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, images: list[dict] | None = None) -> str:
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
         """Gemini용: stdout+stderr 읽되 노이즈 필터링 + 429 재시도.
 
-        images 가 있으면 prompt 앞에 `@<path>` 첨부 토큰을 끼워 Gemini CLI 가
-        multimodal 입력으로 인식하도록 한다. SDK/API 키 불필요.
+        attachments (이미지/PDF) 가 있으면 prompt 앞에 `@<path>` 첨부 토큰을
+        끼워 Gemini CLI 가 multimodal/문서 입력으로 인식하도록 한다. SDK/API 키 불필요.
         """
         t = timeout or CLI_TIMEOUT
         self.timed_out = False
@@ -414,7 +427,7 @@ class GeminiAgent(AgentBase):
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
 
-        prompt = self._augment_with_image_paths(prompt, images)
+        prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")

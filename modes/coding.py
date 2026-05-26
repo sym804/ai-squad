@@ -104,9 +104,9 @@ def _is_inflight(thread_ts: str) -> bool:
         return thread_ts in _INFLIGHT_PHASE1
 
 
-def _image_key(img: dict):
-    """이미지 dedup key. path → name → object identity 우선순위."""
-    return img.get("path") or img.get("name") or f"id_{id(img)}"
+def _attachment_key(attachment: dict):
+    """첨부 dedup key. path → name → object identity 우선순위."""
+    return attachment.get("path") or attachment.get("name") or f"id_{id(attachment)}"
 
 
 def _claim_pending(thread_ts: str) -> dict | None:
@@ -268,10 +268,10 @@ class CodingMode:
         parts.append("\n위 스레드 내용을 참고하여 사용자의 지시에 응답하세요.")
         return "\n".join(parts)
 
-    async def followup(self, channel, thread_ts, question, images: list[dict] | None = None):
+    async def followup(self, channel, thread_ts, question, attachments: list[dict] | None = None):
         """스레드에서 사용자 추가 지시 → 스레드 히스토리 포함하여 전달.
 
-        images 가 있으면 비전 지원 에이전트(Claude/Gemini) 호출에 전달.
+        attachments 가 있으면 비전 지원 에이전트(Claude/Gemini) 호출에 전달.
         """
         self._bind_thread(thread_ts, question)
         if getattr(self, '_rejected_thread', None) == thread_ts:
@@ -294,7 +294,7 @@ class CodingMode:
         # 흐름으로 빠지게 둔다.
         mentions_other = bool(re.search(r"(?i)\b(codex|gemini)\b", question or ""))
         if thread_ts in _PENDING_THREADS and not mentions_other:
-            await self._resume_pending(channel, thread_ts, question, images=images)
+            await self._resume_pending(channel, thread_ts, question, attachments=attachments)
             return
 
         prompt = self._build_followup_prompt(channel, thread_ts, question)
@@ -302,7 +302,7 @@ class CodingMode:
 
         if len(agents) == 1:
             response, used_agent = await self._ask_with_backup(
-                agents[0], prompt, channel, thread_ts, images=images,
+                agents[0], prompt, channel, thread_ts, attachments=attachments,
             )
             self._post(channel, thread_ts, used_agent.format_message(response))
         else:
@@ -320,7 +320,7 @@ class CodingMode:
 
             async def _ask_agent(a):
                 stop, cb = handlers[a.name]
-                result = await a.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
+                result = await a.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
                 stop.set()
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -342,7 +342,7 @@ class CodingMode:
                             text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                         )
                         bstop, bcb = self._make_progress_handler(channel, thread_ts, thinking["ts"], backup)
-                        backup_response = await backup.ask_with_progress(prompt, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, images=images)
+                        backup_response = await backup.ask_with_progress(prompt, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
                         bstop.set()
                         try:
                             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
@@ -351,11 +351,11 @@ class CodingMode:
                         self._post(channel, thread_ts, backup.format_message(backup_response))
                         self._replace_agent(agent, channel, thread_ts, reason)
 
-    async def _resume_pending(self, channel, thread_ts, user_answer, images=None):
+    async def _resume_pending(self, channel, thread_ts, user_answer, attachments=None):
         """Phase 1 보류 상태에서 사용자 답변 수신 → Claude 재호출.
 
         - claim/release + inflight guard 로 동일 스레드 동시 followup race 차단
-        - 최초 start 의 첨부 이미지를 followup 이미지와 병합하여 Claude/Phase 2/3 전달
+        - 최초 start 의 첨부 파일을 followup 첨부 파일과 병합하여 Claude/Phase 2/3 전달
         - Claude 응답에 AWAIT_USER 태그가 사라지면 Phase 2/3 으로 자동 진입
         """
         pending = _claim_pending(thread_ts)
@@ -370,18 +370,18 @@ class CodingMode:
         try:
             request = pending["request"]
             context_prefix = pending.get("context_prefix", "")
-            original_images = pending.get("images") or []
-            followup_images = images or []
+            original_attachments = pending.get("attachments") or []
+            followup_attachments = attachments or []
             # path → name → id 순으로 dedup. 순서 보존 (최초 첨부 우선).
             seen = set()
-            merged_images: list[dict] = []
-            for img in list(original_images) + list(followup_images):
-                key = _image_key(img)
+            merged_attachments: list[dict] = []
+            for attachment in list(original_attachments) + list(followup_attachments):
+                key = _attachment_key(attachment)
                 if key in seen:
                     continue
                 seen.add(key)
-                merged_images.append(img)
-            merged_images = merged_images or None
+                merged_attachments.append(attachment)
+            merged_attachments = merged_attachments or None
 
             history = self._fetch_thread_history(channel, thread_ts)
             history_text = ""
@@ -402,7 +402,7 @@ class CodingMode:
             )
 
             claude_code, used_agent = await self._ask_with_backup(
-                self.claude, phase1_prompt, channel, thread_ts, images=merged_images,
+                self.claude, phase1_prompt, channel, thread_ts, attachments=merged_attachments,
             )
             display_code = _strip_await_user(claude_code)
             self._post(channel, thread_ts, used_agent.format_message(display_code))
@@ -418,7 +418,7 @@ class CodingMode:
                     "channel": channel,
                     "request": request,
                     "context_prefix": context_prefix,
-                    "images": merged_images,
+                    "attachments": merged_attachments,
                 })
                 self._post(channel, thread_ts, (
                     "⏸️ *Phase 1 보류 유지* — Claude 가 추가 정보를 더 요청했습니다. "
@@ -429,7 +429,7 @@ class CodingMode:
 
             _release_pending(thread_ts, clear=True)
             await self._run_review_and_test(
-                channel, thread_ts, request, claude_code, images=merged_images,
+                channel, thread_ts, request, claude_code, attachments=merged_attachments,
             )
         except BaseException:
             # 예외 발생 시 lock 누수 방지
@@ -537,10 +537,10 @@ class CodingMode:
         t.start()
         return stop_event, on_progress
 
-    async def _ask_with_backup(self, agent, prompt, channel, thread_ts, images: list[dict] | None = None):
+    async def _ask_with_backup(self, agent, prompt, channel, thread_ts, attachments: list[dict] | None = None):
         """에이전트 호출 후 오류/타임아웃 시 백업 투입.
 
-        images 가 있으면 비전 지원 에이전트는 분석에 사용하고, 미지원 에이전트는
+        attachments 가 있으면 비전 지원 에이전트는 분석에 사용하고, 미지원 에이전트는
         프롬프트 노트로만 인지한다 (CodexAgent 측에서 처리).
         """
         thinking = self.slack.chat_postMessage(
@@ -548,7 +548,7 @@ class CodingMode:
             text=f"💭 {agent.emoji} *[{agent.name}]* 생각 중..."
         )
         stop, cb = self._make_progress_handler(channel, thread_ts, thinking["ts"], agent)
-        response = await agent.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
+        response = await agent.ask_with_progress(prompt, on_progress=cb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
         stop.set()
         await asyncio.sleep(1)  # 타이머 스레드 종료 대기
         try:
@@ -565,7 +565,7 @@ class CodingMode:
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                 )
-                response = await backup.ask(prompt, images=images)
+                response = await backup.ask(prompt, attachments=attachments)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                 except Exception as e:
@@ -609,7 +609,7 @@ class CodingMode:
             return True
         return False
 
-    async def _parallel_start(self, channel, thread_ts, request, agents, images: list[dict] | None = None):
+    async def _parallel_start(self, channel, thread_ts, request, agents, attachments: list[dict] | None = None):
         """복수 에이전트 병렬 실행 모드."""
         names = " / ".join(f"{a.emoji} {a.name}" for a in agents)
         self._post(channel, thread_ts, f"*병렬 모드 시작* :zap:\n참여: {names}")
@@ -627,7 +627,7 @@ class CodingMode:
 
         async def _ask_agent(a):
             stop, cb = handlers[a.name]
-            result = await a.ask_with_progress(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING, images=images)
+            result = await a.ask_with_progress(request, on_progress=cb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
             stop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
@@ -652,7 +652,7 @@ class CodingMode:
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                     )
                     bstop, bcb = self._make_progress_handler(channel, thread_ts, bthinking["ts"], backup)
-                    backup_response = await backup.ask_with_progress(request, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, images=images)
+                    backup_response = await backup.ask_with_progress(request, on_progress=bcb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
                     bstop.set()
                     await asyncio.sleep(1)
                     try:
@@ -692,7 +692,7 @@ class CodingMode:
         self._post(channel, thread_ts, f"📋 *최종 보고서*\n{summary}")
         self._post(channel, thread_ts, "*✅ 병렬 모드 완료*")
 
-    async def start(self, channel, thread_ts, request, images: list[dict] | None = None):
+    async def start(self, channel, thread_ts, request, attachments: list[dict] | None = None):
         self._bind_thread(thread_ts, request)
         if getattr(self, '_rejected_thread', None) == thread_ts:
             reason = getattr(self, '_rejected_reason', '')
@@ -702,7 +702,7 @@ class CodingMode:
         # 복수 에이전트 지정 시 병렬 모드 (Phase 1 게이트 우회)
         agents = self._pick_agents(request)
         if len(agents) > 1:
-            await self._parallel_start(channel, thread_ts, request, agents, images=images)
+            await self._parallel_start(channel, thread_ts, request, agents, attachments=attachments)
             return
 
         # 동일 thread_ts 로 start 가 중복 진입하는 것을 차단.
@@ -712,11 +712,11 @@ class CodingMode:
                 "⚠️ *동일 스레드의 다른 작업이 진행 중입니다. 잠시 후 다시 시도해 주세요.*")
             return
         try:
-            await self._start_inner(channel, thread_ts, request, images)
+            await self._start_inner(channel, thread_ts, request, attachments)
         finally:
             _leave_inflight(thread_ts)
 
-    async def _start_inner(self, channel, thread_ts, request, images):
+    async def _start_inner(self, channel, thread_ts, request, attachments):
 
         # 당일 이전 결론을 컨텍스트로 수집
         today_conclusions = self._fetch_today_conclusions(channel, thread_ts)
@@ -740,7 +740,7 @@ class CodingMode:
             f"{PHASE1_PROMPT_SUFFIX}"
         )
         claude_code, used_agent = await self._ask_with_backup(
-            self.claude, phase1_prompt, channel, thread_ts, images=images,
+            self.claude, phase1_prompt, channel, thread_ts, attachments=attachments,
         )
         display_code = _strip_await_user(claude_code)
         self._post(channel, thread_ts, used_agent.format_message(display_code))
@@ -756,7 +756,7 @@ class CodingMode:
                 "channel": channel,
                 "request": request,
                 "context_prefix": context_prefix,
-                "images": images,
+                "attachments": attachments,
             })
             self._post(channel, thread_ts, (
                 "⏸️ *Phase 1 보류* — Claude 가 추가 정보를 요청했습니다. "
@@ -766,10 +766,10 @@ class CodingMode:
 
         # 코드가 나왔으니 Phase 2/3 진행
         await self._run_review_and_test(
-            channel, thread_ts, request, claude_code, images=images,
+            channel, thread_ts, request, claude_code, attachments=attachments,
         )
 
-    async def _run_review_and_test(self, channel, thread_ts, request, claude_code, images=None):
+    async def _run_review_and_test(self, channel, thread_ts, request, claude_code, attachments=None):
         """Phase 2 (Codex 리뷰) + Phase 3 (테스트 3병렬) + 이슈 수정 루프 + 최종 보고서.
 
         Phase 1 에서 Claude 가 코드를 완성했을 때만 호출된다.
@@ -781,7 +781,7 @@ class CodingMode:
             self.codex,
             f"다음 코드를 리뷰해 주세요. 버그, 보안 이슈, 개선 사항을 찾아 주세요.\n\n{claude_code}",
             channel, thread_ts,
-            images=images,
+            attachments=attachments,
         )
         self._post(channel, thread_ts, used_agent.format_message(review))
 
@@ -804,7 +804,7 @@ class CodingMode:
 
         async def _phase3_ask(agent, prompt, label):
             pstop, pcb = handlers[agent.name]
-            result = await agent.ask_with_progress(prompt, on_progress=pcb, timeout=CLI_TIMEOUT_CODING, images=images)
+            result = await agent.ask_with_progress(prompt, on_progress=pcb, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
             pstop.set()
             try:
                 self.slack.chat_delete(channel=channel, ts=thinking_msgs[agent.name])
@@ -839,7 +839,7 @@ class CodingMode:
                         f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
                         on_progress=bcb,
                         timeout=CLI_TIMEOUT_CODING,
-                        images=images,
+                        attachments=attachments,
                     )
                     bstop.set()
                     try:

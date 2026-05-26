@@ -19,7 +19,7 @@ from modes.coding import (
     _RESUMING_THREADS,
     _INFLIGHT_PHASE1,
     _has_await_user,
-    _image_key,
+    _attachment_key,
     _strip_await_user,
 )
 
@@ -133,7 +133,7 @@ def _make_mode_no_cancel_mock(monkeypatch):
 
 def _fake_ask_with_backup(return_text):
     """_ask_with_backup 을 대체할 async 함수."""
-    async def _impl(self, agent, prompt, channel, thread_ts, images=None):
+    async def _impl(self, agent, prompt, channel, thread_ts, attachments=None):
         return return_text, agent
     return _impl
 
@@ -182,7 +182,7 @@ def test_start_without_tag_runs_phase23(monkeypatch):
     )
 
     run_called = []
-    async def _fake_run(self, channel, thread_ts, request, code, images=None):
+    async def _fake_run(self, channel, thread_ts, request, code, attachments=None):
         run_called.append((channel, thread_ts, request, code))
     monkeypatch.setattr(CodingMode, "_run_review_and_test", _fake_run)
 
@@ -230,7 +230,7 @@ def test_followup_resumes_pending_and_triggers_phase23(monkeypatch):
     monkeypatch.setattr(mode, "_fetch_thread_history", lambda *a, **kw: [])
 
     run_called = []
-    async def _fake_run(self, channel, thread_ts, request, code, images=None):
+    async def _fake_run(self, channel, thread_ts, request, code, attachments=None):
         run_called.append((thread_ts, request, code))
     monkeypatch.setattr(CodingMode, "_run_review_and_test", _fake_run)
 
@@ -268,7 +268,7 @@ def test_followup_pending_still_await_keeps_state(monkeypatch):
     assert any("보류 유지" in p for p in posts)
 
 
-def test_start_pending_preserves_initial_images(monkeypatch):
+def test_start_pending_preserves_initial_attachments(monkeypatch):
     """start 의 첨부 이미지가 pending payload 에 저장되어야 한다."""
     mode, posts = _make_mode(monkeypatch)
 
@@ -279,13 +279,13 @@ def test_start_pending_preserves_initial_images(monkeypatch):
     async def _fake_run(self, *a, **kw): pass
     monkeypatch.setattr(CodingMode, "_run_review_and_test", _fake_run)
 
-    images = [{"name": "a.png", "path": "/tmp/a.png"}]
-    asyncio.run(mode.start("C1", "T_IMG", "요청", images=images))
+    attachments = [{"name": "a.png", "path": "/tmp/a.png"}]
+    asyncio.run(mode.start("C1", "T_IMG", "요청", attachments=attachments))
 
-    assert _PENDING_THREADS["T_IMG"]["images"] == images
+    assert _PENDING_THREADS["T_IMG"]["attachments"] == attachments
 
 
-def test_resume_merges_images_and_passes_to_phase23(monkeypatch):
+def test_resume_merges_attachments_and_passes_to_phase23(monkeypatch):
     """pending 이미지 + followup 이미지가 병합되어 Claude/Phase2-3 으로 전달."""
     mode, posts = _make_mode(monkeypatch)
 
@@ -295,25 +295,25 @@ def test_resume_merges_images_and_passes_to_phase23(monkeypatch):
         "channel": "C1",
         "request": "원래 요청",
         "context_prefix": "",
-        "images": [orig],
+        "attachments": [orig],
     }
 
     captured = {}
-    async def _fake_ask(self, agent, prompt, channel, thread_ts, images=None):
-        captured["claude_images"] = images
+    async def _fake_ask(self, agent, prompt, channel, thread_ts, attachments=None):
+        captured["claude_attachments"] = attachments
         return "```python\nprint(1)\n```", agent
     monkeypatch.setattr(CodingMode, "_ask_with_backup", _fake_ask)
 
-    async def _fake_run(self, channel, thread_ts, request, code, images=None):
-        captured["run_images"] = images
+    async def _fake_run(self, channel, thread_ts, request, code, attachments=None):
+        captured["run_attachments"] = attachments
     monkeypatch.setattr(CodingMode, "_run_review_and_test", _fake_run)
     monkeypatch.setattr(mode, "_fetch_thread_history", lambda *a, **kw: [])
 
-    asyncio.run(mode.followup("C1", "T_M", "확정", images=[extra]))
+    asyncio.run(mode.followup("C1", "T_M", "확정", attachments=[extra]))
 
-    assert orig in captured["claude_images"]
-    assert extra in captured["claude_images"]
-    assert captured["run_images"] == captured["claude_images"]
+    assert orig in captured["claude_attachments"]
+    assert extra in captured["claude_attachments"]
+    assert captured["run_attachments"] == captured["claude_attachments"]
 
 
 def test_cancel_clears_pending(monkeypatch):
@@ -331,7 +331,7 @@ def test_cancel_clears_pending(monkeypatch):
         "channel": "C1",
         "request": "원래",
         "context_prefix": "",
-        "images": None,
+        "attachments": None,
     }
     # 모듈 함수 is_cancelled 가 True 를 반환하도록 mock → 실제 _check_cancel
     # 이 _drop_pending 까지 호출하는지 검증
@@ -351,14 +351,14 @@ def test_concurrent_resume_runs_phase23_once(monkeypatch):
         "channel": "C1",
         "request": "원래",
         "context_prefix": "",
-        "images": None,
+        "attachments": None,
     }
 
     # 첫 번째 _ask_with_backup 호출이 약간 대기하여 두 번째 진입이 시도되도록.
     enter_event = threading.Event()
     proceed_event = threading.Event()
 
-    async def _fake_ask(self, agent, prompt, channel, thread_ts, images=None):
+    async def _fake_ask(self, agent, prompt, channel, thread_ts, attachments=None):
         enter_event.set()
         # 두 번째 호출자가 followup 진입을 시도할 시간을 준다.
         await asyncio.sleep(0.05)
@@ -398,7 +398,7 @@ def test_followup_blocked_when_start_inflight(monkeypatch):
 
     # 일반 followup 경로도 패치
     ask_called = []
-    async def _fake_ask(self, agent, prompt, channel, thread_ts, images=None):
+    async def _fake_ask(self, agent, prompt, channel, thread_ts, attachments=None):
         ask_called.append(True)
         return "ok", agent
     monkeypatch.setattr(CodingMode, "_ask_with_backup", _fake_ask)
@@ -412,17 +412,17 @@ def test_followup_blocked_when_start_inflight(monkeypatch):
     assert any("처리 중" in p for p in posts)
 
 
-def test_image_key_priority(monkeypatch):
-    """_image_key 는 path → name → id 순으로 키를 만든다."""
+def test_attachment_key_priority(monkeypatch):
+    """_attachment_key 는 path → name → id 순으로 키를 만든다."""
     a = {"path": "/tmp/a.png", "name": "a.png"}
     b = {"name": "b.png"}  # path 없음
     c = {}  # 둘 다 없음
     d = {}  # 둘 다 없음 (다른 객체)
 
-    assert _image_key(a) == "/tmp/a.png"
-    assert _image_key(b) == "b.png"
+    assert _attachment_key(a) == "/tmp/a.png"
+    assert _attachment_key(b) == "b.png"
     # 둘 다 없는 경우 id 가 달라야 분리됨
-    assert _image_key(c) != _image_key(d)
+    assert _attachment_key(c) != _attachment_key(d)
 
 
 def test_followup_mentions_codex_bypasses_pending(monkeypatch):
@@ -440,7 +440,7 @@ def test_followup_mentions_codex_bypasses_pending(monkeypatch):
     monkeypatch.setattr(CodingMode, "_resume_pending", _fake_resume)
 
     # followup 단일 에이전트 경로를 단순화
-    async def _fake_ask(self, agent, prompt, channel, thread_ts, images=None):
+    async def _fake_ask(self, agent, prompt, channel, thread_ts, attachments=None):
         return "ok", agent
     monkeypatch.setattr(CodingMode, "_ask_with_backup", _fake_ask)
     monkeypatch.setattr(mode, "_fetch_original_topic", lambda *a, **kw: "원래")

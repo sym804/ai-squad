@@ -26,6 +26,42 @@
 | v0.7.3 | 2026-05-20 | 2-vs-1 deadlock 조기 종료: agree=true 의미 완화 + 페어 outlier 명시 감지 |
 | v0.7.3.2 | 2026-05-20 | Gemini 이벤트 루프 회귀(Semaphore 멀티-루프 바인딩) 핫픽스 + 외부 timeout 가드 |
 | v0.7.3.3 | 2026-05-20 | v0.7.3.2 Codex 교차검증 Block/Major 핫픽스: _run_progress_once 누락 교체 + cancel cleanup |
+| v0.7.4 | 2026-05-26 | PDF 첨부 지원 (이미지에 더해 application/pdf 도 각 CLI read 도구로 직접 처리) + 전체 images → attachments 리네이밍 |
+
+## v0.7.4 (2026-05-26)
+
+PDF 첨부 지원 확장. 기존에는 Slack 에 PDF 던지면 봇이 무시했지만, 이제 image/* 와 동일 흐름으로 다운로드되어 각 CLI 의 read 도구(Claude Code Read native PDF 지원, Gemini `@<path>`, Codex read 텍스트 추출)가 직접 처리한다. Python 단 PDF 파싱 의존성 추가 없음 (글로벌 CPU 과열 룰의 "PDF 파싱은 실시간 API 에서 제거" 정책과 부합).
+
+### 기능 추가
+- **[Minor / enhancement]** `slack_files.py` 의 MIME 필터에 `application/pdf` 추가. PDF 는 별도 size 상한 20MB (이미지 5MB 대비 큼). 반환 dict 에 `kind` 필드 ("image" | "pdf") 부여.
+- **[Minor / enhancement]** 각 에이전트 (Claude/Codex/Gemini) 의 prompt augment 함수가 첨부 kind 에 따라 분기된 안내 문구를 생성:
+  - Claude: PDF 면 "Read 도구로 읽고 본문 분석/요약, 10페이지 초과 시 pages 인자 분할"
+  - Codex: PDF 면 "read 도구로 PDF 텍스트 추출하여 분석"
+  - Gemini: PDF 가드 ("PDF 본문에서 답 도출, 외부 지식으로 추정 금지") 추가, 이미지 가드는 image kind 있을 때만 활성화
+
+### 리팩토링 (사용자 결정: 전체 리네이밍)
+- `slack_files.extract_images` → `extract_attachments`
+- 모든 함수의 `images: list[dict] | None = None` 인자 → `attachments: list[dict] | None = None` (base/claude/codex/gemini + 3 backup + bridge/coding/debate + slack_bot 일관)
+- 키워드 호출 `images=` → `attachments=`
+- 변수명 `images` (지역변수, dict key, pending dict 의 "images" key 포함) → `attachments`
+- `_augment_with_image_paths` (Claude/Gemini), `_augment_with_image_note` (Codex) → `_augment_with_attachments` 통일
+- `BridgeMode._call_claude_vision` → `_call_claude_with_attachments` (의미 일반화)
+
+### 테스트
+- `tests/test_slack_files.py`: 함수명 변경 + PDF 통과 케이스 4건 추가 (`pdf_mime_downloaded_with_kind`, `pdf_size_limit_larger_than_image`, `pdf_size_above_pdf_limit_skipped`, `mixed_image_and_pdf`)
+- `tests/test_agent_vision.py`: 함수명/인자명 변경 + 각 에이전트 PDF 회귀 케이스 (Claude `pages` 안내, Gemini PDF 가드 분기, Codex PDF instruction)
+- `tests/{test_bridge,test_agent_base,test_coding_gate}.py`: 인자명 변경 동기
+
+### 검증
+- 전체 비-라이브 테스트 **259 passed** (회귀 없음)
+- `slack_files` 단위 11건 PASS (기존 7 + 신규 4)
+- `test_agent_vision` 단위 18건 PASS (기존 13 + 신규 5)
+- Codex 교차 검증 완료 (agent `a0badc879ccde98a5`):
+  - 통과 17건 (MIME/size 분기, kind 분기, augment instruction, backup 호환, lambda 인자, pending dict key, cleanup, mixed 등)
+  - Minor 1건 + Trivial 1건 발견, **모두 fix 적용**:
+    - Minor: `modes/coding.py` 의 `_image_key` helper + `img` 매개변수 + `tests/test_coding_gate.py` 의 `test_image_key_priority` 가 리네이밍 누락 → `_attachment_key` / `attachment` / `test_attachment_key_priority` 로 통일
+    - Trivial: `modes/coding.py:357` + `modes/debate.py:639` 의 docstring 에 "이미지" 표현 잔재 → "첨부 파일" 로 일반화
+- 수정 후 전체 비-라이브 테스트 **259 passed** 재확인
 
 ## v0.7.3.3 (2026-05-20)
 

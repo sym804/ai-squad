@@ -1,8 +1,8 @@
-"""에이전트 이미지 첨부 prompt augmentation 단위 테스트.
+"""에이전트 첨부 (이미지/PDF) prompt augmentation 단위 테스트.
 
 SDK 직호출 없이 각 CLI 의 첨부 syntax 로 prompt 가 변형되는지만 검증한다.
-- Claude: prompt 끝에 절대경로 블록 + Read 도구 안내
-- Gemini: prompt 앞에 `@<path>` 토큰
+- Claude: prompt 끝에 절대경로 블록 + Read 도구 안내 (이미지/PDF 모두 Read native)
+- Gemini: prompt 앞에 `@<path>` 토큰 (이미지/PDF 동일 syntax)
 - Codex: prompt 끝에 절대경로 블록 + read 도구 안내
 """
 
@@ -14,18 +14,22 @@ from agents.gemini import GeminiAgent
 
 
 def _img(name="chart.png", mime="image/png", path=r"C:\\tmp\\chart.png"):
-    return {"name": name, "mime": mime, "path": path}
+    return {"name": name, "mime": mime, "kind": "image", "path": path}
+
+
+def _pdf(name="report.pdf", path=r"C:\\tmp\\report.pdf"):
+    return {"name": name, "mime": "application/pdf", "kind": "pdf", "path": path}
 
 
 # ── ClaudeAgent ────────────────────────────────────────────────────────
 
 class TestClaudeImageAugment:
     def test_no_images_returns_prompt_unchanged(self):
-        assert ClaudeAgent._augment_with_image_paths("hello", None) == "hello"
-        assert ClaudeAgent._augment_with_image_paths("hello", []) == "hello"
+        assert ClaudeAgent._augment_with_attachments("hello", None) == "hello"
+        assert ClaudeAgent._augment_with_attachments("hello", []) == "hello"
 
     def test_path_appended(self):
-        out = ClaudeAgent._augment_with_image_paths(
+        out = ClaudeAgent._augment_with_attachments(
             "분석해줘", [_img(path=r"C:\\imgs\\a.png")]
         )
         assert "분석해줘" in out
@@ -33,7 +37,7 @@ class TestClaudeImageAugment:
         assert "Read" in out  # Claude code 가 Read 도구로 읽도록 명시
 
     def test_multiple_paths_in_block(self):
-        out = ClaudeAgent._augment_with_image_paths(
+        out = ClaudeAgent._augment_with_attachments(
             "분석", [
                 _img(path=r"C:\\imgs\\a.png"),
                 _img(path=r"C:\\imgs\\b.jpg"),
@@ -42,6 +46,26 @@ class TestClaudeImageAugment:
         assert "(2개)" in out
         assert r"C:\\imgs\\a.png" in out
         assert r"C:\\imgs\\b.jpg" in out
+
+    def test_pdf_attachment_uses_pdf_instruction(self):
+        """PDF 첨부 시 안내 문구가 PDF 전용 (Read + 페이지 분할) 으로 바뀐다."""
+        out = ClaudeAgent._augment_with_attachments(
+            "이 PDF 요약", [_pdf(path=r"C:\\docs\\report.pdf")]
+        )
+        assert r"C:\\docs\\report.pdf" in out
+        assert "PDF" in out
+        assert "Read" in out
+        assert "pages" in out  # 페이지 분할 안내 명시
+
+    def test_mixed_image_and_pdf_attachment(self):
+        """이미지 + PDF 혼합 첨부 시 두 종류 모두 안내."""
+        out = ClaudeAgent._augment_with_attachments(
+            "분석", [_img(path=r"C:\\a.png"), _pdf(path=r"C:\\b.pdf")]
+        )
+        assert r"C:\\a.png" in out
+        assert r"C:\\b.pdf" in out
+        assert "이미지" in out
+        assert "PDF" in out
 
     @pytest.mark.asyncio
     async def test_run_cli_routes_through_augment(self, monkeypatch):
@@ -58,7 +82,7 @@ class TestClaudeImageAugment:
             return _P()
 
         monkeypatch.setattr("agents.claude.asyncio.create_subprocess_exec", fake_proc)
-        await agent._run_cli("hello", images=[_img(path=r"C:\\imgs\\chart.png")])
+        await agent._run_cli("hello", attachments=[_img(path=r"C:\\imgs\\chart.png")])
         assert captured["stdin"] is not None
         decoded = captured["stdin"].decode("utf-8")
         assert "hello" in decoded
@@ -93,7 +117,7 @@ class TestClaudeImageAugment:
 
         monkeypatch.setattr("agents.claude.asyncio.create_subprocess_exec", fake_proc)
         agent = ClaudeAgent()
-        await agent._run_cli("hi", images=[_img(path=r"C:\\imgs\\chart.png")])
+        await agent._run_cli("hi", attachments=[_img(path=r"C:\\imgs\\chart.png")])
         assert captured["limit"] is not None, "limit 이 명시되지 않음"
         assert captured["limit"] >= 1024 * 1024, (
             f"limit 이 너무 작음 ({captured['limit']}). 64KB 기본값으로 떨어지면 회귀."
@@ -104,11 +128,11 @@ class TestClaudeImageAugment:
 
 class TestGeminiImageAugment:
     def test_no_images_returns_prompt_unchanged(self):
-        assert GeminiAgent._augment_with_image_paths("hello", None) == "hello"
-        assert GeminiAgent._augment_with_image_paths("hello", []) == "hello"
+        assert GeminiAgent._augment_with_attachments("hello", None) == "hello"
+        assert GeminiAgent._augment_with_attachments("hello", []) == "hello"
 
     def test_at_token_prepended(self):
-        out = GeminiAgent._augment_with_image_paths(
+        out = GeminiAgent._augment_with_attachments(
             "분석해줘", [_img(path=r"C:\\imgs\\a.png")]
         )
         # @ syntax 로 첨부, 큰따옴표로 공백 안전
@@ -117,7 +141,7 @@ class TestGeminiImageAugment:
         assert "분석해줘" in out
 
     def test_multiple_at_tokens(self):
-        out = GeminiAgent._augment_with_image_paths(
+        out = GeminiAgent._augment_with_attachments(
             "분석", [
                 _img(path=r"C:\\imgs\\a.png"),
                 _img(path=r"C:\\imgs\\b.jpg"),
@@ -127,16 +151,35 @@ class TestGeminiImageAugment:
         assert r"C:\\imgs\\a.png" in out
         assert r"C:\\imgs\\b.jpg" in out
 
+    def test_pdf_attachment_uses_pdf_guard(self):
+        """PDF 첨부 시 `@<path>` syntax 동일 + PDF 가드 안내 추가."""
+        out = GeminiAgent._augment_with_attachments(
+            "이 PDF 요약", [_pdf(path=r"C:\\docs\\report.pdf")]
+        )
+        assert out.startswith('@"')
+        assert r"C:\\docs\\report.pdf" in out
+        assert "PDF" in out
+        # 이미지가 아니므로 이미지 가드는 들어가지 않아야 한다
+        assert "종목명/티커" not in out
+
+    def test_image_only_keeps_image_guard(self):
+        """이미지만 첨부 시 기존 이미지 가드 유지 (회귀)."""
+        out = GeminiAgent._augment_with_attachments(
+            "차트 분석", [_img(path=r"C:\\a.png")]
+        )
+        assert "이미지 분석 가드" in out
+        assert "종목명/티커" in out
+
 
 # ── CodexAgent ─────────────────────────────────────────────────────────
 
 class TestCodexImageNote:
     def test_no_images_returns_prompt_unchanged(self):
-        assert CodexAgent._augment_with_image_note("hello", None) == "hello"
-        assert CodexAgent._augment_with_image_note("hello", []) == "hello"
+        assert CodexAgent._augment_with_attachments("hello", None) == "hello"
+        assert CodexAgent._augment_with_attachments("hello", []) == "hello"
 
     def test_path_appended(self):
-        out = CodexAgent._augment_with_image_note(
+        out = CodexAgent._augment_with_attachments(
             "hello", [_img(path=r"C:\\imgs\\chart.png")]
         )
         assert "(1개)" in out
@@ -144,7 +187,7 @@ class TestCodexImageNote:
         assert "read" in out.lower()
 
     def test_multiple_paths(self):
-        out = CodexAgent._augment_with_image_note(
+        out = CodexAgent._augment_with_attachments(
             "hello", [
                 _img(path=r"C:\\imgs\\a.png"),
                 _img(path=r"C:\\imgs\\b.jpg"),
@@ -153,6 +196,15 @@ class TestCodexImageNote:
         assert "(2개)" in out
         assert r"C:\\imgs\\a.png" in out
         assert r"C:\\imgs\\b.jpg" in out
+
+    def test_pdf_attachment_uses_pdf_instruction(self):
+        """Codex PDF 첨부: read 도구로 PDF 텍스트 추출 안내."""
+        out = CodexAgent._augment_with_attachments(
+            "이 PDF 요약", [_pdf(path=r"C:\\docs\\report.pdf")]
+        )
+        assert r"C:\\docs\\report.pdf" in out
+        assert "PDF" in out
+        assert "read" in out.lower()
 
     def test_uses_workspace_write_sandbox_not_full_auto(self):
         """`--full-auto` deprecated. `-s workspace-write` 로 교체해서 stdout

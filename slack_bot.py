@@ -18,7 +18,7 @@ from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
 from process import platform_cmd, subprocess_kwargs
-from slack_files import extract_images
+from slack_files import extract_attachments
 import cancel
 
 
@@ -159,20 +159,21 @@ def handle_message(event, say, client):
     thread_ts = event.get("thread_ts")
 
     def _spawn(make_coro, target_ts):
-        """작업 스레드 안에서 이미지 다운로드 후 coroutine 실행.
+        """작업 스레드 안에서 첨부 파일 다운로드 후 coroutine 실행.
 
-        Slack Bolt 이벤트 핸들러에서 `extract_images` 를 직접 호출하면 큰 첨부
-        파일 다운로드가 핸들러 응답을 30초까지 지연시킬 수 있어, 다운로드 자체를
-        작업 스레드로 밀어넣는다. 작업 종료 후 임시 디렉토리는 정리.
+        Slack Bolt 이벤트 핸들러에서 `extract_attachments` 를 직접 호출하면 큰
+        첨부 파일 다운로드가 핸들러 응답을 30초까지 지연시킬 수 있어, 다운로드
+        자체를 작업 스레드로 밀어넣는다. 작업 종료 후 임시 디렉토리는 정리.
         """
         def _runner():
             import tempfile, shutil
-            tmp_dir = tempfile.mkdtemp(prefix=f"slack_imgs_{target_ts}_")
+            tmp_dir = tempfile.mkdtemp(prefix=f"slack_attachments_{target_ts}_")
             try:
-                images = extract_images(event, SLACK_BOT_TOKEN, tmp_dir)
-                if images:
-                    print(f"[EVENT] 이미지 {len(images)}장 첨부됨: " + ", ".join(i["name"] for i in images))
-                _run_async(make_coro(images), client, channel, target_ts)
+                attachments = extract_attachments(event, SLACK_BOT_TOKEN, tmp_dir)
+                if attachments:
+                    summary = ", ".join(f"{a['name']}({a['kind']})" for a in attachments)
+                    print(f"[EVENT] 첨부 {len(attachments)}개: {summary}")
+                _run_async(make_coro(attachments), client, channel, target_ts)
             finally:
                 try:
                     shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -183,20 +184,20 @@ def handle_message(event, say, client):
     # 스레드 답글 → 추가 토론/질문
     if thread_ts and thread_ts != ts:
         if channel == DEBATE_CHANNEL_ID:
-            _spawn(lambda imgs: DebateMode(client).followup(channel, thread_ts, text, images=imgs), thread_ts)
+            _spawn(lambda atts: DebateMode(client).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         elif channel == CODING_CHANNEL_ID:
-            _spawn(lambda imgs: CodingMode(client).followup(channel, thread_ts, text, images=imgs), thread_ts)
+            _spawn(lambda atts: CodingMode(client).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         elif channel in BRIDGE_CHANNELS:
-            _spawn(lambda imgs: BridgeMode(client, BRIDGE_CHANNELS[channel]).followup(channel, thread_ts, text, images=imgs), thread_ts)
+            _spawn(lambda atts: BridgeMode(client, BRIDGE_CHANNELS[channel]).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         return
 
     # 최상위 메시지 처리
     if channel == DEBATE_CHANNEL_ID:
-        _spawn(lambda imgs: DebateMode(client).start(channel, ts, text, images=imgs), ts)
+        _spawn(lambda atts: DebateMode(client).start(channel, ts, text, attachments=atts), ts)
     elif channel == CODING_CHANNEL_ID:
-        _spawn(lambda imgs: CodingMode(client).start(channel, ts, text, images=imgs), ts)
+        _spawn(lambda atts: CodingMode(client).start(channel, ts, text, attachments=atts), ts)
     elif channel in BRIDGE_CHANNELS:
-        _spawn(lambda imgs: BridgeMode(client, BRIDGE_CHANNELS[channel]).handle(channel, ts, text, images=imgs), ts)
+        _spawn(lambda atts: BridgeMode(client, BRIDGE_CHANNELS[channel]).handle(channel, ts, text, attachments=atts), ts)
 
 
 if __name__ == "__main__":

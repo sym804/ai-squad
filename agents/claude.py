@@ -56,8 +56,8 @@ class ClaudeAgent(AgentBase):
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
-        # Read 를 allowedTools 에 추가: 이미지 첨부 시 prompt 안의 절대경로를
-        # claude code 가 Read 도구로 읽어 vision 입력으로 처리한다.
+        # Read 를 allowedTools 에 추가: 첨부 (이미지/PDF) 시 prompt 안의 절대경로를
+        # Claude Code 가 Read 도구로 읽어 vision/문서 입력으로 처리한다.
         cmd.extend(["-p", "--output-format", "json",
                     "--allowedTools", "WebSearch", "WebFetch", "Read"])
         return cmd
@@ -71,23 +71,38 @@ class ClaudeAgent(AgentBase):
         return cmd
 
     @staticmethod
-    def _augment_with_image_paths(prompt: str, images: list[dict] | None) -> str:
-        """이미지 첨부 시 prompt 끝에 절대경로 블록을 붙인다.
+    def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
+        """첨부 (이미지/PDF) 시 prompt 끝에 절대경로 블록을 붙인다.
 
         Claude Code CLI 는 OAuth 구독 모드에서도 prompt 안의 절대경로를 Read
-        도구로 읽어 multimodal 분석을 수행한다. SDK 직호출/API 키 불필요.
+        도구로 읽어 이미지는 시각 분석, PDF 는 본문/페이지 단위로 처리한다.
+        SDK 직호출/API 키 불필요.
         """
-        if not images:
+        if not attachments:
             return prompt
-        paths_block = "\n".join(f"- {img['path']}" for img in images)
+        paths_block = "\n".join(f"- {a['path']} ({a.get('kind', 'file')})" for a in attachments)
+        has_image = any(a.get('kind') == 'image' for a in attachments)
+        has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
+        if has_image and has_pdf:
+            instruction = (
+                "위 절대경로의 파일들을 Read 도구로 읽고 "
+                "(이미지는 시각적으로, PDF는 본문/페이지 단위로) 분석하여 답변하세요."
+            )
+        elif has_pdf:
+            instruction = (
+                "위 절대경로의 PDF 파일을 Read 도구로 읽고 본문 내용을 분석/요약하여 "
+                "답변하세요. 페이지가 10장을 넘으면 pages 인자로 범위를 나눠 읽으세요."
+            )
+        else:
+            instruction = "위 절대경로의 이미지 파일을 Read 도구로 읽고 시각적으로 분석해서 답변하세요."
         return (
             f"{prompt}\n\n"
-            f"[첨부 이미지 ({len(images)}개)]\n{paths_block}\n"
-            "위 절대경로의 이미지 파일을 Read 도구로 읽고 시각적으로 분석해서 답변하세요."
+            f"[첨부 파일 ({len(attachments)}개)]\n{paths_block}\n"
+            f"{instruction}"
         )
 
-    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
-        prompt = self._augment_with_image_paths(prompt, images)
+    async def _run_cli(self, prompt: str, attachments: list[dict] | None = None) -> str:
+        prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -119,11 +134,11 @@ class ClaudeAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, images: list[dict] | None = None) -> str:
+    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
         """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱.
 
-        images 가 있으면 prompt 끝에 절대경로 블록을 붙여 claude code 가
-        Read 도구로 이미지를 읽도록 유도. SDK/API 키 불필요.
+        attachments (이미지/PDF) 가 있으면 prompt 끝에 절대경로 블록을 붙여
+        Claude Code 가 Read 도구로 읽도록 유도. SDK/API 키 불필요.
         """
         from config import CLI_TIMEOUT
         from cancel import register_process, is_cancelled
@@ -132,7 +147,7 @@ class ClaudeAgent(AgentBase):
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
 
-        prompt = self._augment_with_image_paths(prompt, images)
+        prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")

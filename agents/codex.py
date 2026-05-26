@@ -191,25 +191,40 @@ class CodexAgent(AgentBase):
         return ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check"]
 
     @staticmethod
-    def _augment_with_image_note(prompt: str, images: list[dict] | None) -> str:
-        """Codex CLI 에 이미지 첨부 절대경로를 prompt 로 전달.
+    def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
+        """Codex CLI 에 첨부 (이미지/PDF) 절대경로를 prompt 로 전달.
 
-        Codex CLI 는 `--full-auto` (workspace-write 샌드박스) 모드에서 prompt 안의
-        절대경로를 자체 read 도구로 읽어 multimodal 입력으로 처리한다. 이미지
-        분석을 모델이 직접 지원하지 않더라도 OCR/구조 인식 등은 가능.
+        Codex CLI 는 workspace-write 샌드박스에서 prompt 안의 절대경로를 자체
+        read 도구로 읽는다. PDF 는 텍스트 추출이 가능하고, 이미지는 OCR/구조
+        인식 수준으로 처리한다 (모델이 시각 분석을 직접 지원하지 않더라도).
         """
-        if not images:
+        if not attachments:
             return prompt
-        paths_block = "\n".join(f"- {img['path']}" for img in images)
+        paths_block = "\n".join(f"- {a['path']} ({a.get('kind', 'file')})" for a in attachments)
+        has_image = any(a.get('kind') == 'image' for a in attachments)
+        has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
+        if has_image and has_pdf:
+            instruction = (
+                "위 절대경로의 파일들을 read 도구로 읽고 (PDF 는 본문 텍스트, "
+                "이미지는 OCR/구조) 분석한 뒤 답변하세요."
+            )
+        elif has_pdf:
+            instruction = (
+                "위 절대경로의 PDF 를 read 도구로 읽고 본문 내용을 분석/요약하여 답변하세요."
+            )
+        else:
+            instruction = (
+                "위 절대경로의 이미지 파일을 read 도구로 읽고 시각적으로 분석한 뒤 답변하세요. "
+                "이미지를 직접 볼 수 없다면 그 사실을 명시하고 다른 에이전트의 분석 결과를 참고하세요."
+            )
         note = (
-            f"\n\n[첨부 이미지 ({len(images)}개)]\n{paths_block}\n"
-            "위 절대경로의 이미지 파일을 read 도구로 읽고 시각적으로 분석한 뒤 답변하세요. "
-            "이미지를 직접 볼 수 없다면 그 사실을 명시하고 다른 에이전트의 분석 결과를 참고하세요."
+            f"\n\n[첨부 파일 ({len(attachments)}개)]\n{paths_block}\n"
+            f"{instruction}"
         )
         return prompt + note
 
-    async def _run_cli(self, prompt: str, images: list[dict] | None = None) -> str:
-        prompt = self._augment_with_image_note(prompt, images)
+    async def _run_cli(self, prompt: str, attachments: list[dict] | None = None) -> str:
+        prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -233,12 +248,12 @@ class CodexAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt, on_progress=None, timeout=None, images: list[dict] | None = None):
+    async def ask_with_progress(self, prompt, on_progress=None, timeout=None, attachments: list[dict] | None = None):
         """base의 ask_with_progress 호출 후 노이즈 제거. progress 콜백도 정제."""
-        prompt = self._augment_with_image_note(prompt, images)
+        prompt = self._augment_with_attachments(prompt, attachments)
         def _filtered_progress(raw_text):
             if on_progress:
                 on_progress(_clean_codex_output(raw_text, prompt))
-        # images 는 base 호출에 전달하지 않는다 (CodexAgent는 멀티모달 미지원).
+        # attachments 는 base 호출에 전달하지 않는다 (CodexAgent 는 이미 prompt 에 노트로 끼움).
         result = await super().ask_with_progress(prompt, _filtered_progress, timeout)
         return _clean_codex_output(result, prompt)
