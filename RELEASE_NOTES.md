@@ -28,6 +28,27 @@
 | v0.7.3.3 | 2026-05-20 | v0.7.3.2 Codex 교차검증 Block/Major 핫픽스: _run_progress_once 누락 교체 + cancel cleanup |
 | v0.7.4 | 2026-05-26 | PDF 첨부 지원 (이미지에 더해 application/pdf 도 각 CLI read 도구로 직접 처리) + 전체 images → attachments 리네이밍 |
 | v0.7.5 | 2026-05-26 | PDF 첨부 실전 회귀 핫픽스: Gemini workspace 격리 + Codex read 도구 PDF 미지원 → tmp_dir 을 workspace 내부 (.tmp/) 로 + pypdf 텍스트 prompt 인라인 첨부 |
+| v0.7.6 | 2026-05-26 | v0.7.5 자체 핫픽스: slack_bot.py 의 os import 누락으로 PDF/이미지 첨부 시 _runner NameError → 무응답. import os 추가 + 회귀 테스트 |
+
+## v0.7.6 (2026-05-26)
+
+v0.7.5 자체 핫픽스. v0.7.5 commit (a37ae5f) 직후 실전 PDF 첨부 테스트에서 봇이 완전 무응답. bot_output.log 에 `NameError: name 'os' is not defined` 가 `_runner` 라인 173 에서 던져지고 thread 전체가 죽음.
+
+### 회귀 원인
+v0.7.5 에서 `tmp_dir` 을 `<project>/.tmp/` 내부로 옮길 때 `_runner` 안에서 `os.path.join(...)`, `os.makedirs(...)` 를 추가했는데 **모듈 전역에 `import os` 가 없음**. 함수 내부 `import tempfile, shutil` 만 추가하고 `os` 는 빠뜨림. 따라서 첨부 다운로드 진입점이 즉시 NameError 로 죽고 봇이 무응답.
+
+### 수정
+- **[Critical / FE/backend]** `slack_bot.py` 모듈 전역에 `import os` 추가
+- **[Critical / 테스트]** `tests/test_slack_bot.py::test_os_module_imported` 회귀 테스트 추가 (모듈에 `os` attribute 존재 + 진짜 os 모듈인지 검증)
+
+### 영향 범위
+- v0.7.5 commit (a37ae5f) 부터 v0.7.6 fix 까지 약 30분간 모든 첨부 (PDF + 이미지) 메시지가 봇 무응답
+- 첨부 없는 일반 메시지는 정상 동작 (라우팅 흐름이 _runner 진입 전 분기)
+
+### 검증
+- `pytest tests/` 비-라이브 269 passed (기존 268 + 신규 1)
+- `python -c "import slack_bot"` 로 모듈 로드 sanity check 통과
+- 봇 재시작 + 실전 PDF 첨부 테스트 예정
 
 ## v0.7.5 (2026-05-26)
 

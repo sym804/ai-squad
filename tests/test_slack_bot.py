@@ -158,3 +158,15 @@ def test_bot_message_subtype_skipped(slack_bot):
         "bot_id": "B_OTHER",
     }
     assert slack_bot.should_process_event(event, "B_TEST") is False
+
+
+def test_os_module_imported(slack_bot):
+    """slack_bot._runner 가 os.path.join / os.makedirs 를 호출하므로 모듈에 os import 필수.
+
+    v0.7.5 회귀: tmp_dir 을 workspace 내부로 옮길 때 os 호출 추가했지만 모듈
+    전역에 import os 를 빠뜨려, PDF 첨부 시 `NameError: name 'os' is not defined`
+    로 _runner 가 즉시 죽고 봇이 모든 첨부 메시지에 무반응. v0.7.6 핫픽스.
+    """
+    assert hasattr(slack_bot, "os"), "slack_bot 모듈에 os import 누락"
+    import os as _real_os
+    assert slack_bot.os is _real_os
