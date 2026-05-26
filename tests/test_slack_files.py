@@ -177,6 +177,96 @@ def test_mixed_image_and_pdf(slack_files, tmp_dir, monkeypatch):
     assert kinds == ["image", "pdf"]
 
 
+def test_extracted_attachment_has_text_field(slack_files, tmp_dir, monkeypatch):
+    """모든 첨부 dict 는 'text' 필드를 가진다 (이미지는 빈 문자열, PDF 는 추출 결과)."""
+    monkeypatch.setattr(slack_files.requests, "get",
+                        lambda *a, **kw: _make_resp(b"data"))
+    monkeypatch.setattr(slack_files, "extract_pdf_text",
+                        lambda path, **kw: "FAKE_PDF_TEXT")
+    event = _img_event(
+        {"mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 10},
+        {"mimetype": "application/pdf", "url_private": "https://y", "name": "b.pdf", "size": 10},
+    )
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    by_kind = {a["kind"]: a for a in out}
+    assert by_kind["image"]["text"] == ""
+    assert by_kind["pdf"]["text"] == "FAKE_PDF_TEXT"
+
+
+def test_extract_pdf_text_missing_pypdf_returns_empty(slack_files, monkeypatch):
+    """pypdf 미설치 환경에서 텍스트 추출 실패해도 봇이 죽지 않고 빈 문자열 반환."""
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+    def fake_import(name, *a, **kw):
+        if name == "pypdf":
+            raise ImportError("simulated missing")
+        return real_import(name, *a, **kw)
+    monkeypatch.setattr("builtins.__import__", fake_import)
+    assert slack_files.extract_pdf_text("/nonexistent.pdf") == ""
+
+
+def test_extract_pdf_text_truncation(slack_files, monkeypatch):
+    """페이지 텍스트 합산이 max_chars 를 넘으면 잘리고 '생략' 안내가 추가된다."""
+    class _Page:
+        def __init__(self, text):
+            self._text = text
+        def extract_text(self):
+            return self._text
+    class _Reader:
+        def __init__(self, path):
+            self.pages = [_Page("A" * 100) for _ in range(10)]
+    fake_pypdf = type("M", (), {"PdfReader": _Reader})
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_pypdf)
+    out = slack_files.extract_pdf_text("/dummy.pdf", max_chars=250)
+    assert "Page 1" in out
+    assert "Page 3" in out  # Page 3 일부까지 포함 후 잘림
+    assert "생략" in out
+
+
+def test_extract_pdf_text_truncates_inside_large_page(slack_files, monkeypatch):
+    """한 페이지가 max_chars 보다 크면 페이지 안에서도 잘라내서 max_chars 엄수 (v0.7.5 Codex 검증 fix)."""
+    class _Page:
+        def __init__(self, text):
+            self._text = text
+        def extract_text(self):
+            return self._text
+    class _Reader:
+        def __init__(self, path):
+            # 단일 페이지가 1000자 → max_chars 100 을 크게 초과
+            self.pages = [_Page("B" * 1000)]
+    fake_pypdf = type("M", (), {"PdfReader": _Reader})
+    monkeypatch.setitem(__import__("sys").modules, "pypdf", fake_pypdf)
+    out = slack_files.extract_pdf_text("/dummy.pdf", max_chars=100)
+    # 본문 'B' 의 갯수가 max_chars 100 을 넘지 않아야 한다 (페이지 내 잘림 보장)
+    assert out.count("B") <= 100
+    assert "페이지 내 잘림" in out
+
+
+def test_format_pdf_text_inline_empty_inputs(slack_files):
+    """첨부 없음 / PDF 없음 / text 빈 PDF 만 있는 경우 빈 문자열."""
+    assert slack_files.format_pdf_text_inline(None) == ""
+    assert slack_files.format_pdf_text_inline([]) == ""
+    image_only = [{"kind": "image", "name": "a.png", "text": ""}]
+    assert slack_files.format_pdf_text_inline(image_only) == ""
+    pdf_empty_text = [{"kind": "pdf", "name": "b.pdf", "text": ""}]
+    assert slack_files.format_pdf_text_inline(pdf_empty_text) == ""
+
+
+def test_format_pdf_text_inline_multiple_pdfs(slack_files):
+    """PDF 여러 개면 각각 블록으로 합쳐진다."""
+    atts = [
+        {"kind": "pdf", "name": "a.pdf", "text": "AAA"},
+        {"kind": "image", "name": "x.png", "text": ""},
+        {"kind": "pdf", "name": "b.pdf", "text": "BBB"},
+    ]
+    out = slack_files.format_pdf_text_inline(atts)
+    assert "[첨부 PDF 본문: a.pdf]" in out
+    assert "AAA" in out
+    assert "[첨부 PDF 본문: b.pdf]" in out
+    assert "BBB" in out
+    # 이미지는 포함 안 됨
+    assert "x.png" not in out
+
+
 def test_oversize_image_skipped(slack_files, tmp_dir, monkeypatch):
     """size 메타가 상한 초과면 다운로드 시도 없이 스킵."""
     called = {"n": 0}

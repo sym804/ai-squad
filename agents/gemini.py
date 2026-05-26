@@ -202,19 +202,20 @@ class GeminiAgent(AgentBase):
 
     @staticmethod
     def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
-        """첨부 (이미지/PDF) 시 Gemini CLI 의 `@<path>` 첨부 syntax 로 prompt 앞에 추가.
+        """첨부 (이미지/PDF) 시 Gemini CLI 의 `@<path>` syntax + PDF 본문 인라인.
 
-        Gemini CLI 는 OAuth (Google AI Pro) 모드에서도 prompt 안의 `@경로` 토큰을
-        파일 첨부로 인식해 multimodal/문서 입력으로 처리한다. 이미지와 PDF 모두
-        `@` 토큰으로 같은 방식 처리. SDK/API 키 불필요. 경로에 공백이 있으면
-        큰따옴표로 감싸서 한 토큰으로 인식되도록 한다.
+        Gemini CLI 의 read_file 도구는 workspace 외부 경로를 거부한다
+        (v0.7.4 회귀). v0.7.5 부터 임시 디렉토리를 workspace 내부 (`<project>/.tmp/`)
+        에 저장하지만, 추가 안전망으로 PDF 는 pypdf 가 미리 추출한 텍스트를
+        prompt 에 인라인 첨부한다. 이미지는 `@<path>` 토큰으로 그대로 첨부.
 
-        2026-05-09: Gemini-3-flash-preview 가 차트 이미지의 종목을 잘못 식별하는
-        사례가 관찰되어(현대차 차트를 토스로 오인) 분석 전 vision 식별 결과를
-        먼저 명시하도록 가드를 prompt 머리에 추가. 이미지 첨부일 때만 활성화.
+        2026-05-09: Gemini 가 차트 이미지의 종목을 잘못 식별하는 사례로 이미지
+        가드 추가. 가드는 해당 kind 가 있을 때만 활성화.
         """
         if not attachments:
             return prompt
+        from slack_files import format_pdf_text_inline
+        pdf_text = format_pdf_text_inline(attachments)
         ats = " ".join(f'@"{a["path"]}"' for a in attachments)
         has_image = any(a.get('kind') == 'image' for a in attachments)
         has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
@@ -230,13 +231,17 @@ class GeminiAgent(AgentBase):
         if has_pdf:
             guard_lines.append(
                 "[PDF 분석 가드]\n"
-                "PDF 본문에서 답을 도출하세요. 본문 외부 지식으로 추정/보완하지 말고, "
-                "본문에 없으면 '문서에 명시 없음' 이라고 답하세요."
+                "PDF 본문은 위에 인라인으로 첨부되어 있습니다. 본문에서 답을 도출하고, "
+                "본문에 없으면 '문서에 명시 없음' 이라고 답하세요. 외부 지식으로 추정/보완 금지. "
+                "본문이 부족하면 `@<path>` 로 read_file 도구로 직접 읽으세요."
             )
         guard = "\n\n".join(guard_lines)
+        head = ats
+        if pdf_text:
+            head = f"{head}\n\n{pdf_text}"
         if guard:
-            return f"{ats}\n\n{guard}\n\n{prompt}"
-        return f"{ats}\n\n{prompt}"
+            return f"{head}\n\n{guard}\n\n{prompt}"
+        return f"{head}\n\n{prompt}"
 
     async def _run_cli(self, prompt: str, attachments: list[dict] | None = None) -> str:
         prompt = self._augment_with_attachments(prompt, attachments)

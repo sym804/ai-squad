@@ -72,31 +72,37 @@ class ClaudeAgent(AgentBase):
 
     @staticmethod
     def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
-        """첨부 (이미지/PDF) 시 prompt 끝에 절대경로 블록을 붙인다.
+        """첨부 (이미지/PDF) 시 prompt 끝에 PDF 본문 + 절대경로 블록을 붙인다.
 
-        Claude Code CLI 는 OAuth 구독 모드에서도 prompt 안의 절대경로를 Read
-        도구로 읽어 이미지는 시각 분석, PDF 는 본문/페이지 단위로 처리한다.
+        Claude Code CLI 는 prompt 안의 절대경로를 Read 도구로 읽어 이미지는
+        시각 분석, PDF 는 본문/페이지 단위로 처리한다. PDF 는 추가로 pypdf 추출
+        텍스트를 prompt 에 인라인 첨부 (Read 도구 호출 비용 절감 + fallback).
         SDK 직호출/API 키 불필요.
         """
         if not attachments:
             return prompt
+        from slack_files import format_pdf_text_inline
+        pdf_text = format_pdf_text_inline(attachments)
         paths_block = "\n".join(f"- {a['path']} ({a.get('kind', 'file')})" for a in attachments)
         has_image = any(a.get('kind') == 'image' for a in attachments)
         has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
         if has_image and has_pdf:
             instruction = (
                 "위 절대경로의 파일들을 Read 도구로 읽고 "
-                "(이미지는 시각적으로, PDF는 본문/페이지 단위로) 분석하여 답변하세요."
+                "(이미지는 시각적으로, PDF는 본문/페이지 단위로) 분석하세요. "
+                "PDF 본문은 이미 위에 인라인으로 첨부되어 있어 Read 호출 없이도 분석 가능합니다."
             )
         elif has_pdf:
             instruction = (
-                "위 절대경로의 PDF 파일을 Read 도구로 읽고 본문 내용을 분석/요약하여 "
-                "답변하세요. 페이지가 10장을 넘으면 pages 인자로 범위를 나눠 읽으세요."
+                "위 PDF 본문 (인라인 첨부) 을 직접 분석/요약하여 답변하세요. "
+                "필요 시 절대경로를 Read 도구로 직접 읽어 표/이미지/잘린 페이지를 확인하세요."
             )
         else:
             instruction = "위 절대경로의 이미지 파일을 Read 도구로 읽고 시각적으로 분석해서 답변하세요."
+        text_section = (pdf_text + "\n\n") if pdf_text else ""
         return (
             f"{prompt}\n\n"
+            f"{text_section}"
             f"[첨부 파일 ({len(attachments)}개)]\n{paths_block}\n"
             f"{instruction}"
         )

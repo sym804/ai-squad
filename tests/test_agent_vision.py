@@ -17,8 +17,8 @@ def _img(name="chart.png", mime="image/png", path=r"C:\\tmp\\chart.png"):
     return {"name": name, "mime": mime, "kind": "image", "path": path}
 
 
-def _pdf(name="report.pdf", path=r"C:\\tmp\\report.pdf"):
-    return {"name": name, "mime": "application/pdf", "kind": "pdf", "path": path}
+def _pdf(name="report.pdf", path=r"C:\\tmp\\report.pdf", text=""):
+    return {"name": name, "mime": "application/pdf", "kind": "pdf", "path": path, "text": text}
 
 
 # ── ClaudeAgent ────────────────────────────────────────────────────────
@@ -48,14 +48,23 @@ class TestClaudeImageAugment:
         assert r"C:\\imgs\\b.jpg" in out
 
     def test_pdf_attachment_uses_pdf_instruction(self):
-        """PDF 첨부 시 안내 문구가 PDF 전용 (Read + 페이지 분할) 으로 바뀐다."""
+        """PDF 첨부 시 안내 문구가 PDF 전용 (인라인 본문 직접 분석 + Read fallback) 으로 바뀐다."""
         out = ClaudeAgent._augment_with_attachments(
             "이 PDF 요약", [_pdf(path=r"C:\\docs\\report.pdf")]
         )
         assert r"C:\\docs\\report.pdf" in out
         assert "PDF" in out
-        assert "Read" in out
-        assert "pages" in out  # 페이지 분할 안내 명시
+        assert "인라인" in out  # 인라인 첨부 안내 명시
+
+    def test_pdf_text_inlined_in_prompt(self):
+        """PDF 의 text 필드 내용이 prompt 본문에 그대로 인라인 첨부된다 (v0.7.5)."""
+        out = ClaudeAgent._augment_with_attachments(
+            "요약해줘",
+            [_pdf(path=r"C:\\docs\\report.pdf", text="--- Page 1 ---\n핵심 보장 내용 XYZ")]
+        )
+        assert "[첨부 PDF 본문: report.pdf]" in out
+        assert "핵심 보장 내용 XYZ" in out
+        assert "요약해줘" in out
 
     def test_mixed_image_and_pdf_attachment(self):
         """이미지 + PDF 혼합 첨부 시 두 종류 모두 안내."""
@@ -162,6 +171,21 @@ class TestGeminiImageAugment:
         # 이미지가 아니므로 이미지 가드는 들어가지 않아야 한다
         assert "종목명/티커" not in out
 
+    def test_pdf_text_inlined_before_guard(self):
+        """PDF text 가 있으면 `@<path>` 직후, 가드 앞에 인라인 첨부 (v0.7.5)."""
+        out = GeminiAgent._augment_with_attachments(
+            "요약",
+            [_pdf(name="r.pdf", path=r"C:\\docs\\r.pdf", text="페이지 본문 ABC")]
+        )
+        assert "[첨부 PDF 본문: r.pdf]" in out
+        assert "페이지 본문 ABC" in out
+        # 순서: @<path> → text → guard → prompt
+        idx_at = out.index('@"')
+        idx_text = out.index("[첨부 PDF 본문:")
+        idx_guard = out.index("PDF 분석 가드")
+        idx_prompt = out.index("요약")
+        assert idx_at < idx_text < idx_guard < idx_prompt
+
     def test_image_only_keeps_image_guard(self):
         """이미지만 첨부 시 기존 이미지 가드 유지 (회귀)."""
         out = GeminiAgent._augment_with_attachments(
@@ -198,13 +222,24 @@ class TestCodexImageNote:
         assert r"C:\\imgs\\b.jpg" in out
 
     def test_pdf_attachment_uses_pdf_instruction(self):
-        """Codex PDF 첨부: read 도구로 PDF 텍스트 추출 안내."""
+        """Codex PDF 첨부: 인라인 본문 우선 안내 + pdftotext 시도 금지 명시."""
         out = CodexAgent._augment_with_attachments(
             "이 PDF 요약", [_pdf(path=r"C:\\docs\\report.pdf")]
         )
         assert r"C:\\docs\\report.pdf" in out
         assert "PDF" in out
-        assert "read" in out.lower()
+        assert "인라인" in out
+        assert "pdftotext" in out  # 시도 금지 명시
+
+    def test_pdf_text_inlined_in_note(self):
+        """Codex 도 PDF text 가 있으면 prompt 끝 note 안에 인라인 첨부 (v0.7.5)."""
+        out = CodexAgent._augment_with_attachments(
+            "요약",
+            [_pdf(name="r.pdf", path=r"C:\\docs\\r.pdf", text="중요 본문 데이터")]
+        )
+        assert "[첨부 PDF 본문: r.pdf]" in out
+        assert "중요 본문 데이터" in out
+        assert out.startswith("요약")  # user prompt 가 먼저
 
     def test_uses_workspace_write_sandbox_not_full_auto(self):
         """`--full-auto` deprecated. `-s workspace-write` 로 교체해서 stdout

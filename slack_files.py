@@ -31,6 +31,63 @@ import requests
 
 logger = logging.getLogger(__name__)
 
+
+# PDF 텍스트 인라인 상한. 너무 길면 prompt 토큰 폭증 + 모델 컨텍스트 압박.
+# 일반 보험제안서/리포트 (10-30 페이지) 는 50-150 KB 텍스트라 100KB 가 무난.
+# 초과 분량은 잘라내고 "절대경로로 추가 확인 권장" 안내를 끝에 붙인다.
+PDF_TEXT_MAX_CHARS = 100_000
+
+
+def extract_pdf_text(path: str, *, max_chars: int = PDF_TEXT_MAX_CHARS) -> str:
+    """pypdf 로 PDF 텍스트 추출. 실패하거나 pypdf 미설치 시 빈 문자열.
+
+    각 페이지를 `--- Page N ---` 헤더와 함께 합치고, max_chars 초과 시 잘라낸다.
+    호출자(`_augment_with_attachments`) 가 prompt 에 인라인으로 끼워 모든 CLI 가
+    workspace 격리(Gemini) 나 read 도구 PDF 미지원(Codex) 과 무관하게 본문에
+    접근하도록 한다.
+    """
+    try:
+        from pypdf import PdfReader
+    except ImportError:
+        logger.warning("[slack_files] pypdf 미설치, PDF 텍스트 인라인 스킵")
+        return ""
+    try:
+        reader = PdfReader(path)
+    except Exception as exc:
+        logger.warning("[slack_files] pypdf 로드 실패 %s: %s", path, exc)
+        return ""
+    chunks: list[str] = []
+    total = 0
+    truncated_at: int | None = None
+    for i, page in enumerate(reader.pages):
+        try:
+            text = (page.extract_text() or "").strip()
+        except Exception:
+            text = ""
+        if not text:
+            continue
+        remaining = max_chars - total
+        if len(text) > remaining:
+            # 한 페이지가 남은 예산보다 크면 페이지 안에서도 잘라내서 max_chars 엄수.
+            # (Codex 검증 발견: 기존 페이지 단위 break 는 큰 단일 페이지 PDF 에서
+            # max_chars 를 크게 초과할 수 있었음)
+            text = text[:remaining].rstrip() + " ...[페이지 내 잘림]"
+            chunks.append(f"--- Page {i+1} ---\n{text}")
+            truncated_at = i + 1
+            break
+        chunks.append(f"--- Page {i+1} ---\n{text}")
+        total += len(text)
+        if total >= max_chars:
+            truncated_at = i + 1
+            break
+    body = "\n\n".join(chunks)
+    if truncated_at is not None and truncated_at < len(reader.pages):
+        body += (
+            f"\n\n... [Page {truncated_at+1} 부터 {len(reader.pages)} 까지 생략, "
+            f"필요 시 절대경로의 PDF 를 직접 읽어 확인하세요]"
+        )
+    return body
+
 # 종류별 크기 상한. 이미지는 대개 작고, PDF 는 리포트/제안서 등으로 더 큼.
 # 비정상 거대 파일이 들어오면 한 호출에서 몇 분간 다운로드를 잡고 있을 수
 # 있어 안전선을 둔다.
@@ -59,6 +116,28 @@ def _safe_basename(name: str | None, fallback: str) -> str:
     base = os.path.basename(name)
     base = re.sub(r"[^A-Za-z0-9._-]+", "_", base)
     return base or fallback
+
+
+def format_pdf_text_inline(attachments: list[dict] | None) -> str:
+    """attachments 중 PDF 의 추출 텍스트를 prompt 삽입용 블록 문자열로 포맷.
+
+    빈 텍스트(pypdf 추출 실패) 는 스킵. PDF 없거나 모두 추출 실패면 빈 문자열.
+    호출자(_augment_with_attachments) 가 prompt 의 적절한 위치에 삽입한다.
+    각 CLI 의 read 도구가 PDF 를 못 읽거나 workspace 격리로 차단돼도 본문에
+    접근할 수 있게 하는 fallback 역할.
+    """
+    if not attachments:
+        return ""
+    blocks: list[str] = []
+    for a in attachments:
+        if a.get("kind") != "pdf":
+            continue
+        text = a.get("text") or ""
+        if not text:
+            continue
+        name = a.get("name") or "attachment.pdf"
+        blocks.append(f"[첨부 PDF 본문: {name}]\n{text}\n[/첨부 PDF 본문]")
+    return "\n\n".join(blocks)
 
 
 def extract_attachments(event: dict, slack_token: str, tmp_dir: str) -> list[dict]:
@@ -116,11 +195,14 @@ def extract_attachments(event: dict, slack_token: str, tmp_dir: str) -> list[dic
                 path = path + ext
             with open(path, "wb") as fh:
                 fh.write(content)
+            abs_path = os.path.abspath(path)
+            text = extract_pdf_text(abs_path) if kind == "pdf" else ""
             out.append({
                 "name": f.get("name") or fallback,
                 "mime": mime,
                 "kind": kind,
-                "path": os.path.abspath(path),
+                "path": abs_path,
+                "text": text,
             })
         except Exception as exc:
             logger.warning(

@@ -4,6 +4,8 @@ __pycache__/
 .heartbeat
 .watchdog.lock
 .active_threads.json
+.tmp/
+_append_issue.py
 *.log
 send_test.py
 

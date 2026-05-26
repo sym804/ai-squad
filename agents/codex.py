@@ -192,32 +192,39 @@ class CodexAgent(AgentBase):
 
     @staticmethod
     def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
-        """Codex CLI 에 첨부 (이미지/PDF) 절대경로를 prompt 로 전달.
+        """Codex CLI 에 첨부 (이미지/PDF) 를 prompt 로 전달.
 
-        Codex CLI 는 workspace-write 샌드박스에서 prompt 안의 절대경로를 자체
-        read 도구로 읽는다. PDF 는 텍스트 추출이 가능하고, 이미지는 OCR/구조
-        인식 수준으로 처리한다 (모델이 시각 분석을 직접 지원하지 않더라도).
+        Codex CLI 의 read 도구는 PDF 를 native 로 읽지 못하므로 (v0.7.4 회귀:
+        pdftotext 없으면 시행착오 발생), PDF 는 Python pypdf 가 미리 추출한
+        텍스트를 prompt 에 인라인으로 직접 첨부한다. 이미지는 read 도구로
+        OCR/구조 인식 수준만 가능 (시각 분석은 불완전).
         """
         if not attachments:
             return prompt
+        from slack_files import format_pdf_text_inline
+        pdf_text = format_pdf_text_inline(attachments)
         paths_block = "\n".join(f"- {a['path']} ({a.get('kind', 'file')})" for a in attachments)
         has_image = any(a.get('kind') == 'image' for a in attachments)
         has_pdf = any(a.get('kind') == 'pdf' for a in attachments)
         if has_image and has_pdf:
             instruction = (
-                "위 절대경로의 파일들을 read 도구로 읽고 (PDF 는 본문 텍스트, "
-                "이미지는 OCR/구조) 분석한 뒤 답변하세요."
+                "위 PDF 본문 (인라인 첨부) 을 직접 분석하고, 이미지는 절대경로를 "
+                "read 도구로 읽어 OCR/구조 수준에서 분석한 뒤 답변하세요."
             )
         elif has_pdf:
             instruction = (
-                "위 절대경로의 PDF 를 read 도구로 읽고 본문 내용을 분석/요약하여 답변하세요."
+                "위 PDF 본문 (인라인 첨부) 을 직접 분석/요약하여 답변하세요. "
+                "read 도구로 PDF 를 다시 읽거나 pdftotext 를 실행하려 시도하지 마세요 "
+                "(설치되어 있지 않을 수 있음). 본문이 부족하면 그 사실을 명시하세요."
             )
         else:
             instruction = (
                 "위 절대경로의 이미지 파일을 read 도구로 읽고 시각적으로 분석한 뒤 답변하세요. "
                 "이미지를 직접 볼 수 없다면 그 사실을 명시하고 다른 에이전트의 분석 결과를 참고하세요."
             )
+        text_section = (f"\n\n{pdf_text}") if pdf_text else ""
         note = (
+            f"{text_section}"
             f"\n\n[첨부 파일 ({len(attachments)}개)]\n{paths_block}\n"
             f"{instruction}"
         )

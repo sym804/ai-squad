@@ -167,7 +167,12 @@ def handle_message(event, say, client):
         """
         def _runner():
             import tempfile, shutil
-            tmp_dir = tempfile.mkdtemp(prefix=f"slack_attachments_{target_ts}_")
+            # tmp_dir 을 workspace 내부 (`<project>/.tmp/`) 에 둔다. Gemini CLI 의
+            # read_file 도구가 workspace 외부 경로를 거부하기 때문 (v0.7.4 회귀).
+            # .tmp/ 는 .gitignore 에 추가됨.
+            base_tmp = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".tmp")
+            os.makedirs(base_tmp, exist_ok=True)
+            tmp_dir = tempfile.mkdtemp(prefix=f"slack_attachments_{target_ts}_", dir=base_tmp)
             try:
                 attachments = extract_attachments(event, SLACK_BOT_TOKEN, tmp_dir)
                 if attachments:

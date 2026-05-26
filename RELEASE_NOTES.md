@@ -27,6 +27,41 @@
 | v0.7.3.2 | 2026-05-20 | Gemini 이벤트 루프 회귀(Semaphore 멀티-루프 바인딩) 핫픽스 + 외부 timeout 가드 |
 | v0.7.3.3 | 2026-05-20 | v0.7.3.2 Codex 교차검증 Block/Major 핫픽스: _run_progress_once 누락 교체 + cancel cleanup |
 | v0.7.4 | 2026-05-26 | PDF 첨부 지원 (이미지에 더해 application/pdf 도 각 CLI read 도구로 직접 처리) + 전체 images → attachments 리네이밍 |
+| v0.7.5 | 2026-05-26 | PDF 첨부 실전 회귀 핫픽스: Gemini workspace 격리 + Codex read 도구 PDF 미지원 → tmp_dir 을 workspace 내부 (.tmp/) 로 + pypdf 텍스트 prompt 인라인 첨부 |
+
+## v0.7.5 (2026-05-26)
+
+v0.7.4 출시 직후 실전 PDF 첨부에서 발견된 회귀 2건 핫픽스. 실제 슬랙 스레드(`1779791375.628899`) 에서 Claude 만 정상 동작했고 Gemini/Codex 는 PDF 분석 실패.
+
+### 회귀 진단
+- **Gemini (실패)**: `read_file` 도구가 workspace 외부 경로를 거부. 임시 디렉토리가 `C:\Users\ymseo\AppData\Local\Temp\slack_attachments_*` 라 "Path not in workspace" 에러로 PDF 자체 못 읽음.
+- **Codex (부분 성공)**: `read` 도구가 PDF native 미지원. `pdftotext` (poppler) 시도 → 미설치 실패 → `pypdf` import 시도 → 일부 페이지만 추출 후 끝까지 가지 못함.
+- **Claude (정상)**: Read 도구가 PDF native 지원이라 무관하게 동작.
+
+### 수정
+- **[Minor / FE/backend]** `slack_bot.py:_runner` 의 tmp_dir 을 `<project>/.tmp/` 내부로 변경 (`tempfile.mkdtemp(dir=base_tmp)`). Gemini workspace 격리 회피. `.tmp/` 는 `.gitignore` 추가.
+- **[Minor / FE/backend]** `slack_files.py` 에 `extract_pdf_text(path, max_chars=100_000)` 헬퍼 + `format_pdf_text_inline(attachments)` 헬퍼 추가. `extract_attachments` 가 PDF 다운로드 직후 pypdf 로 텍스트 추출해 반환 dict 의 `text` 필드에 채움. 100KB 초과 시 잘라내고 "절대경로로 추가 확인 권장" 안내.
+- **[Minor / FE/backend]** 각 에이전트의 `_augment_with_attachments` 가 PDF text 가 있으면 prompt 에 인라인 블록 (`[첨부 PDF 본문: name]\n<text>\n[/첨부 PDF 본문]`) 으로 첨부:
+  - Claude: prompt 끝 [첨부 파일] 블록 직전, instruction 도 "인라인 본문 직접 분석 + Read fallback" 으로 변경
+  - Codex: prompt 끝 note 안, instruction 에 "`pdftotext` 시도 금지" + "read 도구로 PDF 다시 읽지 말 것" 명시 (v0.7.4 시행착오 차단)
+  - Gemini: `@<path>` 직후 + PDF 가드 앞 (순서: @path → text → guard → prompt)
+- **[Minor / 의존성]** `requirements.txt` 에 `pypdf>=4.0` 추가 (개발 환경 확인 결과 pypdf 6.9.2 이미 설치되어 있어 즉시 적용 가능).
+
+### 효과
+- Gemini: workspace 내부 경로 + 인라인 본문 fallback 으로 read_file 실패해도 분석 가능
+- Codex: pdftotext/pypdf 시도 없이 prompt 안의 텍스트 바로 사용 (시행착오 시간 단축 + 일관성)
+- Claude: 기존 동작 유지 + 인라인 본문 있어서 Read 호출 비용 절감 (선택적)
+
+### 테스트
+- `tests/test_slack_files.py`: 신규 5건 (text 필드 회귀, pypdf 미설치 fallback, truncation, format_pdf_text_inline 헬퍼 2건)
+- `tests/test_agent_vision.py`: 각 에이전트 PDF text 인라인 회귀 3건 + 기존 PDF 안내 문구 assert 갱신
+- 전체 비-라이브 **267 passed** (기존 259 + 신규 8)
+
+### 검증
+- `pytest tests/` 비-라이브 268/268 PASS (truncation fix 회귀 1건 추가)
+- Codex 교차 검증 (`bgks61h3e`): 진행 중 정지 (1시간 무응답), **발견된 1건 fix 적용 후 마감**:
+  - **Minor**: `extract_pdf_text` 의 truncation 이 페이지 단위 break 라 단일 큰 페이지 PDF 에서 `max_chars` 를 크게 초과 가능 → 페이지 안에서도 잘라내도록 수정 + 회귀 테스트 (`test_extract_pdf_text_truncates_inside_large_page`) 추가
+- 수정 후 `slack_files` 단위 17/17 PASS, 전체 268 PASS
 
 ## v0.7.4 (2026-05-26)
 
