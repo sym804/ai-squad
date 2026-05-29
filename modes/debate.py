@@ -527,7 +527,9 @@ class DebateMode:
     def _build_followup_prompt(self, original_topic: str, question: str, history: list[dict], round_num: int, issue_note: str | None = None) -> str:
         """추가 토론 프롬프트. followup의 [이전 토론 내용]은 실제 과거 발언이므로 라운드 1부터 노출.
         단, 이번 추가 토론 **현재 라운드**의 상대 발언은 아직 없으므로 추측 금지."""
-        recent = history[-15:] if len(history) > 15 else history
+        # 15 -> 30 으로 확대. 3 에이전트 × 3 라운드 + 사용자/합의문이면
+        # 15 윈도우는 라운드 2~3 만에 초반 메시지(첫 이미지 등)가 잘림.
+        recent = history[-30:] if len(history) > 30 else history
         parts = [
             SYSTEM_PROMPT,
             f"\n[원래 토론 주제] {original_topic}",
@@ -537,7 +539,8 @@ class DebateMode:
         if recent:
             parts.append("\n[이전 토론 내용]")
             for entry in recent:
-                parts.append(f"- {entry['name']}: {entry['text'][:300]}")
+                # 300자 -> 1500자. _fetch_thread_history 저장본과 일관성 유지.
+                parts.append(f"- {entry['name']}: {entry['text'][:1500]}")
 
         if round_num == 1:
             parts.append(
@@ -588,21 +591,42 @@ class DebateMode:
                 if msg.get("ts") == thread_ts:
                     continue
                 text = msg.get("text", "").strip()
+                files = msg.get("files", []) or []
+
+                # 첨부파일 메타를 텍스트 마커로 보존 (사용자가 같은 이미지를
+                # 여러 번 올려도 다음 라운드 LLM 입력에서 사라지지 않게).
+                if files:
+                    markers = []
+                    for f in files:
+                        fname = f.get("name") or f.get("title") or "?"
+                        ftype = f.get("mimetype") or f.get("filetype") or ""
+                        markers.append(f"[첨부: {fname} ({ftype})]")
+                    text = (text + "\n" + "\n".join(markers)) if text else "\n".join(markers)
+
                 if not text:
                     continue
+
                 if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
-                    # 봇 메시지에서 에이전트 이름 추출 (primary + backup)
                     all_agents = list(self.agents) + list(self._backup_map.values())
+                    name = None
                     for agent in all_agents:
                         if text.startswith(f"{agent.emoji} *[{agent.name}]*"):
                             name = agent.name
                             text = text.split("\n", 1)[-1] if "\n" in text else text
                             break
-                    else:
-                        continue
+                    if name is None:
+                        # 합의문/결론 메시지는 history에 포함 (이게 빠지면
+                        # 에이전트가 자기 직전 합의를 부정하는 현상이 생김).
+                        # 진행상태/생각중 같은 잡음 메시지는 제외.
+                        if "🏛️" in text or "💡 *합의" in text or "*합의된 답변" in text:
+                            name = "이전 라운드 합의"
+                        else:
+                            continue
                 else:
                     name = "사용자"
-                history.append({"name": name, "text": text[:300]})
+                # 300자 절단을 1500자로 완화. 합의문이 머리만 남아 본문이
+                # 사라지던 문제 방지.
+                history.append({"name": name, "text": text[:1500]})
             return history
         except Exception as e:
             print(f"[SLACK ERROR] fetch thread history: {e}")
@@ -947,17 +971,51 @@ class DebateMode:
             "- 500자 이내"
         )
 
-        agent = self._select_final_answer_agent()
-        if agent is None:
+        # 통합문 생성: 교체 안 된 원본 에이전트 우선, 실패 시 다음 후보, 최종 결정론적 머지.
+        # 핵심: agent.ask() 는 API 5xx/과부하를 예외가 아니라 "API Error: 500 ..." 문자열로
+        # 정상 반환한다(try/except 로 못 잡음). 그래서 반환값이 에러/빈 응답인지 직접 검사해야
+        # 그 에러 문자열이 "💡 합의된 답변" 으로 방송되는 회귀(thread 1780056574)를 막을 수 있다.
+        candidates = [
+            a for a in self.agents
+            if a.name not in self._replaced and not a.name.endswith("-B")
+        ]
+        if not candidates:
             # 원본 전멸 → LLM 호출 없이 결정론적 머지
             return self._deterministic_merge(round_consensuses)
-        try:
-            result = await agent.ask(prompt)
-            # CONSENSUS 태그 제거
-            return _strip_consensus(result)
-        except Exception as e:
-            # 실패 시 fallback: 각 에이전트 요약 나열
-            return self._deterministic_merge(round_consensuses)
+
+        for idx, agent in enumerate(candidates):
+            # 첫 후보는 transient(5xx/과부하) 에러 시 1회 재시도 (인프라 에러 최대 1회 규칙).
+            attempts = 2 if idx == 0 else 1
+            for _ in range(attempts):
+                try:
+                    result = await agent.ask(prompt)
+                except Exception:
+                    break  # 이 후보 포기 → 다음 후보
+                answer = _strip_consensus(result).strip()
+                if not self._is_bad_final_answer(agent, answer):
+                    return answer
+                # 에러/빈 응답 → (남은 시도 있으면) 재시도, 없으면 다음 후보
+
+        # 모든 후보 실패 → 결정론적 머지로 폴백 (에러 문자열 방송 방지)
+        return self._deterministic_merge(round_consensuses)
+
+    @staticmethod
+    def _is_bad_final_answer(agent, answer: str) -> bool:
+        """합의문으로 방송하면 안 되는 응답인지 판정.
+
+        - 빈 응답
+        - fatal error(5xx/과부하/쿼터/rate limit) 가 _is_fatal_error 로 감지된 경우
+        - 타임아웃/취소 등 에이전트 내부 폴백 메시지(`[Name] ...`)
+        """
+        if not answer:
+            return True
+        if getattr(agent, "has_error", False) or getattr(agent, "timed_out", False):
+            return True
+        # "[Claude] 오류: ...", "[Codex] 응답 시간 초과 (...)", "[Gemini] 작업 취소됨" 등
+        # 에이전트 내부 상태 메시지는 답변이 아니다.
+        if answer.startswith(f"[{agent.name}]"):
+            return True
+        return False
 
     def _fetch_user_messages(self, channel: str, thread_ts: str) -> list[str]:
         """스레드에서 사용자(봇이 아닌)의 메시지를 가져온다."""

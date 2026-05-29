@@ -21,6 +21,9 @@ _FATAL_SUBSTRINGS = (
     # Anthropic
     "rate_limit_error",
     "anthropic.ratelimiterror",
+    # 5xx 서버 에러 / 과부하 (Claude Code CLI 가 API 500/529 hit 시 result 로 내보냄)
+    "internal server error",
+    "overloaded_error",
     # 기타
     "unexpected critical error",
 )
@@ -32,7 +35,17 @@ _FATAL_SUBSTRINGS = (
 _FATAL_REGEX = re.compile(
     r"\b(?:error|status|http|code|rate[\s\-]?limit|ratelimiterror|resourceexhausted)"
     r"[\s:=\-\"']{0,6}429\b"
-    r"|\b429[\s:,=\-\"']{1,4}(?:too\s+many|rate[\s\-]?limit|quota)\b",
+    r"|\b429[\s:,=\-\"']{1,4}(?:too\s+many|rate[\s\-]?limit|quota)\b"
+    # 5xx 서버 에러: context 단어(error/status/code) 뒤 5xx 만 매칭.
+    # `약 500조`, `500자 이내`, `목표가 529,000원`, `handler.py:500` 등에는
+    # 앞에 anchor 단어가 없으므로 오탐하지 않는다.
+    r"|\b(?:error|status|code)[\s:=\-\"']{0,6}5\d\d\b"
+    # "API Error: 500" / "APIError 500" (error 가 단어경계 밖이라 위 alt 가 놓침)
+    r"|\bapi\s?error[\s:=\-\"']{0,6}5\d\d\b"
+    # "statusCode: 500"
+    r"|\bstatus\s?code[\s:=\-\"']{0,6}5\d\d\b"
+    # "HTTP 502" / "HTTP/1.1 503" (선택적 버전 토큰 허용)
+    r"|\bhttp(?:/[\d.]+)?[\s:=\-\"']{0,4}5\d\d\b",
     re.IGNORECASE,
 )
 

@@ -134,3 +134,99 @@ class TestBuildConclusion:
         result = DebateMode._build_conclusion("라운드 도달", 10, "주제", consensuses)
         assert "💡 *결론:*" not in result
         assert "A: 반대" in result
+
+
+# ── _generate_final_answer: 합의문 생성 시 에이전트 에러 방어 ────
+# 회귀: Slack thread 1780056574 - 합의문 생성 에이전트(Claude)가 API 500 을
+# 맞으면 CLI 가 "API Error: 500 ..." 를 result 로 정상 반환 → 예외가 안 나서
+# 그 에러 문자열이 그대로 "💡 합의된 답변" 으로 방송됨. 방어 필요.
+
+import pytest
+from agents.base import AgentBase
+
+
+class _StubAgent(AgentBase):
+    """ask() 반환값을 시퀀스로 제어하는 테스트용 에이전트."""
+
+    def __init__(self, name, emoji, responses):
+        self.name = name
+        self.emoji = emoji
+        self.base_family = name.lower()
+        self._responses = list(responses)
+        self._calls = 0
+
+    async def _run_cli(self, prompt, attachments=None):
+        i = min(self._calls, len(self._responses) - 1)
+        self._calls += 1
+        return self._responses[i]
+
+
+def _make_debate():
+    d = DebateMode(slack_client=None)
+    return d
+
+
+def _consensuses():
+    return [
+        {"agent_name": "Claude", "agent_emoji": "🟠",
+         "consensus": {"agree": True, "summary": "삼성전자 코스피 비중은 2020년 25%대가 정점"}},
+        {"agent_name": "Codex", "agent_emoji": "🟢",
+         "consensus": {"agree": True, "summary": "정확값은 KRX 연말 기준으로 산출"}},
+    ]
+
+
+class TestGenerateFinalAnswerErrorGuard:
+    @pytest.mark.asyncio
+    async def test_api_500_not_broadcast_as_answer(self):
+        """합의문 생성 에이전트가 500 만 계속 내면 에러 문자열이 아니라 폴백 머지."""
+        err = ("API Error: 500 Internal server error. This is a server-side issue, "
+               "usually temporary - try again in a moment.")
+        d = _make_debate()
+        # 모든 후보가 500 만 반환
+        d.agents = [
+            _StubAgent("Claude", "🟠", [err]),
+            _StubAgent("Codex", "🟢", [err]),
+            _StubAgent("Gemini", "🔵", [err]),
+        ]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert "API Error: 500" not in result
+        assert "Internal server error" not in result
+        # 결정론적 머지로 폴백 → 각 에이전트 summary 포함
+        assert "삼성전자 코스피 비중" in result
+
+    @pytest.mark.asyncio
+    async def test_transient_500_then_retry_succeeds(self):
+        """첫 후보가 500 후 재시도에서 정상 답변을 내면 그 답변을 사용 (인프라 에러 1회 재시도)."""
+        err = "API Error: 500 Internal server error."
+        good = "삼성전자 코스피 시총 비중은 1990년대 5% 미만에서 2020년 약 25%까지 상승했습니다."
+        d = _make_debate()
+        d.agents = [
+            _StubAgent("Claude", "🟠", [err, good]),
+            _StubAgent("Codex", "🟢", ["사용 안 됨"]),
+            _StubAgent("Gemini", "🔵", ["사용 안 됨"]),
+        ]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert result == good
+
+    @pytest.mark.asyncio
+    async def test_first_agent_dead_second_succeeds(self):
+        """첫 후보가 재시도까지 실패하면 다음 후보로 폴백."""
+        err = "API Error: 503 Service Unavailable"
+        good = "통합 답변: 핵심 추이 요약입니다."
+        d = _make_debate()
+        d.agents = [
+            _StubAgent("Claude", "🟠", [err, err]),
+            _StubAgent("Codex", "🟢", [good]),
+            _StubAgent("Gemini", "🔵", ["사용 안 됨"]),
+        ]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert result == good
+
+    @pytest.mark.asyncio
+    async def test_normal_answer_passthrough(self):
+        """정상 답변은 그대로 반환 (CONSENSUS 태그만 제거)."""
+        answer = '통합 답변 본문.<!--CONSENSUS:{"agree":true,"summary":"x"}-->'
+        d = _make_debate()
+        d.agents = [_StubAgent("Claude", "🟠", [answer])]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert result == "통합 답변 본문."

@@ -29,6 +29,24 @@
 | v0.7.4 | 2026-05-26 | PDF 첨부 지원 (이미지에 더해 application/pdf 도 각 CLI read 도구로 직접 처리) + 전체 images → attachments 리네이밍 |
 | v0.7.5 | 2026-05-26 | PDF 첨부 실전 회귀 핫픽스: Gemini workspace 격리 + Codex read 도구 PDF 미지원 → tmp_dir 을 workspace 내부 (.tmp/) 로 + pypdf 텍스트 prompt 인라인 첨부 |
 | v0.7.6 | 2026-05-26 | v0.7.5 자체 핫픽스: slack_bot.py 의 os import 누락으로 PDF/이미지 첨부 시 _runner NameError → 무응답. import os 추가 + 회귀 테스트 |
+| v0.7.7 | 2026-05-29 | 합의된 답변이 "API Error: 500" 로 방송되는 회귀 수정: 5xx/과부하 fatal 감지 추가 + 통합문 생성 에러 가드(재시도/폴백) |
+
+## v0.7.7 (2026-05-29)
+
+토론 종료 시 `💡 *합의된 답변:*` 자리에 모델 답변 대신 `API Error: 500 Internal server error. ...` 라는 에러 문구가 그대로 방송되는 회귀 수정. (Slack thread 1780056574)
+
+### 발생 원인
+합의문은 `_generate_final_answer()` 가 통합문 생성 에이전트(교체 안 된 원본, 보통 Claude)에게 `agent.ask()` 로 생성시킨다. 그런데 Claude Code CLI 는 API 5xx 를 맞으면 **예외를 던지지 않고** `--output-format json` 의 `result` 필드에 `"API Error: 500 ..."` 라는 에러 문구를 담아 정상 종료한다(`agents/claude.py` 의 `_run_cli`/`ask_with_progress` 가 `data["result"]` 를 그대로 반환). 두 방어선이 모두 이를 놓쳤다.
+- `agents/base.py` 의 `_is_fatal_error` 가 429/quota 패턴만 알고 **5xx/overloaded 패턴이 없어** `has_error` 가 False 로 남음 (라운드 중 5xx 시 백업 교체도 안 됨).
+- `_generate_final_answer` 의 `try/except` 는 파이썬 예외만 잡아서, 문자열로 정상 반환된 에러는 통과 → `_strip_consensus` 후 그대로 합의문으로 broadcast.
+
+### 수정
+- **[Major / backend]** `agents/base.py`: `_FATAL_SUBSTRINGS` 에 `internal server error`, `overloaded_error` 추가. `_FATAL_REGEX` 에 5xx alternative 추가 (`error|status|code` 앵커 뒤 5xx, `API Error`/`APIError`/`statusCode`/`HTTP/1.1` 포맷 포함). `500자`, `약 500조`, `목표가 529,000원`, `handler.py:500` 등 앵커 없는 숫자는 오탐 안 함.
+- **[Major / backend]** `modes/debate.py` `_generate_final_answer`: 원본 후보를 순회하며 첫 후보는 transient(5xx/과부하) 에러 시 1회 재시도(인프라 에러 최대 1회 규칙), 새 `_is_bad_final_answer` 헬퍼(빈 응답 / `has_error` / `timed_out` / `[Name]` 내부 메시지)로 각 결과를 검사, 모든 후보 실패 시 `_deterministic_merge` 로 폴백. 에러 문자열은 절대 방송되지 않는다.
+
+### 검증
+- 회귀 테스트 추가: `tests/test_agent_base.py` (5xx/overloaded 감지 + 5xx-유사 숫자 오탐 방지), `tests/test_consensus.py::TestGenerateFinalAnswerErrorGuard` (500 → 폴백 머지 / 재시도 성공 / 다음 후보 폴백 / 정상 통과).
+- Codex 교차검증: 5xx 정규식 false negative(`APIError: 500`, `HTTP/1.1 503`, `statusCode: 500`) 지적 반영 후 재통과. 전체 268 passed.
 
 ## v0.7.6 (2026-05-26)
 

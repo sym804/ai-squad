@@ -167,6 +167,49 @@ class TestFatalErrorDetection:
         await agent.ask("test")
         assert agent.has_error is True, f"undetected real-world pattern: {pattern!r}"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", [
+        # Claude Code CLI 가 API 500 hit 시 result 로 내보내는 실제 메시지
+        "API Error: 500 Internal server error. This is a server-side issue, usually temporary",
+        "API Error: 503 Service Unavailable",
+        "API Error: 502 Bad Gateway",
+        # Anthropic 과부하 (529 overloaded)
+        "API Error: 529 overloaded_error",
+        '{"type":"overloaded_error","message":"Overloaded"}',
+        # 구분자 variants
+        "Error: 500",
+        "status: 503",
+        "HTTP 502",
+        # 공백 없는/버전 토큰 포함 실제 SDK 포맷 (Codex 검증 보강)
+        "APIError: 500 Service Unavailable",
+        "HTTP/1.1 503 Service Unavailable",
+        "statusCode: 500",
+    ])
+    async def test_server_error_5xx_detected(self, pattern):
+        """5xx 서버 에러/overloaded 가 fatal 로 탐지되어야 함 (백업 교체 + 합의문 폴백 트리거)."""
+        agent = FakeAgent()
+        agent._cli_response = f"CLI 실행 결과:\n{pattern}\n[종료]"
+        await agent.ask("test")
+        assert agent.has_error is True, f"undetected 5xx pattern: {pattern!r}"
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("benign", [
+        # 파일 경로 + 라인 번호 500번대
+        "src/handler.py:500:    return Response(status=200)",
+        "config.py:502 설정 로드",
+        # 수치에 500번대 포함
+        "삼성전자 시총 약 500조원, 코스피 비중 25%",
+        "예상 매출 5,290억원 / 목표가 529,000원",
+        # 글자수 제한 문구
+        "답변은 500자 이내로 작성하세요",
+    ])
+    async def test_benign_5xx_like_not_flagged(self, benign):
+        """500번대 숫자가 일반 콘텐츠에 있어도 오류로 오탐되면 안 됨."""
+        agent = FakeAgent()
+        agent._cli_response = f"작업 결과:\n{benign}\n완료"
+        await agent.ask("test")
+        assert agent.has_error is False, f"오탐: {benign!r}"
+
 
 # ── 예외 처리 ───────────────────────────────────────────────────
 

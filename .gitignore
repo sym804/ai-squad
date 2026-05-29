@@ -4,7 +4,8 @@ __pycache__/
 .heartbeat
 .watchdog.lock
 .active_threads.json
-.tmp/
+# .tmp/ 는 Gemini CLI 가 .gitignore 를 read_file 차단에 적용하는 문제로
+# .git/info/exclude 로 옮겼음 (첨부 이미지 read_file 실패 방지).
 _append_issue.py
 *.log
 send_test.py
