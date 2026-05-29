@@ -29,8 +29,9 @@ _NOISE_KEYWORDS = ["xterm.js", "Int32Array", "Uint16Array", "_subParams", "_reje
                     "Warning: Skipping extension", "Configuration file not found",
                     "Created execution plan for", "Expanding hook command",
                     "Hook execution for",
-                    # Gemini CLI 터미널 색상 경고, non-TTY 환경에서 항상 찍힘
-                    "256-color support not detected",
+                    # Gemini CLI 터미널 색상 경고, non-TTY 환경에서 항상 찍힘.
+                    # "256-color"/"True color (24-bit)" 등 변종을 모두 잡도록 공통 꼬리로 필터.
+                    "support not detected",
                     # Gemini CLI 도구 폴백 안내, Windows 등 ripgrep 미설치 환경에서
                     # 매 실행마다 stdout 첫 줄로 찍혀 응답 본문 앞에 노출됨
                     "Ripgrep is not available", "Falling back to GrepTool"]

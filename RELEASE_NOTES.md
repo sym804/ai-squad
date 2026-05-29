@@ -30,6 +30,22 @@
 | v0.7.5 | 2026-05-26 | PDF 첨부 실전 회귀 핫픽스: Gemini workspace 격리 + Codex read 도구 PDF 미지원 → tmp_dir 을 workspace 내부 (.tmp/) 로 + pypdf 텍스트 prompt 인라인 첨부 |
 | v0.7.6 | 2026-05-26 | v0.7.5 자체 핫픽스: slack_bot.py 의 os import 누락으로 PDF/이미지 첨부 시 _runner NameError → 무응답. import os 추가 + 회귀 테스트 |
 | v0.7.7 | 2026-05-29 | 합의된 답변이 "API Error: 500" 로 방송되는 회귀 수정: 5xx/과부하 fatal 감지 추가 + 통합문 생성 에러 가드(재시도/폴백) |
+| v0.7.8 | 2026-05-29 | Gemini "True color (24-bit) support not detected" 터미널 경고 누출 수정 (노이즈 필터 키워드 일반화) |
+
+## v0.7.8 (2026-05-29)
+
+Gemini 의 매 발언 첫 줄에 터미널 경고 `Warning: True color (24-bit) support not detected. Using a terminal with true color enabled will result in a better visual experience.` 가 누출되어 Slack 답변에 그대로 노출되던 문제 수정. (자체 테스트 thread 1780059304 에서 사용자가 발견)
+
+### 발생 원인
+`agents/gemini.py` 의 `_clean_output` 노이즈 필터는 `_NOISE_KEYWORDS` 에 포함된 키워드가 있는 라인을 제거한다. 그런데 색상 경고 키워드로 `"256-color support not detected"` 만 등록돼 있어, non-TTY 환경에서 실제로 출력되는 `"True color (24-bit) support not detected"` 변종은 필터를 통과해 응답 본문에 섞였다.
+
+### 수정
+- **[Minor / backend]** `agents/gemini.py`: `_NOISE_KEYWORDS` 의 `"256-color support not detected"` 를 공통 꼬리 `"support not detected"` 로 교체. "256-color"/"True color (24-bit)" 및 향후 변종을 모두 필터.
+- 회귀 테스트 추가: `tests/test_gemini.py::TestCleanOutput` 에 true-color 24-bit 경고 케이스 추가.
+
+### 검증
+- 단위 테스트 269 passed. 실제 Gemini CLI 호출로 응답에 경고 미포함 확인. Codex 교차검증 통과(false positive 위험 낮음). 슬랙 전수 스캔 자체 테스트로 모든 에이전트 발언에 노이즈/에러 누출 0건 확인.
+- 자체 테스트 방법론 개선: 합의문만 보던 기존 방식 → 스레드 전 메시지를 `_NOISE_KEYWORDS` + 에러 마커로 전수 스캔.
 
 ## v0.7.7 (2026-05-29)
 

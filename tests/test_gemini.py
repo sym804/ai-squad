@@ -115,6 +115,9 @@ class TestCleanOutput:
         "Hook execution for SessionEnd: 1 hooks executed successfully, total duration: 283ms",
         # 2026-04-26 발견: non-TTY 환경에서 Gemini CLI가 매 호출마다 stdout 머리에 찍는 색상 경고
         "Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.",
+        # 2026-05-29 발견: 24-bit true color 변종. 256-color 만 필터돼 이건 Slack 으로 누출됨
+        # (자체 테스트 thread 1780059304 에서 Gemini 매 발언 첫 줄에 노출).
+        "Warning: True color (24-bit) support not detected. Using a terminal with true color enabled will result in a better visual experience.",
         # 2026-05-09 발견: Windows 등 ripgrep 미설치 환경에서 Gemini CLI가 매 호출마다 stdout
         # 머리에 찍는 도구 폴백 안내. 응답 본문 첫 줄 앞에 그대로 노출되어 Slack 답변이 지저분해짐.
         "Ripgrep is not available. Falling back to GrepTool.",
