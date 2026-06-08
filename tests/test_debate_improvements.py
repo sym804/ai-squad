@@ -41,7 +41,8 @@ class TestSummariesDiverge:
                _rc("C", False, "초밥 추천 신선한 회 단백질")]
         diverged, note = _summaries_diverge(rcs)
         assert diverged is True
-        assert note  # 비어있지 않음
+        # 구조적 disagreements 가 없으면 노트는 빈다(요약 재나열로 인한 중복 방지).
+        assert note == ""
 
     def test_two_vs_one_outlier_diverged(self):
         # A·B 동일, C만 완전히 다름: 평균 Jaccard 면 0.33으로 놓치지만
@@ -65,6 +66,67 @@ class TestSummariesDiverge:
                {"agent_name": "C", "agent_emoji": "X", "consensus": None}]
         diverged, note = _summaries_diverge(rcs)
         assert diverged is False
+
+
+# ── issue_note(미해결 쟁점) 내용: disagreements 만 사용 ──────────
+# 쟁점 노트는 실제 대립점(CONSENSUS.disagreements 의 point/why)만 담는다.
+# 결론 메시지의 "각 에이전트 요약"이 이미 모든 summary 를 나열하므로,
+# summary 기반 노트는 항상 중복이다. 따라서 구조적 disagreements 가 없으면
+# 노트를 비워 "미해결 쟁점" 줄 자체가 표시되지 않게 한다(중복 제거).
+
+class TestIssueNoteUsesDisagreements:
+    def test_note_uses_disagreement_points_when_present(self):
+        # 발산 + outlier 가 disagreements 에 실제 대립점을 기록한 케이스.
+        rcs = [
+            _rc("Claude", False, "출처 URL 없는 인용은 환각 위험이라 동의 불가하다",
+                disagreements=[{"agent": "Gemini", "point": "출처 미표기 인용",
+                                "why": "검증 불가하여 환각 위험"}]),
+            _rc("Codex", False, "출처 URL 없는 인용은 환각 위험이라 동의 불가하다"),
+            _rc("Gemini", True, "정치적 안경 슬로건 매불쇼 2019 출연 정경분리 강조"),
+        ]
+        diverged, note = _summaries_diverge(rcs)
+        assert diverged is True
+        # 실제 대립점(point/why)이 노트에 담겨야 한다.
+        assert "출처 미표기 인용" in note
+        assert "검증 불가하여 환각 위험" in note
+        # disagreements 없는 에이전트의 summary 토큰(매불쇼)은 노트에 들어가면 안 된다.
+        assert "매불쇼" not in note
+
+    def test_note_empty_when_no_disagreements(self):
+        # disagreements 가 전혀 없으면 노트를 비운다(요약은 "각 에이전트 요약"에
+        # 이미 나오므로 재나열하지 않음 → "미해결 쟁점" 줄 미표시).
+        rcs = [_rc("A", True, "라멘 추천 돈코츠 국물 체온 유지"),
+               _rc("B", False, "파스타 추천 올리브 오일 가벼움"),
+               _rc("C", False, "초밥 추천 신선한 회 단백질")]
+        diverged, note = _summaries_diverge(rcs)
+        assert diverged is True
+        assert note == ""
+
+    def test_note_empty_when_disagreements_malformed(self):
+        # disagreements 가 list 가 아니거나 dict 키가 빠져 유효 point 가 없으면
+        # 크래시 없이 노트를 비운다.
+        rcs = [_rc("A", False, "라멘 돈코츠 국물 최고 추천", disagreements="깨진값"),
+               _rc("B", False, "파스타 올리브 가벼움 추천", disagreements=[{"foo": "bar"}]),
+               _rc("C", False, "초밥 신선한 회 단백질 추천", disagreements=[])]
+        diverged, note = _summaries_diverge(rcs)
+        assert diverged is True
+        assert note == ""
+
+    def test_note_includes_only_agents_with_disagreements(self):
+        # 일부만 disagreements 를 채우면 그 에이전트만 노트에 들어가고,
+        # 채우지 않은 에이전트의 summary 는 절대 재나열되지 않는다.
+        rcs = [
+            _rc("Claude", True, "탭 접근성 우위 환경별 폭 조절 가능",
+                disagreements=[{"agent": "Codex", "point": "스페이스가 재현성 우위",
+                                "why": "diff 안정성"}]),
+            _rc("Codex", True, "스페이스 정렬 일관 고유토큰ZZZ 안정"),
+            _rc("Gemini", True, "들여쓰기 표준 채택 고유토큰QQQ 가독성"),
+        ]
+        diverged, note = _summaries_diverge(rcs)
+        assert diverged is True
+        assert "스페이스가 재현성 우위" in note
+        assert "고유토큰ZZZ" not in note
+        assert "고유토큰QQQ" not in note
 
 
 # ── _parse_consensus salvage ────────────────────────────────────

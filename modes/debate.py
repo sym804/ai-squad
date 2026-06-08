@@ -107,15 +107,15 @@ def _summaries_diverge(round_consensuses: list[dict]) -> tuple[bool, str]:
     발산으로 판정하고 사람이 읽을 수 있는 쟁점 노트를 함께 반환한다.
     비교 가능한 summary 가 2개 미만이면 (False, "").
     """
-    valid = []
+    valid = []  # (agent_name, summary, consensus_dict)
     for r in round_consensuses:
         c = r.get("consensus")
         if c and c.get("summary"):
-            valid.append((r.get("agent_name", "?"), c["summary"]))
+            valid.append((r.get("agent_name", "?"), c["summary"], c))
     if len(valid) < 2:
         return False, ""
 
-    token_sets = [(_tokens(s)) for _, s in valid]
+    token_sets = [_tokens(s) for _, s, _ in valid]
     sims = []
     for i in range(len(token_sets)):
         for j in range(i + 1, len(token_sets)):
@@ -127,8 +127,39 @@ def _summaries_diverge(round_consensuses: list[dict]) -> tuple[bool, str]:
     min_sim = min(sims) if sims else 1.0
     if min_sim >= DIVERGE_THRESHOLD:
         return False, ""
-    note = " / ".join(f"{name}: {summary[:120]}" for name, summary in valid)
-    return True, note
+    return True, _format_issue_note(valid)
+
+
+def _format_issue_note(valid: list[tuple[str, str, dict]]) -> str:
+    """발산 라운드의 미해결 쟁점 노트 생성.
+
+    각 CONSENSUS 의 disagreements(실제 대립점: point/why)만 사용한다.
+    결론 메시지의 "각 에이전트 요약"이 이미 모든 summary 를 나열하므로
+    summary 기반 노트는 항상 "각 에이전트 요약"·"합의된 답변"과 중복된다.
+    따라서 구조적 대립점이 하나도 없으면 빈 문자열을 반환해 "미해결 쟁점"
+    줄 자체가 표시/주입되지 않게 한다(중복 제거). 호출부는 모두
+    `if issue_note:` 로 가드되어 있어 빈 문자열이면 자연히 생략된다.
+
+    valid: (agent_name, summary, consensus_dict) 튜플 목록.
+    """
+    parts = []
+    for name, _summary, c in valid:
+        disagreements = c.get("disagreements") if isinstance(c, dict) else None
+        if not isinstance(disagreements, list):
+            continue
+        points = []
+        for d in disagreements:
+            if not isinstance(d, dict):
+                continue
+            point = str(d.get("point") or "").strip()
+            why = str(d.get("why") or "").strip()
+            if point and why:
+                points.append(f"{point} ({why})")
+            elif point or why:
+                points.append(point or why)
+        if points:
+            parts.append(f"{name}: {'; '.join(points)[:160]}")
+    return " / ".join(parts)
 
 
 # 자기-반복 임계: 직전 라운드 대비 토큰 Jaccard 가 이 값 이상이면 "그대로 반복"

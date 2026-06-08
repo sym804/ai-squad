@@ -98,9 +98,13 @@ class TestGroupthinkGate:
         # 라운드 1에서 즉시 종료하지 않고(교전 강제) 라운드 2에서 종료
         assert "라운드 2" in bc[0]
         assert "라운드 1)" not in bc[0]
-        # 영구 차단이 아니라 합의로 종료하되 미해결 쟁점을 투명하게 명시
+        # 영구 차단이 아니라 합의로 종료
         assert "전원 합의" in bc[0]
-        assert "미해결 쟁점" in bc[0]
+        # 발산 투명성: 구조적 disagreements 가 없으므로 "미해결 쟁점" 줄은
+        # 표시하지 않고(요약 재나열 중복 방지), 각 에이전트의 서로 다른 입장은
+        # "각 에이전트 요약"에 그대로 노출된다.
+        assert "미해결 쟁점" not in bc[0]
+        assert "라멘" in bc[0] and "파스타" in bc[0] and "초밥" in bc[0]
         # max round(4) 까지 끌고 가는 false positive 가 아니어야 함
         assert "최대 라운드" not in bc[0]
 

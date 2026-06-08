@@ -31,6 +31,24 @@
 | v0.7.6 | 2026-05-26 | v0.7.5 자체 핫픽스: slack_bot.py 의 os import 누락으로 PDF/이미지 첨부 시 _runner NameError → 무응답. import os 추가 + 회귀 테스트 |
 | v0.7.7 | 2026-05-29 | 합의된 답변이 "API Error: 500" 로 방송되는 회귀 수정: 5xx/과부하 fatal 감지 추가 + 통합문 생성 에러 가드(재시도/폴백) |
 | v0.7.8 | 2026-05-29 | Gemini "True color (24-bit) support not detected" 터미널 경고 누출 수정 (노이즈 필터 키워드 일반화) |
+| v0.7.9 | 2026-06-08 | 토론 "미해결 쟁점"이 각 에이전트 요약/합의된 답변과 중복되던 문제 수정 (disagreements 필드 소비, summary 폴백 제거) |
+
+## v0.7.9 (2026-06-08)
+
+토론 결론 메시지의 `⚠️ *미해결 쟁점:*` 이 각 에이전트의 `summary` 를 그대로 나열해, 같은 메시지의 `📋 각 에이전트 요약` 및 `💡 합의된 답변` 과 내용이 중복되던 문제 수정. (사용자 지적 + 자체 슬랙 E2E 3종 검증)
+
+### 발생 원인
+CONSENSUS JSON 스키마에는 실제 대립점을 담는 전용 `disagreements`(`[{agent, point, why}]`) 필드가 있고, 시스템 프롬프트가 에이전트에게 "동의하지 않으면 disagreements 에 기록하라" 고 지시한다. 그러나 코드 어디에서도 이 필드를 읽지 않는 **dead data** 였다. `_summaries_diverge()` 가 발산 시 쟁점 노트(issue_note)를 `disagreements` 가 아니라 각 에이전트 `summary[:120]` 로 만들었기 때문에, 결론의 "각 에이전트 요약"(summary 전체) 및 "합의된 답변"(agree=true summary 종합)과 같은 내용이 반복됐다. 이 노트는 다음 라운드 프롬프트에도 "미해결 쟁점" 으로 주입되어 수렴 유도 효과도 약화됐다.
+
+### 수정
+- **[Major / backend]** `modes/debate.py`: `_format_issue_note()` 헬퍼 신설. issue_note 를 각 CONSENSUS 의 `disagreements` point/why 로만 생성한다(`"{name}: {point} ({why})"`). 결론의 "각 에이전트 요약" 이 이미 모든 summary 를 나열하므로 summary 기반 노트는 항상 중복 → 구조적 대립점이 하나도 없으면 빈 문자열을 반환해 "미해결 쟁점" 줄 자체를 생략한다(표시·다음 라운드 주입 3곳 모두 `if issue_note:` 가드로 자동 생략). `_summaries_diverge()` 는 발산 감지(summary Jaccard)는 그대로 두고 consensus dict 를 함께 보관해 노트 생성에 넘긴다.
+- 발산 감지(diverged 불리언)와 교전-강제(divergence_challenge) 로직은 변경 없음.
+- 테스트: `tests/test_debate_improvements.py` 에 disagreements 우선 / 빈 노트 / malformed / 일부만 기록 케이스 추가. `tests/test_debate_gates.py::test_divergence_forces_one_challenge_round_then_concludes` 를 새 동작(요약 재나열 대신 각 에이전트 요약으로 투명성 유지, "미해결 쟁점" 미표시)에 맞게 갱신.
+
+### 검증
+- 단위 테스트 294 passed (신규 포함, 회귀 0).
+- 실제 슬랙 봇 E2E 3종(부먹/찍먹, 탭/스페이스, 비밀번호 해시): 모두 "미해결 쟁점" 이 disagreements 의 point/why 만 표시하고 각 에이전트 요약·합의된 답변과 중복 0건 확인. 발산 케이스에서 LLM 들이 잔여 이견을 disagreements 에 안정적으로 기록함을 실측(그래서 summary 폴백은 애초에 불필요).
+- Codex 교차검증: 정적 분석으로 호출부 정합성(반환값 unpack 2곳 한정, issue_note 양용도 `if issue_note:` 가드) 확인.
 
 ## v0.7.8 (2026-05-29)
 
