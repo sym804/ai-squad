@@ -32,6 +32,24 @@
 | v0.7.7 | 2026-05-29 | 합의된 답변이 "API Error: 500" 로 방송되는 회귀 수정: 5xx/과부하 fatal 감지 추가 + 통합문 생성 에러 가드(재시도/폴백) |
 | v0.7.8 | 2026-05-29 | Gemini "True color (24-bit) support not detected" 터미널 경고 누출 수정 (노이즈 필터 키워드 일반화) |
 | v0.7.9 | 2026-06-08 | 토론 "미해결 쟁점"이 각 에이전트 요약/합의된 답변과 중복되던 문제 수정 (disagreements 필드 소비, summary 폴백 제거) |
+| v0.7.10 | 2026-06-09 | agy `-p` stdout 미출력 버그(upstream #76) 우회: 응답을 디스크 transcript 에서 호출별 trace 토큰으로 복구해 비대화형 회수 |
+
+## v0.7.10 (2026-06-09)
+
+agy(Antigravity CLI)를 봇 백엔드로 쓸 수 있도록 `-p` stdout 미출력 버그를 우회. Gemini CLI 개인 티어가 2026-06-18 종료 예정이라 그 전에 agy 경로를 실사용 가능 상태로 준비. (Codex 3차 교차검증 통과 + 라이브 실측 3회)
+
+### 배경 (upstream 버그)
+Antigravity CLI `agy --print`/`-p` 가 non-TTY(pipe/subprocess/redirect) 컨텍스트에서 모델 응답을 stdout 에 쓰지 않는다 (exit 0 + 0 바이트). 공식 추적 이슈 `google-antigravity/antigravity-cli#76` 은 2026-06-09 기준 OPEN, 1.0.0~1.0.6 전 버전에서 재현되며 메인테이너 응답/수정 PR 없음. 봇이 stdout 을 파싱하므로 agy 백엔드(`GEMINI_CLI_BINARY=agy`)에선 빈 응답이 된다. 단 응답 본문은 디스크에 정상 저장된다(`~/.gemini/antigravity-cli/brain/<cid>/.system_generated/logs/transcript.jsonl`).
+
+### 수정
+- **[Major / backend]** `agents/gemini.py`: agy 빈 stdout 시 디스크 transcript 에서 응답 복구. 호출마다 고유 trace 토큰(`AGYTRACE`+uuid)을 prompt 끝에 심고(`_build_subprocess_args` 가 argv 절단 **이후** append 해 유실 방지), transcript 의 USER_INPUT 에서 그 토큰이 박힌 턴의 최종 `PLANNER_RESPONSE` 만 회수한다(`_recover_agy_response`/`_extract_traced_response`/`_iter_turns`/`_trace_in`). cwd→cid 매핑(`last_conversations.json`) 1차 + `since_ts` 이후 transcript 스캔 2차, 둘 다 토큰 매칭이라 공통 prompt prefix·대화 재사용·동시 호출에도 다른 호출 응답을 오회수하지 않는다. `_run_cli`/`_run_progress_once` 양쪽 통합. gemini 기본 경로는 토큰을 무시해 무영향.
+- **[Minor / security]** cid 를 UUID 형식으로 검증(`_valid_cid`)해 `last_conversations.json` 경유 path traversal 을 차단(매핑·폴백 스캔 양 경로). transcript content 가 비문자열 스키마로 바뀌어도 죽지 않도록 `_as_text` 정규화. 모델이 trace 마커를 echo 하면 `_strip_trace` 로 제거.
+
+### 검증
+- 라이브 실측(봇과 동일한 `stdin=DEVNULL`): agy 1.0.6 가 `EXIT=0 / STDOUT_LEN=0`(버그 재현)인데 trace 토큰 복구로 응답을 정확히 회수(8~10초) + 마커 strip 확인.
+- 단위 테스트 `tests/test_gemini.py::TestAgyDiskRecovery` 22건 신규(파싱·토큰 매칭·cid 검증·복구 경로·예외). 전체 통과.
+- Codex 교차검증 3회 반영: 1차(prompt head 약점) → 2차(루프별 직렬화 한계·prefix 충돌·시간필터 부재) → 3차(토큰 방식으로 2차 Major 해소 확인 + 폴백 cid 검증/content 정규화 보강).
+- 주의: PowerShell `& agy -p` 직접 호출은 stdin 상속으로 무한 hang(이슈 #76 보고). 봇은 `stdin=DEVNULL` 이라 영향 없음(실측 hang 없이 완주).
 
 ## v0.7.9 (2026-06-08)
 

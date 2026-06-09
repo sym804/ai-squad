@@ -316,3 +316,258 @@ class TestConcurrencyPerLoop:
             keys_for_this_loop = [k for k in gemini_mod._gemini_concurrency_per_loop if k is loop]
             assert len(keys_for_this_loop) == 1
         asyncio.run(_spam())
+
+
+class TestAgyDiskRecovery:
+    """`_recover_agy_response`: agy `-p` stdout 버그(#76) 우회 - 디스크 transcript 복구.
+
+    agy 1.0.6 까지 `-p` 가 non-TTY 에서 stdout 에 응답을 안 쓰지만, 응답은
+    `brain/<cid>/.system_generated/logs/transcript.jsonl` 에 저장된다. 호출별 고유
+    trace 토큰을 prompt 에 심어 cwd → conversation_id 매핑/스캔으로 찾은 transcript
+    에서 내 턴을 정확히 식별한다(공통 prefix·대화 재사용·동시 호출 무관).
+    """
+
+    def _make_home(self, tmp_path, monkeypatch):
+        """가짜 agy 홈 구조 생성 + `_agy_home` monkeypatch. brain 디렉토리 경로 반환."""
+        home = tmp_path / "antigravity-cli"
+        (home / "cache").mkdir(parents=True)
+        (home / "brain").mkdir(parents=True)
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+        return home
+
+    def _write_transcript(self, home, cid, token, response, *, mtime=None, body="질문"):
+        """주어진 cid 의 transcript.jsonl 작성. USER_INPUT 에 trace 마커를 포함.
+
+        실제 흐름과 동일하게 prompt 끝의 `[trace:{token}]` 마커가 USER_INPUT 에
+        들어있는 모습을 재현한다. token=None 이면 마커 없는(다른 호출) 턴.
+        """
+        import json as _json
+        import os as _os
+        logs = home / "brain" / cid / ".system_generated" / "logs"
+        logs.mkdir(parents=True, exist_ok=True)
+        tp = logs / "transcript.jsonl"
+        marker = gemini_mod._agy_trace_suffix(token) if token else ""
+        content = (f"<USER_REQUEST>\n{body}{marker}\n</USER_REQUEST>"
+                   f"\n<ADDITIONAL_METADATA>x</ADDITIONAL_METADATA>")
+        lines = [
+            {"step_index": 0, "source": "USER_EXPLICIT", "type": "USER_INPUT",
+             "status": "DONE", "content": content},
+            {"step_index": 1, "source": "SYSTEM", "type": "CONVERSATION_HISTORY", "status": "DONE"},
+            {"step_index": 2, "source": "MODEL", "type": "PLANNER_RESPONSE",
+             "status": "DONE", "content": response},
+        ]
+        tp.write_text("\n".join(_json.dumps(o, ensure_ascii=False) for o in lines) + "\n",
+                      encoding="utf-8")
+        if mtime is not None:
+            _os.utime(tp, (mtime, mtime))
+        return tp
+
+    def _write_mapping(self, home, mapping):
+        import json as _json
+        (home / "cache" / "last_conversations.json").write_text(
+            _json.dumps(mapping), encoding="utf-8")
+
+    def test_make_trace_token_is_unique_and_alnum(self):
+        """trace 토큰은 호출마다 고유 + 영숫자(공백/특수문자 없음)."""
+        a = gemini_mod._make_trace_token()
+        b = gemini_mod._make_trace_token()
+        assert a != b
+        assert a.startswith(gemini_mod._AGY_TRACE_PREFIX)
+        assert a.isalnum()
+
+    def test_iter_turns_groups_user_and_final_response(self):
+        """한 턴에 PLANNER_RESPONSE 가 여러 개면 마지막 것이 그 턴의 최종 응답."""
+        text = "\n".join([
+            '{"type":"USER_INPUT","content":"<USER_REQUEST>\\nQ1\\n</USER_REQUEST>"}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"중간 생각"}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"최종 답변"}',
+        ])
+        turns = gemini_mod._iter_turns(text)
+        assert len(turns) == 1
+        assert "Q1" in turns[0][0]
+        assert turns[0][1] == "최종 답변"
+
+    def test_trace_in_matches_only_own_token(self):
+        """trace 토큰은 내 호출만 식별. 공통 prompt 본문 공유와 무관."""
+        tok = "AGYTRACEdeadbeef0001"
+        other = "AGYTRACEdeadbeef0002"
+        user = f"<USER_REQUEST>\n같은 본문\n\n[trace:{tok}]\n</USER_REQUEST>"
+        assert gemini_mod._trace_in(tok, user) is True
+        assert gemini_mod._trace_in(other, user) is False
+        assert gemini_mod._trace_in("", user) is False
+
+    def test_strip_trace_removes_echoed_token(self):
+        """모델이 응답에 trace 마커를 그대로 옮겨 적었으면 제거."""
+        tok = "AGYTRACEcafe0001"
+        resp = f"실제 답변입니다.{gemini_mod._agy_trace_suffix(tok)}"
+        assert gemini_mod._strip_trace(resp, tok) == "실제 답변입니다."
+        # 마커 없으면 그대로(strip 만)
+        assert gemini_mod._strip_trace("  답변  ", tok) == "답변"
+
+    def test_extract_traced_response_skips_broken_lines(self):
+        """깨진 JSON 줄은 건너뛰고, 내 토큰 턴의 응답만 반환."""
+        tok = "AGYTRACE0000aaaa1111"
+        text = "\n".join([
+            "이건 JSON 이 아님 {{{",
+            f'{{"type":"USER_INPUT","content":"<USER_REQUEST>\\nQ [trace:{tok}]\\n</USER_REQUEST>"}}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"OK"}',
+            "",
+        ])
+        assert gemini_mod._extract_traced_response(text, tok) == "OK"
+
+    def test_extract_traced_response_picks_my_token_turn(self):
+        """여러 턴이 누적돼도 내 토큰이 박힌 턴의 응답만 반환(공통 본문이어도)."""
+        mine = "AGYTRACE1111mine2222"
+        theirs = "AGYTRACE3333them4444"
+        text = "\n".join([
+            f'{{"type":"USER_INPUT","content":"<USER_REQUEST>\\n같은 질문 [trace:{mine}]\\n</USER_REQUEST>"}}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"MINE-ANSWER"}',
+            f'{{"type":"USER_INPUT","content":"<USER_REQUEST>\\n같은 질문 [trace:{theirs}]\\n</USER_REQUEST>"}}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"THEIR-ANSWER"}',
+        ])
+        assert gemini_mod._extract_traced_response(text, mine) == "MINE-ANSWER"
+        assert gemini_mod._extract_traced_response(text, theirs) == "THEIR-ANSWER"
+
+    def test_build_subprocess_args_agy_appends_trace(self, monkeypatch):
+        """agy 경로는 prompt 끝에 trace 마커를 붙여 보낸다(절단 이후)."""
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "agy")
+        tok = "AGYTRACEbeef9999aaaa"
+        cmd, stdin_data = gemini_mod._build_subprocess_args("__agy_default__", "본문 prompt", tok)
+        assert cmd[0] == "agy"
+        assert tok in cmd[-1]
+        assert "본문 prompt" in cmd[-1]
+        assert stdin_data is None
+
+    def test_build_subprocess_args_gemini_ignores_trace(self, monkeypatch):
+        """gemini 경로는 trace 토큰을 무시(복구 불필요, stdin 으로 원본 prompt 전달)."""
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "gemini")
+        cmd, stdin_data = gemini_mod._build_subprocess_args("gemini-3-flash-preview", "원본", "AGYTRACExyz")
+        assert cmd[0] == "gemini"
+        assert stdin_data == "원본".encode("utf-8")
+        assert all("AGYTRACE" not in part for part in cmd)
+
+    def test_recover_via_cwd_mapping(self, tmp_path, monkeypatch):
+        """cwd → cid 매핑으로 찾고 trace 토큰 일치 시 응답 반환."""
+        home = self._make_home(tmp_path, monkeypatch)
+        cwd = r"C:\proj\slack-multi-agent"
+        cid = "1a1a1a1a-1111-4111-8111-111111111111"
+        tok = gemini_mod._make_trace_token()
+        self._write_transcript(home, cid, tok, "PONG-MAP")
+        self._write_mapping(home, {cwd: cid})
+        out = gemini_mod._recover_agy_response(cwd, tok, since_ts=0)
+        assert out == "PONG-MAP"
+
+    def test_recover_cwd_match_is_case_insensitive(self, tmp_path, monkeypatch):
+        """Windows 경로 대소문자/구분자 차이를 normcase/abspath 로 흡수."""
+        home = self._make_home(tmp_path, monkeypatch)
+        cid = "2a2a2a2a-2222-4222-8222-222222222222"
+        tok = gemini_mod._make_trace_token()
+        self._write_transcript(home, cid, tok, "ANSWER-CASE")
+        self._write_mapping(home, {r"C:\Proj\Slack-Multi-Agent": cid})
+        out = gemini_mod._recover_agy_response(r"c:\proj\slack-multi-agent", tok, since_ts=0)
+        assert out == "ANSWER-CASE"
+
+    def test_recover_unmatched_token_falls_back_to_scan(self, tmp_path, monkeypatch):
+        """매핑 cid 에 내 토큰이 없으면(경합) 그 응답을 반환하지 않고, 내 토큰이 박힌
+        다른 transcript 를 스캔으로 찾는다. 두 USER_INPUT 본문이 같아도 안전."""
+        home = self._make_home(tmp_path, monkeypatch)
+        cwd = r"C:\proj\x"
+        other_tok = gemini_mod._make_trace_token()
+        my_tok = gemini_mod._make_trace_token()
+        # 매핑은 다른 호출(다른 토큰, 같은 본문)을 가리킴
+        self._write_transcript(home, "3a3a3a3a-3333-4333-8333-333333333333", other_tok, "OTHER-ANSWER", body="같은 본문")
+        self._write_mapping(home, {cwd: "3a3a3a3a-3333-4333-8333-333333333333"})
+        # 내 토큰 응답은 다른 cid 에 존재 (본문 동일)
+        self._write_transcript(home, "4a4a4a4a-4444-4444-8444-444444444444", my_tok, "MY-ANSWER", body="같은 본문")
+        out = gemini_mod._recover_agy_response(cwd, my_tok, since_ts=0)
+        assert out == "MY-ANSWER"
+
+    def test_recover_fallback_scan_when_no_mapping(self, tmp_path, monkeypatch):
+        """매핑 파일이 없어도 내 토큰이 박힌 최근 transcript 를 스캔으로 찾음."""
+        home = self._make_home(tmp_path, monkeypatch)
+        tok = gemini_mod._make_trace_token()
+        self._write_transcript(home, "5a5a5a5a-5555-4555-8555-555555555555", tok, "SCAN-555")
+        out = gemini_mod._recover_agy_response(r"C:\nowhere", tok, since_ts=0)
+        assert out == "SCAN-555"
+
+    def test_recover_excludes_old_transcripts(self, tmp_path, monkeypatch):
+        """since_ts 보다 충분히 오래된 transcript 는 폴백 스캔에서 제외."""
+        home = self._make_home(tmp_path, monkeypatch)
+        tok = gemini_mod._make_trace_token()
+        self._write_transcript(home, "6a6a6a6a-6666-4666-8666-666666666666", tok, "STALE", mtime=1000.0)
+        out = gemini_mod._recover_agy_response(r"C:\x", tok, since_ts=2_000_000_000)
+        assert out == ""
+
+    def test_recover_returns_empty_when_token_absent(self, tmp_path, monkeypatch):
+        """내 토큰이 어디에도 없으면 빈 문자열(실제 실패를 stale 응답으로 둔갑 안 함)."""
+        home = self._make_home(tmp_path, monkeypatch)
+        other = gemini_mod._make_trace_token()
+        self._write_transcript(home, "3a3a3a3a-3333-4333-8333-333333333333", other, "NOT-MINE")
+        self._write_mapping(home, {r"C:\x": "3a3a3a3a-3333-4333-8333-333333333333"})
+        out = gemini_mod._recover_agy_response(r"C:\x", gemini_mod._make_trace_token(), since_ts=0)
+        assert out == ""
+
+    def test_recover_returns_empty_when_nothing(self, tmp_path, monkeypatch):
+        """transcript 자체가 없으면 빈 문자열."""
+        self._make_home(tmp_path, monkeypatch)
+        out = gemini_mod._recover_agy_response(r"C:\x", gemini_mod._make_trace_token(), since_ts=0)
+        assert out == ""
+
+    def test_recover_handles_missing_home_gracefully(self, tmp_path, monkeypatch):
+        """홈 디렉토리가 통째로 없어도 예외 없이 빈 문자열."""
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: tmp_path / "does-not-exist")
+        out = gemini_mod._recover_agy_response(r"C:\x", gemini_mod._make_trace_token(), since_ts=0)
+        assert out == ""
+
+    def test_recover_retry_wrapper_returns_value(self, tmp_path, monkeypatch):
+        """async 재시도 래퍼가 복구값을 그대로 반환."""
+        home = self._make_home(tmp_path, monkeypatch)
+        tok = gemini_mod._make_trace_token()
+        self._write_transcript(home, "7a7a7a7a-7777-4777-8777-777777777777", tok, "RETRY-OK")
+        self._write_mapping(home, {r"C:\r": "7a7a7a7a-7777-4777-8777-777777777777"})
+        out = asyncio.run(
+            gemini_mod._recover_agy_response_retry(r"C:\r", tok, since_ts=0))
+        assert out == "RETRY-OK"
+
+    def test_valid_cid_accepts_uuid_rejects_traversal(self):
+        """_valid_cid: UUID 형식만 허용, path traversal 시도 거부(보안)."""
+        assert gemini_mod._valid_cid("282191b2-6eed-49fd-90a3-91c9087a216e") is True
+        assert gemini_mod._valid_cid("../../etc/passwd") is False
+        assert gemini_mod._valid_cid("..\\..\\evil") is False
+        assert gemini_mod._valid_cid("a/b") is False
+        assert gemini_mod._valid_cid("") is False
+        assert gemini_mod._valid_cid(None) is False
+
+    def test_recover_rejects_traversal_cid(self, tmp_path, monkeypatch):
+        """매핑이 악의적 cid(경로 조작)를 가리켜도 디렉토리 밖을 읽지 않고 빈 문자열."""
+        home = self._make_home(tmp_path, monkeypatch)
+        cwd = r"C:\proj\x"
+        self._write_mapping(home, {cwd: "../../../../Windows/System32"})
+        out = gemini_mod._recover_agy_response(cwd, gemini_mod._make_trace_token(), since_ts=0)
+        assert out == ""
+
+    def test_recover_fallback_skips_nonuuid_cid_dir(self, tmp_path, monkeypatch):
+        """폴백 스캔도 UUID 형식 cid 디렉토리만 읽는다(symlink/비정상 디렉토리 방어)."""
+        home = self._make_home(tmp_path, monkeypatch)
+        tok = gemini_mod._make_trace_token()
+        # 내 토큰이 박혀 있어도 비-UUID 디렉토리면 스킵돼야 함
+        self._write_transcript(home, "evildir", tok, "SHOULD-NOT-RETURN")
+        out = gemini_mod._recover_agy_response(r"C:\x", tok, since_ts=0)
+        assert out == ""
+
+    def test_as_text_coerces_nonstring(self):
+        """_as_text: 문자열은 그대로, None/빈값은 '', 객체/배열은 JSON 직렬화."""
+        assert gemini_mod._as_text("hello") == "hello"
+        assert gemini_mod._as_text(None) == ""
+        assert gemini_mod._as_text("") == ""
+        assert gemini_mod._as_text({"a": 1}) == '{"a": 1}'
+
+    def test_iter_turns_handles_nonstring_content(self):
+        """transcript content 가 객체여도 죽지 않고 정규화돼 토큰 매칭 가능(스키마 변경 대비)."""
+        tok = "AGYTRACEschemachg01"
+        text = "\n".join([
+            f'{{"type":"USER_INPUT","content":{{"nested":"q [trace:{tok}]"}}}}',
+            '{"source":"MODEL","type":"PLANNER_RESPONSE","content":"RESP-OBJ"}',
+        ])
+        # 예외 없이 파싱 + 토큰 매칭으로 응답 회수
+        assert gemini_mod._extract_traced_response(text, tok) == "RESP-OBJ"
