@@ -35,6 +35,21 @@
 | v0.7.10 | 2026-06-09 | agy `-p` stdout 미출력 버그(upstream #76) 우회: 응답을 디스크 transcript 에서 호출별 trace 토큰으로 복구해 비대화형 회수 |
 | v0.7.11 | 2026-06-10 | Windows cmd 콘솔 깜빡임 제거: claude 호출에 `--strict-mcp-config` 추가해 전역 MCP(context7 npx) spawn 차단 |
 | v0.8.0 | 2026-06-11 | 리서치 모드 신설: #ai-리서치 채널에서 3 AI 분담형 팬아웃(분해→분담 조사→교차검증→출처 리포트) |
+| v0.8.1 | 2026-06-11 | 리서치 종합 답변 채널 브로드캐스트 + 봇 비대화형(S4U) 전환 + agy statusline 깜빡임 제거 |
+
+## v0.8.1 (2026-06-11)
+
+v0.8.0 리서치 모드 실사용 중 발견된 2건 수정 + 봇 실행 방식 강화.
+
+### 수정
+- **[Minor / backend]** 리서치 최종 종합 답변이 스레드에만 남고 채널 타임라인엔 안 보이던 문제 수정. debate 처럼 `_broadcast_long`(첫 청크 `reply_broadcast=True`)로 종합 답변을 채널에도 노출, 상세 출처/쟁점 리포트는 스레드 유지. 회귀 테스트 포함(26건). 라이브 확인 완료.
+- **[Minor / etc]** Windows cmd 콘솔 깜빡임(agy statusline) 제거. 원인: agy 가 statusline 을 주기적으로 셸(`cmd /c`·`sh -c`)로 실행 → 그 셸 콘솔이 깜빡임. 세션 격리(S4U)는 상시 로그인 시 같은 세션이라 무효, 명령 변경도 agy 가 항상 셸 래핑이라 무효. 최종적으로 agy 전역 설정 `statusLine.enabled=false`로 비활성(사용자 선택). 격리 실측으로 새 agy 가 statusline 0건 확인. (v0.7.11 의 claude context7 와는 별개 원인)
+- **[Minor / etc]** watchdog 운영 강화: 예약작업을 S4U(LogonType)로 재등록해 **로그아웃해도 봇 유지**(기존 Interactive only 는 로그아웃 시 종료). S4U 예약작업의 Job Object 가 task 종료 시 자식을 회수하는 문제는 watchdog 를 `DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB` 로 분리 기동해 해결(생존 검증 완료). `watchdog.py` 봇 기동에 `CREATE_NO_WINDOW` 보강, `install_task` 실패 메시지 cp949 안전 출력. 일괄 전환용 `migrate_session0.ps1`(UTF-8 BOM) 추가.
+
+### 검증
+- 리서치 브로드캐스트: #ai-협업 채널 타임라인에 종합 답변 표출 확인.
+- 깜빡임: 특정 agy PID 자식 트리 격리 실측 → statusline.bat/.py 0건.
+- S4U breakaway: 예약작업 종료 후에도 watchdog/bot 생존(20초 후 PID 유지) 확인.
 
 ## v0.8.0 (2026-06-11)
 
