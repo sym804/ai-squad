@@ -245,14 +245,26 @@ class ResearchMode:
             self._post(channel, thread_ts, chunk)
 
     async def _ask_named(self, name: str, prompt: str):
-        """이름으로 에이전트 호출 + 타임아웃/오류 시 백업 인계. (text, used_name) 반환."""
+        """이름으로 에이전트 호출 + 타임아웃/오류 시 백업 인계. (text, used_name) 반환.
+
+        primary 호출이 예외를 던져도 백업으로 인계하고, 백업까지 예외면 구조화된
+        실패 문자열을 반환한다(예외 전파 금지 → 상위 gather 가 안 깨짐).
+        """
         agent = self._agent_by_name(name)
-        result = await agent.ask(prompt, timeout=CLI_TIMEOUT)
-        if getattr(agent, "needs_replacement", False):
+        try:
+            result = await agent.ask(prompt, timeout=CLI_TIMEOUT)
+            failed = getattr(agent, "needs_replacement", False)
+        except Exception as e:
+            logger.warning("primary %s ask raised: %s", name, e)
+            result, failed = f"[{name}] 호출 예외", True
+        if failed:
             backup = self._get_backup(agent)
             backup._current_thread_ts = agent._current_thread_ts
-            result = await backup.ask(prompt, timeout=CLI_TIMEOUT)
-            return result, backup.name
+            try:
+                return await backup.ask(prompt, timeout=CLI_TIMEOUT), backup.name
+            except Exception as e:
+                logger.warning("backup %s ask raised: %s", backup.name, e)
+                return f"[{backup.name}] 백업 호출 예외", backup.name
         return result, agent.name
 
     async def start(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
@@ -280,7 +292,18 @@ class ResearchMode:
             return {"subq_id": sq["id"], "agent": used, "text": text,
                     "sources": _extract_sources(text)}
 
-        findings = [f for f in await asyncio.gather(*[_research_one(sq) for sq in assigned]) if f]
+        raw_findings = await asyncio.gather(
+            *[_research_one(sq) for sq in assigned], return_exceptions=True)
+        findings = []
+        dropped = 0
+        for r in raw_findings:
+            if isinstance(r, Exception):
+                dropped += 1
+                logger.warning("research task failed: %s", r)
+            elif r:
+                findings.append(r)
+        if dropped:
+            self._post(channel, thread_ts, f"⚠️ 조사 {dropped}건 실패 → 제외하고 진행합니다.")
         if not findings:
             self._post(channel, thread_ts, "❌ 조사 결과가 없습니다. 중단합니다.")
             return
@@ -295,7 +318,16 @@ class ResearchMode:
             status, note = _parse_verdict(text)
             return {"subq_id": f["subq_id"], "verifier": verifier, "status": status, "note": note}
 
-        verdicts = list(await asyncio.gather(*[_verify_one(f, v) for f, v in verifier_pairs]))
+        raw_verdicts = await asyncio.gather(
+            *[_verify_one(f, v) for f, v in verifier_pairs], return_exceptions=True)
+        verdicts = []
+        for (f, v), r in zip(verifier_pairs, raw_verdicts):
+            if isinstance(r, Exception):
+                logger.warning("verify task failed: %s", r)
+                verdicts.append({"subq_id": f["subq_id"], "verifier": v,
+                                 "status": "unverified", "note": "검증 실패"})
+            else:
+                verdicts.append(r)
 
         # 3. 종합
         self._post(channel, thread_ts, "📝 *리포트 종합 중...*")

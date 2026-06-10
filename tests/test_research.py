@@ -253,3 +253,37 @@ def test_start_decompose_failure_degrades_to_single():
     asyncio.run(mode.start("C1", "1.0", "단일 질문"))
     posted = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_postMessage.call_args_list)
     assert posted
+
+
+def test_start_survives_agent_exception():
+    """한 에이전트 ask 가 예외를 던져도 start 가 중단되지 않고 완주(gather/백업 가드)."""
+    def claude(p):
+        if "JSON" in p and "분해" in p:
+            return '["하위1", "하위2", "하위3"]'
+        if "종합" in p:
+            return "통합 리포트"
+        if "검증" in p:
+            return "STATUS=supported | NOTE=ok"
+        return "조사 https://a.com"
+
+    def boom(p):
+        raise RuntimeError("CLI 폭발")
+
+    answers = {
+        "Claude": claude,
+        "Codex": boom,  # 조사/검증에서 예외
+        "Gemini": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "조사 https://b.com",
+    }
+    mode, slack = _make_mode(answers)
+
+    # 백업 풀도 mock (실제 CLI 호출 방지). 예외 시 여기로 인계돼야 함.
+    def backup_ans(p):
+        return "STATUS=unverified | NOTE=백업" if "검증" in p else "백업 조사 https://c.com"
+    mode._backup_pool = [
+        FakeAgent("Claude-B", "⚪", backup_ans),
+        FakeAgent("Codex-B", "⚪", backup_ans),
+        FakeAgent("Gemini-B", "⚪", backup_ans),
+    ]
+    asyncio.run(mode.start("C1", "1.0", "예외 견딤 질문"))  # 예외 전파 없이 완주해야 함
+    posted = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_postMessage.call_args_list)
+    assert posted
