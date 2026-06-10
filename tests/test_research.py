@@ -235,6 +235,29 @@ def test_start_happy_path_posts_report():
     assert "리서치 리포트" in posted or "통합 리포트" in posted
 
 
+def test_start_broadcasts_final_answer_to_channel():
+    """최종 종합 답변은 reply_broadcast=True 로 채널 타임라인에도 노출돼야 한다."""
+    def claude(p):
+        if "JSON" in p and "분해" in p:
+            return '["하위1", "하위2"]'
+        if "종합" in p:
+            return "최종 종합 결론"
+        if "검증" in p:
+            return "STATUS=supported | NOTE=ok"
+        return "조사 https://a.com"
+    answers = {
+        "Claude": claude,
+        "Codex": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "조사 https://b.com",
+        "Gemini": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "조사 https://c.com",
+    }
+    mode, slack = _make_mode(answers)
+    asyncio.run(mode.start("C1", "1.0", "테스트 질문"))
+    broadcasts = [c for c in slack.chat_postMessage.call_args_list
+                  if c.kwargs.get("reply_broadcast") is True]
+    assert broadcasts, "최종 종합 답변이 채널로 브로드캐스트되지 않음"
+    assert any("종합 답변" in str(c.kwargs.get("text", "")) for c in broadcasts)
+
+
 def test_start_decompose_failure_degrades_to_single():
     def claude(p):
         if "JSON" in p and "분해" in p:

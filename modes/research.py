@@ -244,6 +244,24 @@ class ResearchMode:
             chunk, text = text[:MAX_LEN], text[MAX_LEN:]
             self._post(channel, thread_ts, chunk)
 
+    def _broadcast_long(self, channel, thread_ts, text):
+        """첫 청크는 채널에도 브로드캐스트(reply_broadcast), 나머지는 스레드에만.
+
+        debate 모드처럼 최종 결론을 스레드뿐 아니라 채널 타임라인에도 노출한다.
+        """
+        MAX_LEN = 3900
+        first = True
+        while text:
+            chunk, text = text[:MAX_LEN], text[MAX_LEN:]
+            kwargs = {"channel": channel, "thread_ts": thread_ts, "text": chunk}
+            if first:
+                kwargs["reply_broadcast"] = True
+                first = False
+            try:
+                self.slack.chat_postMessage(**kwargs)
+            except Exception as e:
+                print(f"[SLACK ERROR] {e}")
+
     async def _ask_named(self, name: str, prompt: str):
         """이름으로 에이전트 호출 + 타임아웃/오류 시 백업 인계. (text, used_name) 반환.
 
@@ -334,9 +352,10 @@ class ResearchMode:
         synth, _ = await self._ask_named(
             "Claude", _build_synthesize_prompt(question, _findings_block(findings, verdicts)))
 
-        # 4. 전송: 종합 본문 + 구조화 출처/쟁점 리포트
+        # 4. 전송: 최종 종합 답변은 채널에도 브로드캐스트(결론을 채널 타임라인에 노출),
+        #    상세 출처/쟁점 리포트는 스레드에만.
         report = _format_report(question, findings, verdicts)
-        self._post_long(channel, thread_ts, f"💡 *종합 답변:*\n{synth}")
+        self._broadcast_long(channel, thread_ts, f"💡 *종합 답변:*\n{synth}")
         self._post_long(channel, thread_ts, report)
 
     async def followup(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
