@@ -14,10 +14,11 @@ from concurrent.futures import ThreadPoolExecutor
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY
+from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY, RESEARCH_CHANNEL_ID
 from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
+from modes.research import ResearchMode
 from process import platform_cmd, subprocess_kwargs
 from slack_files import extract_attachments
 import cancel
@@ -193,6 +194,8 @@ def handle_message(event, say, client):
             _spawn(lambda atts: DebateMode(client).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         elif channel == CODING_CHANNEL_ID:
             _spawn(lambda atts: CodingMode(client).followup(channel, thread_ts, text, attachments=atts), thread_ts)
+        elif RESEARCH_CHANNEL_ID and channel == RESEARCH_CHANNEL_ID:
+            _spawn(lambda atts: ResearchMode(client).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         elif channel in BRIDGE_CHANNELS:
             _spawn(lambda atts: BridgeMode(client, BRIDGE_CHANNELS[channel]).followup(channel, thread_ts, text, attachments=atts), thread_ts)
         return
@@ -202,6 +205,8 @@ def handle_message(event, say, client):
         _spawn(lambda atts: DebateMode(client).start(channel, ts, text, attachments=atts), ts)
     elif channel == CODING_CHANNEL_ID:
         _spawn(lambda atts: CodingMode(client).start(channel, ts, text, attachments=atts), ts)
+    elif RESEARCH_CHANNEL_ID and channel == RESEARCH_CHANNEL_ID:
+        _spawn(lambda atts: ResearchMode(client).start(channel, ts, text, attachments=atts), ts)
     elif channel in BRIDGE_CHANNELS:
         _spawn(lambda atts: BridgeMode(client, BRIDGE_CHANNELS[channel]).handle(channel, ts, text, attachments=atts), ts)
 
@@ -222,6 +227,8 @@ if __name__ == "__main__":
     print("Slack Multi-Agent Bot 시작")
     print(f"  Debate Channel : {DEBATE_CHANNEL_ID}")
     print(f"  Coding Channel : {CODING_CHANNEL_ID}")
+    if RESEARCH_CHANNEL_ID:
+        print(f"  Research Channel : {RESEARCH_CHANNEL_ID}")
     for ch_id, work_dir in BRIDGE_CHANNELS.items():
         print(f"  Bridge Channel : {ch_id} → {work_dir}")
     print("=" * 50)

@@ -7,6 +7,9 @@ SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
 SLACK_APP_TOKEN = os.environ["SLACK_APP_TOKEN"]
 DEBATE_CHANNEL_ID = os.environ["DEBATE_CHANNEL_ID"]
 CODING_CHANNEL_ID = os.environ["CODING_CHANNEL_ID"]
+# 리서치 모드 채널 (선택). 미설정 시 리서치 라우팅 비활성.
+RESEARCH_CHANNEL_ID = os.environ.get("RESEARCH_CHANNEL_ID", "")
+RESEARCH_SUBQ_MAX = int(os.environ.get("RESEARCH_SUBQ_MAX", "6"))
 SR_AGENT_CHANNEL_ID = os.environ.get("SR_AGENT_CHANNEL_ID", "")
 TC_AGENT_CHANNEL_ID = os.environ.get("TC_AGENT_CHANNEL_ID", "")
 MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))
