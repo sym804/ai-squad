@@ -115,7 +115,11 @@ def install_task():
     if result.returncode == 0:
         print(f"예약 작업 '{TASK_NAME}' 등록 완료 (3분마다, S4U 비대화형)")
     else:
-        print(f"등록 실패: {result.stderr or result.stdout}")
+        # cp949 콘솔에서 깨지지 않도록 출력 인코딩에 맞춰 안전 변환
+        err = (result.stderr or result.stdout or "").strip()
+        enc = sys.stdout.encoding or "utf-8"
+        safe = err.encode(enc, "replace").decode(enc)
+        print(f"등록 실패: {safe}")
         print("관리자 권한(elevated PowerShell)으로 실행해야 합니다.")
 
 
