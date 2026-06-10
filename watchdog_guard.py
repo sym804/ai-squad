@@ -80,28 +80,43 @@ def check_and_restart():
 
 
 def install_task():
-    """Windows 예약 작업 등록 (3분마다 실행, 창 없이)."""
-    # pythonw.exe 사용 (콘솔 창 안 뜸)
+    """Windows 예약 작업 등록 (3분마다, S4U 비대화형).
+
+    LogonType=S4U: 현재 사용자 신원으로 '로그온 여부와 무관하게' 비대화형 실행.
+    - 비대화형(non-interactive) 세션이라 봇과 그 자식 CLI(claude/codex/agy 등)가
+      띄우는 콘솔 창(agy statusline, codex app-server, context7 npx 등)이 사용자
+      데스크톱에 렌더링되지 않는다 → cmd 창 깜빡임 근본 제거.
+    - S4U 는 비밀번호 저장이 필요 없고, 사용자 프로필(~/.gemini, ~/.claude 등)
+      로컬 접근과 HTTPS API 호출은 정상(네트워크 자격 위임만 제한 → 무영향).
+    - 등록에는 관리자 권한이 필요하다(elevated PowerShell).
+    """
     python_dir = os.path.dirname(sys.executable)
     pythonw_exe = os.path.join(python_dir, "pythonw.exe")
     if not os.path.exists(pythonw_exe):
         pythonw_exe = sys.executable  # fallback
     script_path = os.path.abspath(__file__)
+    user = f"{os.environ.get('USERDOMAIN', '')}\\{os.environ.get('USERNAME', '')}".strip("\\")
 
-    cmd = [
-        "schtasks", "/Create",
-        "/TN", TASK_NAME,
-        "/TR", f'"{pythonw_exe}" "{script_path}"',
-        "/SC", "MINUTE",
-        "/MO", "3",
-        "/F",  # 기존 작업 덮어쓰기
-    ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    # schtasks 는 S4U 를 직접 지원하지 않으므로 PowerShell Register-ScheduledTask 사용.
+    ps = (
+        f"$a = New-ScheduledTaskAction -Execute '{pythonw_exe}' -Argument '\"{script_path}\"'; "
+        f"$t = New-ScheduledTaskTrigger -Once -At (Get-Date) "
+        f"-RepetitionInterval (New-TimeSpan -Minutes 3); "
+        f"$p = New-ScheduledTaskPrincipal -UserId '{user}' -LogonType S4U -RunLevel Limited; "
+        f"$s = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -AllowStartIfOnBatteries "
+        f"-DontStopIfGoingOnBatteries; "
+        f"Register-ScheduledTask -TaskName '{TASK_NAME}' -Action $a -Trigger $t "
+        f"-Principal $p -Settings $s -Force"
+    )
+    result = subprocess.run(
+        ["powershell", "-NoProfile", "-NonInteractive", "-Command", ps],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
     if result.returncode == 0:
-        print(f"예약 작업 '{TASK_NAME}' 등록 완료 (3분마다 실행)")
+        print(f"예약 작업 '{TASK_NAME}' 등록 완료 (3분마다, S4U 비대화형)")
     else:
-        print(f"등록 실패: {result.stderr}")
-        print("관리자 권한으로 실행해보세요.")
+        print(f"등록 실패: {result.stderr or result.stdout}")
+        print("관리자 권한(elevated PowerShell)으로 실행해야 합니다.")
 
 
 def uninstall_task():

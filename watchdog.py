@@ -137,6 +137,7 @@ def start_bot():
         cwd=base_dir,
         stdout=bot_log_file,
         stderr=subprocess.STDOUT,
+        creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
     )
     msg = f"✅ Bot 시작됨 (PID: {bot_process.pid})"
     print(f"[WATCHDOG] {msg}")
