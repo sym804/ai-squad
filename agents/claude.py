@@ -58,7 +58,10 @@ class ClaudeAgent(AgentBase):
             cmd.append("--continue")
         # Read 를 allowedTools 에 추가: 첨부 (이미지/PDF) 시 prompt 안의 절대경로를
         # Claude Code 가 Read 도구로 읽어 vision/문서 입력으로 처리한다.
-        cmd.extend(["-p", "--output-format", "json",
+        # --strict-mcp-config: 사용자 전역 MCP(context7 등 npx/stdio) 로딩 차단.
+        #   봇 답변엔 MCP 불필요하고, 매 호출마다 npx MCP 서버가 cmd 콘솔을
+        #   새로 띄워 깜빡이는 문제(Windows)를 제거 + 에이전트 부팅도 빨라짐.
+        cmd.extend(["-p", "--strict-mcp-config", "--output-format", "json",
                     "--allowedTools", "WebSearch", "WebFetch", "Read"])
         return cmd
 
@@ -66,7 +69,8 @@ class ClaudeAgent(AgentBase):
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
-        cmd.extend(["-p", "--output-format", "stream-json", "--verbose",
+        # --strict-mcp-config: 전역 MCP(context7 npx 등) 미로드 → cmd 창 깜빡임 제거.
+        cmd.extend(["-p", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
                     "--allowedTools", "WebSearch", "WebFetch", "Read"])
         return cmd
 

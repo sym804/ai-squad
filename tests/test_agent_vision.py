@@ -105,6 +105,18 @@ class TestClaudeImageAugment:
         stream_cmd = agent._build_stream_cmd()
         assert "Read" in stream_cmd
 
+    def test_strict_mcp_config_disables_global_mcp(self):
+        """전역 MCP(context7 npx 등) 로딩 차단 → Windows cmd 창 깜빡임 제거.
+
+        --strict-mcp-config 를 --mcp-config 없이 주면 MCP 서버를 0개 로드한다.
+        봇 답변엔 MCP 가 불필요하므로 양 호출 경로 모두에 적용돼 있어야 한다.
+        """
+        agent = ClaudeAgent()
+        for cmd in (agent._build_cmd("/tmp/x"), agent._build_stream_cmd()):
+            assert "--strict-mcp-config" in cmd
+            # -p(=--print) 뒤, --output-format 앞 위치여야 print 모드 옵션으로 파싱됨
+            assert cmd.index("-p") < cmd.index("--strict-mcp-config") < cmd.index("--output-format")
+
     @pytest.mark.asyncio
     async def test_subprocess_uses_large_stream_buffer(self, monkeypatch):
         """이미지 Read 의 stream-json 한 줄이 64KB 를 넘겨도 죽지 않도록 limit 을 키운다.

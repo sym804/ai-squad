@@ -79,12 +79,16 @@ class BridgeMode:
         return await agent.ask(prompt, attachments=attachments, timeout=CLI_TIMEOUT * 2)
 
     async def _call_claude(self, prompt: str) -> str:
-        """claude --continue -p 로 호출."""
+        """claude --continue -p 로 호출.
+
+        --strict-mcp-config: 전역 MCP(context7 npx 등) 미로드 → 호출 시마다
+        npx MCP 서버가 cmd 콘솔을 새로 띄워 깜빡이는 문제(Windows) 제거.
+        """
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             return await self._run_cmd(
-                ["claude", "--continue", "-p"],
+                ["claude", "--continue", "-p", "--strict-mcp-config"],
                 stdin_data,
             )
         finally:

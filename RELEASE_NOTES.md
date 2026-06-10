@@ -33,6 +33,22 @@
 | v0.7.8 | 2026-05-29 | Gemini "True color (24-bit) support not detected" 터미널 경고 누출 수정 (노이즈 필터 키워드 일반화) |
 | v0.7.9 | 2026-06-08 | 토론 "미해결 쟁점"이 각 에이전트 요약/합의된 답변과 중복되던 문제 수정 (disagreements 필드 소비, summary 폴백 제거) |
 | v0.7.10 | 2026-06-09 | agy `-p` stdout 미출력 버그(upstream #76) 우회: 응답을 디스크 transcript 에서 호출별 trace 토큰으로 복구해 비대화형 회수 |
+| v0.7.11 | 2026-06-10 | Windows cmd 콘솔 깜빡임 제거: claude 호출에 `--strict-mcp-config` 추가해 전역 MCP(context7 npx) spawn 차단 |
+
+## v0.7.11 (2026-06-10)
+
+슬랙 문의 시(에이전트 "생각 중" 진입 시점) Windows 콘솔 창이 잠깐 떴다 사라지는 깜빡임 제거. 라이브 프로세스 트리 추적으로 원인을 특정하고, 격리 비교 실측 + Codex 교차검증으로 검증.
+
+### 배경 (근본 원인)
+봇은 `cmd /c claude -p ...` 로 Claude Code CLI 를 호출하는데, 사용자 전역 Claude 설정에 등록된 MCP 서버 `context7`(`npx -y @upstash/context7-mcp`, stdio 방식)이 `claude` 부팅마다 `cmd /c npx ...` 로 새로 spawn 된다. `claude.exe` 가 `CREATE_NO_WINDOW`(숨김 콘솔)로 떠 있어 이 손자 프로세스가 부모의 숨김 콘솔을 못 물려받고 **새 conhost 콘솔을 할당** → 잠깐 떴다 사라지는 깜빡임으로 보인다. 나머지 전역 MCP(Drive/Gmail/Calendar/slack/github)는 HTTP 원격이라 로컬 프로세스를 안 띄워 무관. 봇 답변 경로는 MCP 도구를 쓰지 않으며 빌트인 `WebSearch/WebFetch/Read` 만 사용한다.
+
+### 수정
+- **[Minor / backend]** `agents/claude.py` `_build_cmd`/`_build_stream_cmd`, `modes/bridge.py` `_call_claude`: claude 호출 명령에 `--strict-mcp-config` 추가. 이 플래그는 `--mcp-config` 없이 주면 MCP 서버를 0개 로드(전역 MCP 무시)하므로 context7 npx spawn 자체가 사라진다. 부수 효과로 에이전트 부팅이 빨라지고, 봇이 사용자의 github/slack MCP 도구를 실수로 건드릴 여지도 없어진다. 첨부/백업/코딩/토론 경로는 모두 `ClaudeAgent` 경유라 두 빌더 수정으로 자동 커버. codex 의 유일한 MCP(`openaiDeveloperDocs`)는 `url=` HTTP 원격이라 로컬 콘솔을 안 띄워 손대지 않음.
+
+### 검증
+- **격리 비교 실측**: 동일 prompt 로 특정 PID 서브트리 추적. `--strict-mcp-config` 있음 → context7/npx 자식 spawn = False(깜빡임 없음), 없음(기존) → True(깜빡임 발생). 라이브로 원인·해소 모두 확인.
+- 단위 테스트 `tests/test_agent_vision.py::test_strict_mcp_config_disables_global_mcp` 신규: 두 빌더 모두 `-p` 뒤·`--output-format` 앞 위치에 플래그가 들어가는지 순서까지 단언. vision/bridge/process 묶음 38건 통과.
+- Codex 교차검증 통과: 4개 항목(플래그 위치 정합성·누락 호출부·부작용·codex 경로) 전부 통과, 발견 이슈 2건 모두 Trivial(외부 CLI 파서 미확정→라이브로 해소, 테스트 순서 미검증→순서 단언 보강).
 
 ## v0.7.10 (2026-06-09)
 
