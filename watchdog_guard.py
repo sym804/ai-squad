@@ -62,13 +62,30 @@ def start_watchdog():
         from datetime import datetime
         log.write(f"[{datetime.now()}] watchdog 죽어있음 → 재시작\n")
 
-    subprocess.Popen(
-        [sys.executable, "-u", WATCHDOG_SCRIPT],
+    # S4U/예약작업은 Job Object 안에서 실행되며, watchdog_guard(=task 본체)가 종료되면
+    # Windows 가 그 Job 의 자식 트리(watchdog+bot)를 회수(kill)한다. 작업 종료 후에도
+    # watchdog 가 살아남도록 Job 에서 분리해 기동한다.
+    #   DETACHED_PROCESS(0x8): 콘솔 없이 독립 실행 / CREATE_BREAKAWAY_FROM_JOB(0x1000000): Job 이탈
+    DETACHED_PROCESS = 0x00000008
+    CREATE_BREAKAWAY_FROM_JOB = 0x01000000
+    popen_kwargs = dict(
         cwd=BASE_DIR,
-        creationflags=subprocess.CREATE_NO_WINDOW,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
     )
+    try:
+        subprocess.Popen(
+            [sys.executable, "-u", WATCHDOG_SCRIPT],
+            creationflags=DETACHED_PROCESS | CREATE_BREAKAWAY_FROM_JOB,
+            **popen_kwargs,
+        )
+    except OSError:
+        # Job 이 breakaway 를 불허하는 환경 → 콘솔만 숨겨 fallback
+        subprocess.Popen(
+            [sys.executable, "-u", WATCHDOG_SCRIPT],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            **popen_kwargs,
+        )
 
 
 def check_and_restart():
