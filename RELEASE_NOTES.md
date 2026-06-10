@@ -34,6 +34,24 @@
 | v0.7.9 | 2026-06-08 | 토론 "미해결 쟁점"이 각 에이전트 요약/합의된 답변과 중복되던 문제 수정 (disagreements 필드 소비, summary 폴백 제거) |
 | v0.7.10 | 2026-06-09 | agy `-p` stdout 미출력 버그(upstream #76) 우회: 응답을 디스크 transcript 에서 호출별 trace 토큰으로 복구해 비대화형 회수 |
 | v0.7.11 | 2026-06-10 | Windows cmd 콘솔 깜빡임 제거: claude 호출에 `--strict-mcp-config` 추가해 전역 MCP(context7 npx) spawn 차단 |
+| v0.8.0 | 2026-06-11 | 리서치 모드 신설: #ai-리서치 채널에서 3 AI 분담형 팬아웃(분해→분담 조사→교차검증→출처 리포트) |
+
+## v0.8.0 (2026-06-11)
+
+새 **리서치 모드** 추가. `#ai-리서치` 채널에 질문을 던지면 3 AI 가 분담형 팬아웃으로 웹 조사해 출처 달린 리포트를 스레드로 돌려준다. 토론 고도화(Phase 2)와 공유할 "근거 기반 협업 엔진"을 분리 가능한 함수 경계로 구현. (단위 25건 + 라이브 슬랙 3건 실증 + Codex 교차검증 통과)
+
+### 배경
+기능 확장 방향으로 (1) 토론 고도화와 (2) 리서치 모드를 원했고, 둘은 웹 근거 수집·상호 교차검증·출처라는 같은 코어를 공유한다. 이를 한 번 만들어 두 모드로 노출하기로 하고, Phase 1 에서 리서치 모드를 먼저 구현했다. 설계: `docs/2026-06-10-research-mode-design.md`.
+
+### 기능 (5단계 파이프라인, 전부 Python 코드 오케스트레이션)
+- **[Major / backend]** `modes/research.py` 신설. ResearchMode 가 분해(claude, 하위질문 JSON) → 하위질문 라운드로빈 분담 조사(claude/codex/gemini 병렬, 웹) → **생산자!=검증자** 교차검증(병렬, supported/disputed/unverified 판정) → claude 종합 → Slack 스레드 전송(`_post_long` 4000자 분할)을 오케스트레이션. 진행 단계를 스레드에 표시(💭분해→🔎분담조사→🔬교차검증→📝종합). 순수 엔진 함수(`_parse_subquestions`/`_assign_subquestions`/`_assign_verifiers`/`_extract_sources`/`_parse_verdict`/`_format_report`/프롬프트 빌더)는 Phase 2 재사용 위해 분리.
+- **[Major / backend]** `config.py` `RESEARCH_CHANNEL_ID`/`RESEARCH_SUBQ_MAX`, `slack_bot.py` 라우팅 분기(미설정 시 비활성 가드). 기존 에이전트 풀·백업 인계·취소·gemini 동시성·`_post_long` 재사용. claude 호출은 v0.7.11 `--strict-mcp-config` 유지.
+- **[Minor / backend]** 견고성: 분해 실패 시 단일질문 degrade, 조사/검증 태스크는 `asyncio.gather(return_exceptions=True)` 로 한 에이전트 실패가 전체를 중단시키지 않음(조사 실패는 건수 표기 후 제외=조용한 누락 금지, 검증 실패는 unverified 대체). `_ask_named` 는 primary 예외 시 try/except 백업 인계, disputed/unverified 는 리포트에 드롭 없이 표기.
+
+### 검증
+- 단위 테스트 `tests/test_research.py` 25건(파싱·배정·출처추출·판정·리포트·프롬프트 + 오케스트레이션 mock + 예외 견딤). 전체 통과.
+- **라이브 슬랙 실증 3건**(#ai-협업 스레드): 사실/실시간형(전기차 보조금), 비교/분석형(RAG vs 파인튜닝), 광범위 조사형(QA 채용 트렌드). 분해 6개 → 분담조사 → 교차검증 → 종합 → 출처 리포트 흐름이 스레드에 정상 표출, 실제 출처 URL(korea.kr/me.go.kr/zdnet/ev.or.kr 등) 첨부, disputed/unverified 가 검증자명과 함께 표기됨 확인. 3/3 exit 0.
+- Codex 교차검증 통과: Major 2건(gather return_exceptions 누락, _ask_named 예외 미처리) 발견 → 즉시 반영·재검증.
 
 ## v0.7.11 (2026-06-10)
 
