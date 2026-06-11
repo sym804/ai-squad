@@ -331,6 +331,24 @@ class ResearchMode:
         except Exception as e:
             print(f"[SLACK ERROR] {e}")
 
+    def _post_get_ts(self, channel, thread_ts, text):
+        """메시지 게시 후 ts 반환(진행 카운터 갱신용). 실패 시 None."""
+        try:
+            resp = self.slack.chat_postMessage(channel=channel, thread_ts=thread_ts, text=text)
+            return resp.get("ts") if hasattr(resp, "get") else None
+        except Exception as e:
+            print(f"[SLACK ERROR] {e}")
+            return None
+
+    def _update(self, channel, ts, text):
+        """기존 진행 메시지 텍스트를 갱신(카운터). ts 없으면 무시(게시 실패 graceful)."""
+        if not ts:
+            return
+        try:
+            self.slack.chat_update(channel=channel, ts=ts, text=text)
+        except Exception as e:
+            print(f"[SLACK ERROR] {e}")
+
     def _post_long(self, channel, thread_ts, text):
         MAX_LEN = 3900
         while text:
@@ -393,13 +411,18 @@ class ResearchMode:
         names = [a.name for a in self.agents]
         assigned = _assign_subquestions(subqs, names)
 
-        # 1. 분담 조사 (병렬)
-        self._post(channel, thread_ts, f"🔎 *분담 조사 중... ({len(assigned)})*")
+        # 1. 분담 조사 (병렬, 진행 카운터 갱신)
+        total = len(assigned)
+        prog_ts = self._post_get_ts(channel, thread_ts, f"🔎 *분담 조사 중...* (0/{total})")
+        done = 0
 
         async def _research_one(sq):
+            nonlocal done
             if is_cancelled(thread_ts):
                 return None
             text, used = await self._ask_named(sq["agent"], _build_research_prompt(sq["text"]))
+            done += 1  # await 이후 동기 구간이라 코루틴 간 경합 없음(이벤트 루프 단일 스레드)
+            self._update(channel, prog_ts, f"🔎 *분담 조사 중...* ({done}/{total})")
             return {"subq_id": sq["id"], "agent": used, "text": text,
                     "sources": _extract_sources(text)}
 
@@ -419,14 +442,19 @@ class ResearchMode:
             self._post(channel, thread_ts, "❌ 조사 결과가 없습니다. 중단합니다.")
             return
 
-        # 2. 교차검증 (병렬)
-        self._post(channel, thread_ts, "🔬 *교차검증 중...*")
+        # 2. 교차검증 (병렬, 진행 카운터)
         verifier_pairs = _assign_verifiers(findings, names)
+        vtotal = len(verifier_pairs)
+        vprog_ts = self._post_get_ts(channel, thread_ts, f"🔬 *교차검증 중...* (0/{vtotal})")
+        vdone = 0
 
         async def _verify_one(f, verifier):
+            nonlocal vdone
             text, _ = await self._ask_named(
                 verifier, _build_verify_prompt(f["text"], [s["url"] for s in f["sources"]]))
             status, note = _parse_verdict(text)
+            vdone += 1
+            self._update(channel, vprog_ts, f"🔬 *교차검증 중...* ({vdone}/{vtotal})")
             return {"subq_id": f["subq_id"], "verifier": verifier, "status": status, "note": note}
 
         raw_verdicts = await asyncio.gather(

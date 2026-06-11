@@ -427,6 +427,29 @@ def test_start_broadcasts_final_answer_to_channel():
     assert any("종합 답변" in str(c.kwargs.get("text", "")) for c in broadcasts)
 
 
+def test_start_posts_progress_counter():
+    """분담 조사/교차검증 단계가 (0/N) 게시 후 chat_update 로 (n/N) 카운터를 갱신한다."""
+    def claude(p):
+        if "JSON" in p and "분해" in p:
+            return '["하위1", "하위2"]'
+        if "종합" in p:
+            return "통합 리포트"
+        if "검증" in p:
+            return "STATUS=supported | NOTE=ok"
+        return "조사 https://a.com"
+    answers = {
+        "Claude": claude,
+        "Codex": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "조사 https://b.com",
+        "Gemini": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "조사 https://c.com",
+    }
+    mode, slack = _make_mode(answers)
+    asyncio.run(mode.start("C1", "1.0", "질문"))
+    posted = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_postMessage.call_args_list)
+    assert "(0/" in posted  # 초기 진행 카운터 게시
+    updated = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_update.call_args_list)
+    assert "분담 조사 중" in updated and "/" in updated  # chat_update 로 카운터 갱신
+
+
 def test_start_decompose_failure_degrades_to_single():
     def claude(p):
         if "JSON" in p and "분해" in p:
