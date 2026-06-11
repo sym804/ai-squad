@@ -36,6 +36,24 @@
 | v0.7.11 | 2026-06-10 | Windows cmd 콘솔 깜빡임 제거: claude 호출에 `--strict-mcp-config` 추가해 전역 MCP(context7 npx) spawn 차단 |
 | v0.8.0 | 2026-06-11 | 리서치 모드 신설: #ai-리서치 채널에서 3 AI 분담형 팬아웃(분해→분담 조사→교차검증→출처 리포트) |
 | v0.8.1 | 2026-06-11 | 리서치 종합 답변 채널 브로드캐스트 + 봇 비대화형(S4U) 전환 + agy statusline 깜빡임 제거 |
+| v0.8.2 | 2026-06-11 | agy 자동 업데이트 비활성화(가동 중 자가 교체 방지, 안정성) + agy 업데이터 콘솔 깜빡임 조사·수용(외부 차단 불가) |
+
+## v0.8.2 (2026-06-11)
+
+리서치 모드 실사용 중 재발한 cmd 콘솔 깜빡임을 근본 원인까지 추적한 결과, agy 자체의 자동 업데이터(`agy --bg-updater` → `agy --version`)가 매 호출마다 잠깐 띄우는 콘솔 창이 원인임을 ground-truth(실행 중 봇 자손 프로세스 트리 + 보이는 창 실측)로 확정.
+
+### 조사 결론 (깜빡임)
+- **근본 원인**: agy 가 호출될 때마다 백그라운드 업데이터를 띄우고, 그 안의 `agy --version`(버전 체크) 콘솔 창이 대화형 데스크톱에 수십 ms 노출됨. 리서치 모드는 agy 를 6+개 병렬 호출하므로 깜빡임이 몰려 눈에 띔. (v0.7.11 의 claude→context7, v0.8.1 의 agy statusline 과는 또 다른 제3의 원인)
+- **외부 차단 불가 (전부 실측)**: `AGY_CLI_DISABLE_AUTO_UPDATE=1`(업데이트만 막고 버전체크 창은 잔존), `last_check.timestamp` 미래화(매 호출 spawn + agy 가 즉시 리셋), S4U 세션 격리(로그인 중이면 같은 세션), 부모 `CREATE_NO_WINDOW`(detached 손자라 안 닿음), 숨김 데스크톱 `lpDesktop`(6중 4 여전히 표시 - agy 가 대화형 데스크톱 직접 타깃), agy CLI 플래그(그런 옵션 없음) 모두 무효 확인.
+- **처분**: 알려진 agy 한계로 **수용/문서화**(Trivial 외관 이슈, 기능 영향 없음). gemini tier 종료(2026-06-18) 후 agy 필수라 바이너리 복귀도 임시방편.
+
+### 변경 (안정성)
+- **[Minor / backend]** `config.make_filtered_env()` 에서 agy 사용 시 자식 env 에 `AGY_CLI_DISABLE_AUTO_UPDATE=1` 주입. 봇 가동 중 agy 가 자기 실행 파일을 자동 교체(update_status.json 에 "Update successful, restart CLI to use" 실제 발생 이력)하면 진행 중 호출이 깨질 수 있어 차단. **깜빡임 방지가 아니라 안정성 목적**(주석 명시).
+
+### 검증
+- 깜빡임 근본 원인: 실행 중 slack_bot.py 자손 트리 모니터로 `agy --version` 보이는 창 ground-truth 포착.
+- 억제 시도 6종 전부 A/B·반복 실측으로 무효 확인(1회 표본의 위양성 배제).
+- config 변경: agy 일 때 env 주입 동작 단위 확인 + 기존 테스트 29건 통과 + Codex 교차검증(Medium 지적은 정규화 로직 미반영 위양성으로 기각).
 
 ## v0.8.1 (2026-06-11)
 

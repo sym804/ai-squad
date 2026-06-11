@@ -53,4 +53,12 @@ def make_filtered_env() -> dict:
     """자식 프로세스용 환경변수. 민감 정보 제외, PYTHONIOENCODING 추가."""
     env = {k: v for k, v in os.environ.items() if k not in _SENSITIVE_ENV_KEYS}
     env["PYTHONIOENCODING"] = "utf-8"
+    # agy(Antigravity CLI) 사용 시 자동 업데이트 비활성화.
+    # agy 는 호출 시 백그라운드 업데이터(`agy --bg-updater`)를 띄워 자기 자신을
+    # 갱신하는데, 봇 가동 중 실행 파일이 교체되면 진행 중 호출이 깨질 수 있다(안정성).
+    # 주의: 이 변수는 업데이터가 매 호출 잠깐 띄우는 `agy --version` 콘솔 창
+    # 깜빡임은 막지 못한다(별개 문제). 깜빡임은 env/설정/세션/데스크톱 격리 모두
+    # 실측상 무효였고, 알려진 agy 한계로 수용. 이 설정은 안정성만 위함.
+    if GEMINI_CLI_BINARY == "agy":  # 위에서 "gemini"/"agy" 로 정규화된 값
+        env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
     return env
