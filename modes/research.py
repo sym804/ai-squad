@@ -11,11 +11,15 @@ import re
 import json
 import asyncio
 import logging
+from urllib.parse import urlsplit, unquote
 
 logger = logging.getLogger(__name__)
 
 _CODE_FENCE = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.DOTALL)
-_URL_RE = re.compile(r"https?://[^\s)\]>\"']+")
+# URL 추출: 공백/닫는 괄호/따옴표에 더해 `>`, `|`, `<` 도 종료문자로 취급.
+# (`|`,`<` 미배제 시 모델 출력의 이중 URL `urlA|urlB` 이 한 덩어리로 잡혀
+#  Slack `<url|label>` 링크를 깨뜨림. _format_report 와 함께 방어.)
+_URL_RE = re.compile(r"https?://[^\s)\]>\"'|<]+")
 _VERDICT_RE = re.compile(
     r"STATUS\s*=\s*(supported|disputed|unverified)\s*(?:\|\s*NOTE\s*=\s*(.*))?",
     re.IGNORECASE,
@@ -99,6 +103,33 @@ def _extract_sources(text: str) -> list[dict]:
     return out
 
 
+def _short_source_label(title: str, url: str) -> str:
+    """출처 링크용 짧은 라벨. 도메인(title) + 짧고 의미있는 경로 끝 세그먼트.
+
+    긴 URL(특히 Gemini 그라운딩 redirect 토큰)은 Slack 하이퍼링크로 숨기고
+    라벨만 노출하기 위함. 경로 끝이 너무 길거나(>28자) 무의미하면 도메인만.
+    Slack `<url|label>` 파싱을 깨는 문자(`|`,`<`,`>`)는 라벨에서 제거.
+    """
+    def _clean(s: str) -> str:
+        # Slack <url|label> 파싱을 깨는 문자 제거 + 모든 공백(\n\r\t 포함) 정규화
+        # + 최종 길이 상한(title 포함).
+        s = " ".join(s.replace("|", " ").replace("<", "").replace(">", "").split())
+        return s if len(s) <= 42 else s[:39] + "..."
+
+    try:
+        path = urlsplit(url).path.strip("/")  # query/fragment 자동 제외
+    except ValueError:
+        path = ""
+    label = title
+    if path:
+        tail = unquote(path.split("/")[-1])
+        if tail and len(tail) <= 28:
+            cand = f"{title}/{tail}"
+            if len(cand) <= 42:
+                label = cand
+    return _clean(label)
+
+
 def _parse_verdict(text: str) -> tuple[str, str]:
     """검증 출력에서 (status, note). 미인식 시 ('unverified', '')."""
     if text:
@@ -134,10 +165,14 @@ def _format_report(question: str, findings: list[dict], verdicts: list[dict]) ->
         lines.append("\n📚 *출처:*")
         seen = set()
         for s in all_sources:
-            if s["url"] in seen:
+            # Slack <url|label> 를 깨는 문자(공백·|·<·>)에서 URL 절단(이중 URL/잡음 방어).
+            safe_url = re.split(r"[|<>\s]", s["url"], 1)[0]
+            if not safe_url or safe_url in seen:
                 continue
-            seen.add(s["url"])
-            lines.append(f"- {s['title']}: {s['url']}")
+            seen.add(safe_url)
+            # Slack 하이퍼링크 <url|라벨> 로 긴 URL 을 숨기고 짧은 라벨만 노출.
+            label = _short_source_label(s["title"], safe_url)
+            lines.append(f"- <{safe_url}|{label}>")
     return "\n".join(lines)
 
 

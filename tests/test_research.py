@@ -12,6 +12,7 @@ from modes.research import (
     _assign_subquestions,
     _assign_verifiers,
     _extract_sources,
+    _short_source_label,
     _format_report,
     _parse_verdict,
     _build_decompose_prompt,
@@ -116,7 +117,87 @@ def test_extract_none():
     assert _extract_sources("출처 없는 주장") == []
 
 
+def test_extract_stops_at_pipe():
+    # 모델이 만든 이중 URL(urlA|urlB)이 한 덩어리로 잡히지 않아야 함(Slack 링크 보호)
+    out = _extract_sources("https://a.com/x?p=1|https://b.com/y")
+    for s in out:
+        assert "|" not in s["url"]
+
+
+# --- _short_source_label ---------------------------------------------------
+
+def test_label_domain_plus_short_tail():
+    assert _short_source_label("en.wikipedia.org",
+                               "https://en.wikipedia.org/wiki/Lee_Jae_Myung") == "en.wikipedia.org/Lee_Jae_Myung"
+
+
+def test_label_same_domain_disambiguated():
+    a = _short_source_label("en.wikipedia.org", "https://en.wikipedia.org/wiki/Lee_Jae_Myung")
+    b = _short_source_label("en.wikipedia.org", "https://en.wikipedia.org/wiki/Red_tape")
+    assert a != b  # 같은 도메인이라도 경로 끝으로 구분
+
+
+def test_label_long_redirect_tail_falls_back_to_domain():
+    url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/" + "A" * 180
+    assert _short_source_label("vertexaisearch.cloud.google.com", url) == "vertexaisearch.cloud.google.com"
+
+
+def test_label_no_path_is_domain_only():
+    assert _short_source_label("wsj.com", "https://wsj.com") == "wsj.com"
+
+
+def test_label_decodes_percent_encoding():
+    # namu.wiki 한글 슬러그가 디코딩되어 사람이 읽을 수 있어야 함(28자 이내일 때)
+    url = "https://namu.wiki/w/%EC%9D%B4%EC%9E%AC%EB%AA%85"
+    assert _short_source_label("namu.wiki", url) == "namu.wiki/이재명"
+
+
+def test_label_strips_slack_link_breaking_chars():
+    # 라벨에 | < > 가 들어가도 Slack <url|label> 파싱을 깨지 않도록 제거
+    url = "https://ex.com/a|b<c>d"
+    label = _short_source_label("ex.com", url)
+    assert "|" not in label and "<" not in label and ">" not in label
+
+
+def test_label_strips_query_and_fragment():
+    # urlsplit 기반: 경로 끝 세그먼트만, query/fragment 는 제외
+    assert _short_source_label("korea.kr",
+                               "https://korea.kr/briefing/view.do?newsId=156742072#top") == "korea.kr/view.do"
+
+
+def test_label_caps_overlong_domain():
+    # title 자체가 길어도 최종 라벨은 상한(42자) 적용
+    long_title = "a" * 60 + ".com"
+    assert len(_short_source_label(long_title, "https://x")) <= 42
+
+
 # --- _format_report --------------------------------------------------------
+
+def test_report_sources_use_slack_hyperlink_and_hide_long_url():
+    long_url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/" + "Z" * 180
+    findings = [{"subq_id": "q1", "agent": "Gemini", "text": "주장",
+                 "sources": [{"title": "vertexaisearch.cloud.google.com", "url": long_url}]}]
+    verdicts = [{"subq_id": "q1", "verifier": "Claude", "status": "supported", "note": ""}]
+    out = _format_report("질문", findings, verdicts)
+    # Slack 하이퍼링크 <url|label> 로 렌더되고, 라벨은 도메인만(긴 토큰은 링크 뒤로 숨김)
+    assert f"<{long_url}|vertexaisearch.cloud.google.com>" in out
+    # 출처 줄에 'domain: full_url' 옛 형식이 더는 없어야 함
+    assert "vertexaisearch.cloud.google.com: https" not in out
+
+
+def test_report_sanitizes_url_with_pipe():
+    # 출처 URL 에 | 가 섞여도(이중 URL) 렌더가 첫 유효 URL 로 절단되어 링크가 안 깨짐
+    findings = [{"subq_id": "q1", "agent": "Claude", "text": "주장",
+                 "sources": [{"title": "kctdi.or.kr",
+                              "url": "https://kctdi.or.kr/a?x=1|https://kctdi.or.kr/a?x=1"}]}]
+    verdicts = [{"subq_id": "q1", "verifier": "Codex", "status": "supported", "note": ""}]
+    out = _format_report("질문", findings, verdicts)
+    src_line = [ln for ln in out.split("\n") if ln.startswith("- <")][0]
+    # <url|label> 안에서 url 부분에 | 가 없어야 함(라벨 경계 보호)
+    inner = src_line[src_line.index("<") + 1:src_line.rindex(">")]
+    url_part, _, _label = inner.partition("|")
+    assert "|" not in url_part and url_part == "https://kctdi.or.kr/a?x=1"
+
 
 def test_report_has_sections_and_sources():
     findings = [{"subq_id": "q1", "agent": "Claude", "text": "지구는 둥글다",
