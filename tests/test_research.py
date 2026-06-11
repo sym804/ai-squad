@@ -13,6 +13,7 @@ from modes.research import (
     _assign_verifiers,
     _extract_sources,
     _short_source_label,
+    _shorten_urls_in_text,
     _format_report,
     _parse_verdict,
     _build_decompose_prompt,
@@ -169,6 +170,93 @@ def test_label_caps_overlong_domain():
     # title 자체가 길어도 최종 라벨은 상한(42자) 적용
     long_title = "a" * 60 + ".com"
     assert len(_short_source_label(long_title, "https://x")) <= 42
+
+
+# --- _shorten_urls_in_text -------------------------------------------------
+
+def test_shorten_markdown_link_with_long_redirect():
+    # 모델의 [label](<긴 redirect>) 마크다운 → Slack <url|짧은라벨>, 긴 토큰 숨김
+    long_url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/" + "Q" * 180
+    out = _shorten_urls_in_text(f"주의 (출처: [ebc.com](<{long_url}>))")
+    assert f"<{long_url}|vertexaisearch.cloud.google.com>" in out
+    assert "[ebc.com](" not in out  # 마크다운 링크 문법은 사라져야 함
+
+
+def test_shorten_raw_url_strips_trailing_comma():
+    out = _shorten_urls_in_text("출처: https://www.federalreserve.gov/x/openmarket.htm, 다음")
+    assert "<https://www.federalreserve.gov/x/openmarket.htm|federalreserve.gov/openmarket.htm>" in out
+    # URL 안에 콤마가 들어가면 안 됨
+    inner = out.split("<")[1].split("|")[0]
+    assert "," not in inner
+
+
+def test_shorten_bare_angle_url_gets_label():
+    out = _shorten_urls_in_text("참고 <https://www.kiplinger.com/investing/stocks/the-9-best-monthly>")
+    assert "|kiplinger.com" in out
+
+
+def test_shorten_is_idempotent():
+    t = "출처: https://a.com/b 그리고 [x](<https://c.com/d>)"
+    once = _shorten_urls_in_text(t)
+    assert _shorten_urls_in_text(once) == once  # 이미 짧아진 텍스트 재처리 시 불변
+
+
+def test_shorten_no_url_unchanged():
+    assert _shorten_urls_in_text("URL 없는 평범한 문장") == "URL 없는 평범한 문장"
+
+
+def test_shorten_preserves_balanced_parens_in_url():
+    # Wikipedia 류 균형 괄호 URL 은 닫는 괄호를 잃지 않아야 함
+    out = _shorten_urls_in_text("참고 https://en.wikipedia.org/wiki/Mercury_(planet) 끝")
+    assert "https://en.wikipedia.org/wiki/Mercury_(planet)" in out
+    assert "끝" in out
+
+
+def test_shorten_restores_trailing_paren_and_period():
+    # "(... url).' 에서 닫는 괄호/마침표는 URL 밖(본문)에 남아야 함
+    out = _shorten_urls_in_text("(자세히 https://x.com/a).")
+    assert "<https://x.com/a|" in out
+    assert out.rstrip().endswith(").")  # ) 와 . 가 링크 밖에 복원됨
+
+
+def test_shorten_strips_trailing_question_and_korean_punct():
+    out = _shorten_urls_in_text("출처 https://x.com/b? 그리고 https://y.com/c。")
+    # ? 와 。 가 URL(라벨) 안에 포함되면 안 됨
+    for seg in out.split("<")[1:]:
+        url_part = seg.split("|")[0]
+        assert "?" not in url_part and "。" not in url_part
+
+
+def test_shorten_markdown_angle_url_with_parens():
+    # 꺾쇠 감싼 마크다운 링크 안 괄호 URL: >> 로 깨지지 않고 괄호 보존
+    out = _shorten_urls_in_text("참고 [x](<https://example.com/a_(b)>) 끝")
+    assert "<https://example.com/a_(b)|" in out
+    assert ">>" not in out and "[x](" not in out
+
+
+def test_shorten_markdown_bare_url_with_parens():
+    out = _shorten_urls_in_text("참고 [x](https://example.com/a_(b)) 끝")
+    assert "https://example.com/a_(b)" in out
+    assert ">>" not in out
+
+
+def test_shorten_raw_url_unbalanced_parens_and_period():
+    out = _shorten_urls_in_text("문장 https://example.com/a_(b)). 다음")
+    # 균형 괄호 (b) 는 보존, 잉여 ) 와 . 는 본문으로 복원
+    assert "<https://example.com/a_(b)|" in out
+    assert ")." in out
+
+
+def test_shorten_idempotent_with_parens():
+    once = _shorten_urls_in_text("참고 https://en.wikipedia.org/wiki/Mercury_(planet).")
+    assert _shorten_urls_in_text(once) == once  # 괄호 포함 변환 결과도 재처리 시 불변
+
+
+def test_shorten_many_trailing_parens_terminates():
+    # 잉여 닫는 괄호가 많아도(누적 카운트) 정상 종료 + 균형 괄호만 보존
+    out = _shorten_urls_in_text("https://example.com/a_(b)" + ")" * 50)
+    assert "<https://example.com/a_(b)|" in out
+    assert out.endswith(")" * 50)  # 잉여 50개는 본문으로 복원
 
 
 # --- _format_report --------------------------------------------------------

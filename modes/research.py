@@ -130,6 +130,64 @@ def _short_source_label(title: str, url: str) -> str:
     return _clean(label)
 
 
+def _domain_of(url: str) -> str:
+    return re.sub(r"^https?://(www\.)?", "", url).split("/")[0]
+
+
+# 본문 URL 후처리용 패턴 (마크다운(꺾쇠/bare) → 꺾쇠 링크 → raw URL 순서로 치환)
+# 마크다운 안 URL 도 `)` 를 허용(꺾쇠는 `>`까지, bare 는 1단계 균형 괄호까지) 잡은 뒤
+# _link 의 균형 검사로 정리 → `[x](<https://e.com/a_(b)>)` 같은 케이스 안 깨짐.
+_MD_ANGLE_LINK_RE = re.compile(r"\[[^\]\n]*\]\(\s*<(https?://[^>\n]+)>\s*\)")
+_MD_BARE_LINK_RE = re.compile(r"\[[^\]\n]*\]\(\s*(https?://(?:[^()\s\n]|\([^()\n]*\))+)\s*\)")
+_ANGLE_LINK_RE = re.compile(r"<(https?://[^\s>|]+)(?:\|[^>\n]*)?>")
+# raw URL: `)` 를 일단 허용해 잡은 뒤 _link 에서 균형 검사로 분리(괄호 포함 URL 보존).
+# lookbehind 는 이미 <...> 로 감싼 URL 만 제외.
+_RAW_URL_RE = re.compile(r"(?<![<|])https?://[^\s\]>\"'|<]+")
+# URL 끝에 달라붙는 문장부호(괄호 제외, 균형 검사는 별도)
+_TRAIL_PUNCT = ".,;:!?…’”」。）\"'"
+
+
+def _shorten_urls_in_text(text: str) -> str:
+    """모델이 생성한 본문 안의 URL을 Slack 짧은 하이퍼링크 `<url|라벨>`로 치환.
+
+    `_format_report` 의 구조화된 출처 블록과 달리, 종합 답변/finding 본문은 LLM 이
+    `[매체](<url>)`(Slack 미지원 마크다운 → URL 노출), `<url>`(라벨 없는 꺾쇠),
+    raw URL 등 제각각으로 출처를 박는다. 특히 Gemini 그라운딩 redirect(200자+)가
+    그대로 노출되는 문제를 잡기 위해 모든 형태를 짧은 하이퍼링크로 정규화한다.
+    """
+    if not text:
+        return text
+
+    def _link(raw: str) -> str:
+        head = re.split(r"[|<>\s]", raw, 1)[0]  # 구분자/공백에서만 절단(괄호는 보존)
+        trail = ""  # URL 에서 떼낸 문장부호·불균형 닫는 괄호 → 본문으로 되돌림
+        opens, closes = head.count("("), head.count(")")  # 누적 카운트(루프 내 재계산 회피)
+        while head:
+            ch = head[-1]
+            if ch in _TRAIL_PUNCT:
+                trail = ch + trail
+                head = head[:-1]
+            elif ch == ")" and opens < closes:
+                trail = ch + trail
+                head = head[:-1]
+                closes -= 1
+            else:
+                break
+        if not head:
+            return raw
+        return f"<{head}|{_short_source_label(_domain_of(head), head)}>" + trail
+
+    # 1) [label](<url>)  (꺾쇠 감싼 마크다운: `>`까지 URL 로, 괄호 포함 안전)
+    text = _MD_ANGLE_LINK_RE.sub(lambda m: _link(m.group(1)), text)
+    # 2) [label](url)    (bare 마크다운: 1단계 균형 괄호까지 URL)
+    text = _MD_BARE_LINK_RE.sub(lambda m: _link(m.group(1)), text)
+    # 3) <url> 또는 <url|label>
+    text = _ANGLE_LINK_RE.sub(lambda m: _link(m.group(1)), text)
+    # 4) 남은 raw URL (이미 <...> 안에 든 것은 lookbehind 로 제외)
+    text = _RAW_URL_RE.sub(lambda m: _link(m.group(0)), text)
+    return text
+
+
 def _parse_verdict(text: str) -> tuple[str, str]:
     """검증 출력에서 (status, note). 미인식 시 ('unverified', '')."""
     if text:
@@ -151,7 +209,7 @@ def _format_report(question: str, findings: list[dict], verdicts: list[dict]) ->
         v = vmap.get(f["subq_id"])
         status = v["status"] if v else "unverified"
         mark = {"supported": "✅", "disputed": "⚠️", "unverified": "❓"}.get(status, "❓")
-        lines.append(f"{mark} {f['text'].strip()}")
+        lines.append(f"{mark} {_shorten_urls_in_text(f['text'].strip())}")
         for s in f.get("sources", []):
             all_sources.append(s)
         if status in ("disputed", "unverified"):
@@ -390,7 +448,7 @@ class ResearchMode:
         # 4. 전송: 최종 종합 답변은 채널에도 브로드캐스트(결론을 채널 타임라인에 노출),
         #    상세 출처/쟁점 리포트는 스레드에만.
         report = _format_report(question, findings, verdicts)
-        self._broadcast_long(channel, thread_ts, f"💡 *종합 답변:*\n{synth}")
+        self._broadcast_long(channel, thread_ts, f"💡 *종합 답변:*\n{_shorten_urls_in_text(synth)}")
         self._post_long(channel, thread_ts, report)
 
     async def followup(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
