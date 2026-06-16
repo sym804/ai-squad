@@ -18,6 +18,7 @@ from modes.research import (
     _parse_verdict,
     _split_for_slack,
     _findings_block,
+    _looks_like_failure,
     _build_decompose_prompt,
     _build_research_prompt,
     _build_verify_prompt,
@@ -604,3 +605,101 @@ def test_report_disputed_preview_ellipsis():
     out = _format_report("질문", findings, verdicts)
     assert "..." in out          # 60자 초과 미리보기 말줄임
     assert "근거 부족" in out      # note 유지
+
+
+# --- F1: 분해/조사/종합 맥락·제약 임베드 ------------------------------------
+
+def test_research_prompt_embeds_original_question():
+    p = _build_research_prompt("단일 모델 추천", "87키 풀알루미늄 키보드 15만원 이하 추천")
+    assert "87키 풀알루미늄 키보드 15만원 이하 추천" in p  # 원질문 임베드
+    assert "제약" in p
+
+
+def test_research_prompt_backward_compatible_without_question():
+    # 하위호환: question 없이도 동작(기존 호출부·테스트 가정 유지)
+    p = _build_research_prompt("해수면 상승 추세")
+    assert "해수면 상승 추세" in p and "원질문" not in p
+    assert ("웹" in p or "검색" in p) and "출처" in p
+
+
+def test_decompose_prompt_requires_self_contained():
+    p = _build_decompose_prompt("질문", 4)
+    assert "대명사" in p or "완결" in p
+
+
+def test_synthesize_prompt_checks_constraints():
+    p = _build_synthesize_prompt("질문", "블록")
+    assert "제약" in p and ("위반" in p or "제외" in p)
+
+
+# --- F2/F3: 실패 감지 헬퍼 + 폴백/드롭 --------------------------------------
+
+def test_looks_like_failure():
+    assert _looks_like_failure("") is True
+    assert _looks_like_failure("   ") is True
+    assert _looks_like_failure("짧음") is True  # 15자 미만
+    assert _looks_like_failure("You've hit your session limit · resets 2:10pm") is True
+    assert _looks_like_failure("[Codex-B] 응답 시간 초과 (180초)") is True
+    assert _looks_like_failure("[Claude] 호출 예외") is True
+    assert _looks_like_failure(
+        "한국은행 기준금리는 현재 2.50%이며 출처는 bok.or.kr 입니다.") is False
+
+
+def test_looks_like_failure_timeout_variants_and_overmatch():
+    # 코드베이스의 실제 타임아웃/할당량 래퍼 변형을 모두 잡음(영문 아님)
+    assert _looks_like_failure("[Codex] 전체 시간 초과 (360초)") is True
+    assert _looks_like_failure("[Gemini] 응답 대기 시간 초과 (180초 무응답)") is True
+    assert _looks_like_failure("[Gemini] API 할당량 초과 (재시도 3회 실패)") is True
+    assert _looks_like_failure("[Claude] 외부 가드 시간 초과 (450초, 내부 hang 감지)") is True
+    # 긴 정상 finding 이 일반어(rate limit/quota/api error)를 다뤄도 실패로 오판 안 함
+    long_legit = ("이 보고서는 공식 문서를 1차 출처로 API rate limit 과 quota 정책을 분석한다. " * 8 +
+                  "또한 api error 처리 모범사례를 원문 인용으로 정리한다.")
+    assert len(long_legit) >= 200
+    assert _looks_like_failure(long_legit) is False
+
+
+def test_start_drops_failure_like_finding():
+    """타임아웃/한도성 응답은 finding 에서 제외되어 리포트에 안 실린다(F3)."""
+    def claude(p):
+        if "JSON" in p and "분해" in p:
+            return '["하위1", "하위2", "하위3"]'
+        if "종합" in p:
+            return "통합 리포트 본문"
+        if "검증" in p:
+            return "STATUS=supported | NOTE=ok"
+        return "정상 조사 결과입니다 https://example.com/x"
+    answers = {
+        "Claude": claude,
+        "Codex": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p
+        else "[Codex-B] 응답 시간 초과 (180초)",
+        "Gemini": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "정상 조사 https://b.com",
+    }
+    mode, slack = _make_mode(answers)
+    asyncio.run(mode.start("C1", "1.0", "테스트 질문"))
+    posted = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_postMessage.call_args_list)
+    assert "응답 시간 초과" not in posted  # 실패성 finding 이 리포트에 안 실림
+
+
+def test_start_synthesis_failure_falls_back_to_report():
+    """종합이 한도/에러로 실패하면 raw 에러 대신 리포트로 폴백 방송한다(F2)."""
+    def claude(p):
+        if "JSON" in p and "분해" in p:
+            return '["하위1", "하위2"]'
+        if "종합" in p:
+            return "You've hit your session limit · resets 2:10pm"
+        if "검증" in p:
+            return "STATUS=supported | NOTE=ok"
+        return "정상 조사 결과 https://a.com"
+    answers = {
+        "Claude": claude,
+        "Codex": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "정상 조사 https://b.com",
+        "Gemini": lambda p: "STATUS=supported | NOTE=ok" if "검증" in p else "정상 조사 https://c.com",
+    }
+    mode, slack = _make_mode(answers)
+    asyncio.run(mode.start("C1", "1.0", "테스트 질문"))
+    broadcasts = [c for c in slack.chat_postMessage.call_args_list
+                  if c.kwargs.get("reply_broadcast") is True]
+    btext = " ".join(str(c.kwargs.get("text", "")) for c in broadcasts)
+    assert "session limit" not in btext.lower()  # 에러 문자열이 방송되지 않음
+    assert "자동 종합 실패" in btext               # 폴백 안내
+    assert "리서치 리포트" in btext                # 폴백은 리포트 내용을 담음

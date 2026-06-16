@@ -204,6 +204,42 @@ def _parse_verdict(text: str) -> tuple[str, str]:
     return "unverified", ""
 
 
+# 봇/에이전트 실패 래퍼: `[name] ... 시간 초과/할당량 초과/호출 예외` 형태(agents/base.py·
+# claude.py·gemini.py 및 _ask_named 가 내는 실제 문자열). [name] 접두로 시작해야 매칭되므로
+# 동일 주제어를 다루는 정상 finding 본문은 오탐하지 않는다.
+_BOT_FAILURE_RE = re.compile(
+    r"^\s*\[[^\]\n]{1,40}\]\s*.*(시간 초과|할당량 초과|호출 예외)")
+# CLI 자체가 내는 한도 에러(길이 무관 실패). 예: "You've hit your session limit ..."
+_CLI_FAILURE_MARKERS = ("session limit", "usage limit", "you've hit your")
+# 일반 주제어와 겹칠 수 있어, 에러 응답형(짧은 텍스트)에서만 실패로 보는 약한 마커.
+_WEAK_FAILURE_MARKERS = (
+    "rate limit", "quota", "api error", "too many requests", "overloaded",
+    "service unavailable",
+)
+
+
+def _looks_like_failure(text) -> bool:
+    """에이전트 응답이 실질 내용이 아니라 실패/한도/타임아웃 신호인지 판정.
+
+    종합 답변 폴백(F2)과 실패성 finding 드롭(F3)에 공용으로 쓴다. 빈 값·너무 짧은
+    응답·봇 실패 래퍼·CLI 한도 에러를 실패로 본다. 일반 주제어(rate limit/quota 등)는
+    긴 정상 finding 을 오탐하지 않도록 짧은(에러 응답형) 텍스트에서만 적용한다.
+    """
+    if not text or not str(text).strip():
+        return True
+    s = str(text).strip()
+    if len(s) < 15:  # 의미 있는 조사/종합으로 보기 어려움
+        return True
+    if _BOT_FAILURE_RE.match(s):  # 봇/에이전트 실패 래퍼(시간 초과·할당량 초과·호출 예외)
+        return True
+    low = s.lower()
+    if any(m in low for m in _CLI_FAILURE_MARKERS):  # CLI 한도 에러
+        return True
+    if len(s) < 200 and any(m in low for m in _WEAK_FAILURE_MARKERS):  # 짧은 에러 응답만
+        return True
+    return False
+
+
 def _format_report(question: str, findings: list[dict], verdicts: list[dict]) -> str:
     """findings/verdicts 를 출처 달린 마크다운 리포트로 조립."""
     vmap = {v["subq_id"]: v for v in verdicts}
@@ -309,15 +345,26 @@ def _build_decompose_prompt(question: str, max_n: int) -> str:
         "다음 질문을 깊이 있게 조사하기 위해 서로 겹치지 않는 하위 조사 주제로 분해하세요.\n"
         f"질문: {question}\n"
         f"규칙: 최대 {max_n}개, 각 주제는 한 문장의 한국어 질문. "
+        "각 하위 주제는 그 자체로 완결되게 쓰세요: '위/그/해당/이' 같은 대명사로 원질문을 "
+        "가리키지 말고, 대상·제약(예산·사양·수량·기간 등)을 하위 주제 안에 직접 명시하세요. "
         "시점이 중요한 질문(이벤트·혜택·가격·정책 등)이면 '현재 진행 중인지'를 직접 가리는 "
         "하위 주제를 반드시 하나 포함하세요. "
         "다른 설명 없이 JSON 문자열 배열만 출력하세요. 예: [\"...\", \"...\"]"
     )
 
 
-def _build_research_prompt(subq: str) -> str:
+def _build_research_prompt(subq: str, question: str | None = None) -> str:
+    ctx = ""
+    if question:
+        ctx = (
+            f"[사용자 원질문] {question}\n"
+            "이 원질문을 위해 분담된 하위 주제를 맡았습니다. 하위 주제가 모호하거나 대상이 "
+            "빠져 있으면 원질문의 대상·제약(예산·사양·수량·기간 등)을 기준으로 해석해 "
+            "조사하고, 원질문의 제약을 위반하는 후보는 제외하세요.\n"
+        )
     return (
         "다음 하위 주제를 웹에서 깊이 조사해 1차 출처 기반으로 정리하세요.\n"
+        f"{ctx}"
         f"주제: {subq}\n"
         "규칙:\n"
         "- 먼저 웹 검색으로 후보를 찾되 블로그·요약 기사(2차)에 머물지 말고, 공식 사이트·공시·"
@@ -362,6 +409,8 @@ def _build_synthesize_prompt(question: str, findings_block: str) -> str:
         "- 비교·추천형 질문이면 진행 중 후보를 표 또는 순위 목록(핵심 혜택·기간·조건·1차 출처)으로 "
         "정리하고, 1순위와 그 근거를 분명히 밝히세요.\n"
         "- 핵심 주장 옆에 실제 원본 출처 URL 을 유지하세요(그라운딩 redirect 말고 원본 도메인).\n"
+        "- 사용자 질문에 제약(예산·사양·수량·기간 등)이 있으면 최종 추천·결론이 그 제약을 모두 "
+        "충족하는지 명시적으로 점검하고, 하나라도 위반하는 후보는 추천에서 제외하세요.\n"
         "- 에이전트 이름은 언급하지 말고 하나의 리포트로 작성. 한국어. 2500자 이내."
     )
 
@@ -513,9 +562,13 @@ class ResearchMode:
             nonlocal done
             if is_cancelled(thread_ts):
                 return None
-            text, used = await self._ask_named(sq["agent"], _build_research_prompt(sq["text"]))
+            text, used = await self._ask_named(
+                sq["agent"], _build_research_prompt(sq["text"], question))
             done += 1  # await 이후 동기 구간이라 코루틴 간 경합 없음(이벤트 루프 단일 스레드)
             self._update(channel, prog_ts, f"🔎 *분담 조사 중...* ({done}/{total})")
+            if _looks_like_failure(text):  # 타임아웃/한도/예외성 응답은 finding 에서 제외(F3)
+                logger.warning("research finding dropped (failure-like): %s", str(text)[:120])
+                return None
             return {"subq_id": sq["id"], "agent": used, "text": text,
                     "sources": _extract_sources(text)}
 
@@ -529,6 +582,8 @@ class ResearchMode:
                 logger.warning("research task failed: %s", r)
             elif r:
                 findings.append(r)
+            else:
+                dropped += 1  # None = 취소 또는 실패성 응답 드롭(F3) → 안내 수에 포함
         if dropped:
             self._post(channel, thread_ts, f"⚠️ 조사 {dropped}건 실패 → 제외하고 진행합니다.")
         if not findings:
@@ -567,10 +622,17 @@ class ResearchMode:
             "Claude", _build_synthesize_prompt(question, _findings_block(findings, verdicts)))
 
         # 4. 전송: 최종 종합 답변은 채널에도 브로드캐스트(결론을 채널 타임라인에 노출),
-        #    상세 출처/쟁점 리포트는 스레드에만.
+        #    상세 출처/쟁점 리포트는 스레드에만. 단, 종합 생성이 실패(한도/예외/빈값)면
+        #    에러 문자열을 방송하지 않고 검증 리포트로 폴백한다(F2).
         report = _format_report(question, findings, verdicts)
-        self._broadcast_long(channel, thread_ts, f"💡 *종합 답변:*\n{_shorten_urls_in_text(synth)}")
-        self._post_long(channel, thread_ts, report)
+        if _looks_like_failure(synth):
+            logger.warning("synthesis failed, falling back to report: %s", str(synth)[:120])
+            self._broadcast_long(
+                channel, thread_ts,
+                f"💡 *종합 답변* (자동 종합 실패 → 검증 리포트로 대체):\n{report}")
+        else:
+            self._broadcast_long(channel, thread_ts, f"💡 *종합 답변:*\n{_shorten_urls_in_text(synth)}")
+            self._post_long(channel, thread_ts, report)
 
     async def followup(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
         """스레드 후속 질문 → 같은 파이프라인 재실행(맥락은 질문에 포함)."""
