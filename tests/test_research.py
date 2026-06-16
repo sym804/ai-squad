@@ -16,6 +16,8 @@ from modes.research import (
     _shorten_urls_in_text,
     _format_report,
     _parse_verdict,
+    _split_for_slack,
+    _findings_block,
     _build_decompose_prompt,
     _build_research_prompt,
     _build_verify_prompt,
@@ -502,3 +504,103 @@ def test_start_survives_agent_exception():
     asyncio.run(mode.start("C1", "1.0", "예외 견딤 질문"))  # 예외 전파 없이 완주해야 함
     posted = " ".join(str(c.kwargs.get("text", "")) for c in slack.chat_postMessage.call_args_list)
     assert posted
+
+
+# --- _split_for_slack (렌더링 안전 분할) -----------------------------------
+
+def test_split_short_text_single_chunk():
+    assert _split_for_slack("짧은 텍스트") == ["짧은 텍스트"]
+    assert _split_for_slack("") == []
+
+
+def test_split_never_breaks_link_token():
+    # 경계에 걸친 긴 <url|label> 링크가 어떤 청크에서도 쪼개지면 안 된다(핵심 회귀 방지).
+    long_url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/" + "Z" * 300
+    link = f"<{long_url}|vertexaisearch.cloud.google.com>"
+    text = ("가" * 3850) + " " + link + " 끝문장입니다"
+    chunks = _split_for_slack(text, max_len=3900)
+    assert len(chunks) >= 2
+    for c in chunks:
+        assert c.count("<") == c.count(">")  # 각 청크 꺾쇠 균형 → 링크 안 쪼개짐
+    assert any(link in c for c in chunks)  # 링크가 한 청크에 통째로 들어감
+
+
+def test_split_chunks_within_max_and_reconstruct():
+    text = "\n".join(f"라인 {i} " + "x" * 100 for i in range(200))
+    chunks = _split_for_slack(text, max_len=500)
+    assert all(len(c) <= 500 for c in chunks)
+    assert "".join(chunks) == text  # 손실 없이 원문 복원
+
+
+def test_split_prefers_newline_boundary():
+    text = "A" * 100 + "\n" + "B" * 100
+    chunks = _split_for_slack(text, max_len=120)
+    assert chunks[0] == "A" * 100 + "\n"
+    assert chunks[1] == "B" * 100
+
+
+def test_split_keeps_overlong_single_link_whole():
+    # (Codex 지적 반영) max_len 보다 긴 단일 링크는 쪼개지 않고 통째로 내보낸다.
+    huge = "<https://x.com/" + "z" * 200 + "|x.com>"
+    text = huge + " 꼬리문장"
+    chunks = _split_for_slack(text, max_len=80)
+    assert any(huge in c for c in chunks)        # 링크가 통째로 한 청크에
+    for c in chunks:
+        assert c.count("<") == c.count(">")      # 어떤 청크도 링크 안 쪼갬
+    assert "".join(chunks) == text               # 손실 없이 원문 복원
+
+
+# --- _shorten_urls_in_text 이중꺾쇠 방어 -----------------------------------
+
+def test_shorten_collapses_double_angle_brackets():
+    # Gemini 그라운딩 중첩 <<...|<http://..|..>> 잔재가 노출되지 않아야 함
+    long_url = "https://vertexaisearch.cloud.google.com/grounding-api-redirect/" + "Q" * 120
+    raw = (f"근거 (<<{long_url}|<http://vertexaisearch.cloud.google.com"
+           f"|vertexaisearch.cloud.google.com>>)")
+    out = _shorten_urls_in_text(raw)
+    assert "<<" not in out and ">>" not in out
+    assert _shorten_urls_in_text(out) == out  # 멱등
+
+
+# --- _findings_block 검증 NOTE 포함 (A1) -----------------------------------
+
+def test_findings_block_includes_verifier_note():
+    # 검증자가 찾은 교정 사실(NOTE)이 종합 입력 블록에 반드시 실려야 한다('키움뿐' 회귀 방지).
+    findings = [{"subq_id": "q1", "agent": "Claude", "text": "키움만 진행 중",
+                 "sources": [{"title": "a", "url": "https://a.com"}]}]
+    verdicts = [{"subq_id": "q1", "verifier": "Codex", "status": "disputed",
+                 "note": "한투도 6월 진행 중 이벤트 확인됨"}]
+    block = _findings_block(findings, verdicts)
+    assert "한투도 6월 진행 중 이벤트 확인됨" in block
+    assert "disputed" in block
+
+
+# --- 프롬프트 심화 (정확도) ------------------------------------------------
+
+def test_synthesize_prompt_has_reconcile_and_gate_rules():
+    p = _build_synthesize_prompt("질문", "블록")
+    assert "철회" in p or "교정" in p   # dispute → 결론 교정/철회
+    assert "1차" in p                    # 증거 게이트(1차 출처)
+    assert "진행 중" in p and "종료" in p  # 최신성 3구간 분리
+
+
+def test_research_prompt_requires_primary_source_and_recency():
+    p = _build_research_prompt("ISA 이벤트 진행 증권사")
+    assert "1차" in p and ("fetch" in p or "직접 열" in p)  # 1차 출처 정독
+    assert "진행" in p and "종료" in p                      # 현재 진행/과거 종료 구분
+
+
+def test_decompose_prompt_nudges_recency():
+    p = _build_decompose_prompt("이벤트 중인 증권사?", 4)
+    assert "진행" in p  # 시점 하위 주제 유도
+
+
+# --- _format_report 쟁점 미리보기 말줄임 -----------------------------------
+
+def test_report_disputed_preview_ellipsis():
+    long_text = "가" * 100
+    findings = [{"subq_id": "q1", "agent": "Claude", "text": long_text, "sources": []}]
+    verdicts = [{"subq_id": "q1", "verifier": "Codex", "status": "disputed", "note": "근거 부족"}]
+    out = _format_report("질문", findings, verdicts)
+    assert "..." in out          # 60자 초과 미리보기 말줄임
+    assert "근거 부족" in out      # note 유지

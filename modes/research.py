@@ -185,6 +185,11 @@ def _shorten_urls_in_text(text: str) -> str:
     text = _ANGLE_LINK_RE.sub(lambda m: _link(m.group(1)), text)
     # 4) 남은 raw URL (이미 <...> 안에 든 것은 lookbehind 로 제외)
     text = _RAW_URL_RE.sub(lambda m: _link(m.group(0)), text)
+    # 5) 이중/중첩 꺾쇠 방어: Gemini 그라운딩 출력이 `<<url|<http://dom|dom>>` 같은
+    #    중첩 형태로 들어오면 위 치환이 안쪽 <...> 만 먹고 바깥 `<`/`>` 를 남겨 `<<`/`>>`
+    #    잔재가 노출된다. 연속 꺾쇠를 1개로 축약해 Slack 링크 파싱을 보호한다(멱등).
+    text = re.sub(r"<{2,}", "<", text)
+    text = re.sub(r">{2,}", ">", text)
     return text
 
 
@@ -215,7 +220,10 @@ def _format_report(question: str, findings: list[dict], verdicts: list[dict]) ->
         if status in ("disputed", "unverified"):
             note = (v.get("note") if v else "") or ("출처 없음" if not f.get("sources") else "")
             verifier = v["verifier"] if v else "?"
-            disputed.append(f"- ({status}) {f['text'][:60]} ({note}) [검증: {verifier}]")
+            preview = " ".join(f["text"].strip().split())  # 개행/연속공백 정규화
+            if len(preview) > 60:
+                preview = preview[:57] + "..."
+            disputed.append(f"- ({status}) {preview} ({note}) [검증: {verifier}]")
     if disputed:
         lines.append("\n⚠️ *쟁점·불확실:*")
         lines.extend(disputed)
@@ -234,6 +242,66 @@ def _format_report(question: str, findings: list[dict], verdicts: list[dict]) ->
     return "\n".join(lines)
 
 
+# --- 순수 함수: Slack 안전 분할 -------------------------------------------
+
+_SLACK_LINK_SPAN_RE = re.compile(r"<[^<>\n]*>")
+
+
+def _split_for_slack(text: str, max_len: int = 3900) -> list[str]:
+    """Slack 게시용 안전 분할. 줄 경계 우선, `<...>` 링크 토큰 내부는 자르지 않음.
+
+    기존 맹목 슬라이스(`text[:max_len]`)는 긴 `<url|label>` 링크(특히 Gemini 그라운딩
+    200자+ redirect) 한가운데를 잘라 두 메시지에서 모두 깨뜨렸다. 여기서는 링크 스팬을
+    피하고 개행→공백 순으로 경계를 골라 청크를 만든다. 청크를 모두 이어붙이면 원문과 동일.
+
+    예외: 단일 링크 하나가 `max_len` 보다 긴 극단 케이스는 쪼개지 않고 링크를 통째로
+    한 청크에 담는다(그 청크만 `max_len` 을 넘을 수 있음). 링크를 두 동강 내는 것보다
+    한도를 넘기더라도 통째로 내보내는 쪽이 깨지지 않는다(실제 URL 은 max_len 미만이라
+    거의 발생하지 않는 경계 케이스).
+    """
+    if not text:
+        return []
+    if len(text) <= max_len:
+        return [text]
+    # 자르면 안 되는 구간: `<...>` 링크 토큰(개행 불포함이라 newline 은 항상 안전 경계).
+    spans = [(m.start(), m.end()) for m in _SLACK_LINK_SPAN_RE.finditer(text)]
+
+    def _in_link(pos: int):
+        for s, e in spans:
+            if s < pos < e:
+                return s, e
+        return None
+
+    chunks = []
+    start, n = 0, len(text)
+    while n - start > max_len:
+        cut = start + max_len
+        link = _in_link(cut)
+        if link:
+            cut = link[0]  # 링크 시작 직전으로 당김
+        window = text[start:cut]
+        nl = window.rfind("\n")
+        if nl > 0:
+            cut = start + nl + 1  # 개행은 링크 안에 없으므로 항상 안전
+        else:
+            sp = window.rfind(" ")
+            if sp > 0:
+                boundary = start + sp + 1
+                link2 = _in_link(boundary)
+                cut = link2[0] if link2 else boundary
+        if cut <= start:
+            # 청크 시작이 곧 링크 시작이고 그 링크가 max_len 보다 긴 극단 케이스 →
+            # 링크를 쪼개지 않으려 링크 전체를 한 청크로 내보낸다(이 경우만 청크가
+            # max_len 을 넘을 수 있음). 링크가 아닌 초장문 토큰은 여기 도달하지 않음
+            # (그 경우 cut == start+max_len 으로 이미 안전한 하드컷이라 진행 보장됨).
+            cut = link[1] if link else start + max_len
+        chunks.append(text[start:cut])
+        start = cut
+    if start < n:
+        chunks.append(text[start:])
+    return chunks
+
+
 # --- 순수 함수: 프롬프트 빌더 ----------------------------------------------
 
 def _build_decompose_prompt(question: str, max_n: int) -> str:
@@ -241,18 +309,26 @@ def _build_decompose_prompt(question: str, max_n: int) -> str:
         "다음 질문을 깊이 있게 조사하기 위해 서로 겹치지 않는 하위 조사 주제로 분해하세요.\n"
         f"질문: {question}\n"
         f"규칙: 최대 {max_n}개, 각 주제는 한 문장의 한국어 질문. "
+        "시점이 중요한 질문(이벤트·혜택·가격·정책 등)이면 '현재 진행 중인지'를 직접 가리는 "
+        "하위 주제를 반드시 하나 포함하세요. "
         "다른 설명 없이 JSON 문자열 배열만 출력하세요. 예: [\"...\", \"...\"]"
     )
 
 
 def _build_research_prompt(subq: str) -> str:
     return (
-        "다음 하위 주제를 웹에서 조사해 사실 기반으로 정리하세요.\n"
+        "다음 하위 주제를 웹에서 깊이 조사해 1차 출처 기반으로 정리하세요.\n"
         f"주제: {subq}\n"
         "규칙:\n"
-        "- 첫 행동으로 웹 검색 툴을 호출해 최신 정보를 확인하세요 "
-        "(Claude: WebSearch/WebFetch, Codex: web_search, Gemini: google_web_search).\n"
-        "- 핵심 사실을 5줄 이내로 요약하고, 각 사실의 출처 URL 을 본문에 명시하세요.\n"
+        "- 먼저 웹 검색으로 후보를 찾되 블로그·요약 기사(2차)에 머물지 말고, 공식 사이트·공시·"
+        "규제기관 같은 1차 출처를 식별해 상위 2~3개 페이지를 직접 열어(fetch) 본문을 읽고 "
+        "확인하세요 (Claude: WebSearch 후 WebFetch, Codex: web_search 후 페이지 열기, "
+        "Gemini: google_web_search 후 본문 확인).\n"
+        "- 각 핵심 사실은 [사실] 뒤에 (출처 URL · 1차/2차 · 날짜 또는 기간 · 현재 진행중/종료/불명)"
+        " 을 함께 적고, 가능하면 원문 문구를 짧게 인용하세요.\n"
+        "- 시점이 중요한 주제는 '현재 진행 중'과 '과거 종료'를 반드시 구분하고, 종료된 것을 "
+        "현재처럼 제시하지 마세요.\n"
+        "- 출처는 그라운딩 redirect 링크가 아니라 실제 원본 도메인 URL 로 적으세요.\n"
         "- 모르거나 근거가 약하면 추측하지 말고 그렇다고 밝히세요."
     )
 
@@ -260,8 +336,11 @@ def _build_research_prompt(subq: str) -> str:
 def _build_verify_prompt(claim: str, urls: list[str]) -> str:
     src = "\n".join(f"- {u}" for u in urls) if urls else "(제시된 출처 없음)"
     return (
-        "다른 에이전트의 조사 결과를 검증하세요. 필요하면 웹 검색으로 사실을 재확인하세요.\n"
+        "다른 에이전트의 조사 결과를 검증하세요. 제시된 1차 출처를 직접 열어(fetch) 본문과 "
+        "대조하고, 필요하면 추가 웹 검색으로 사실을 재확인하세요.\n"
         f"[검증할 주장]\n{claim}\n\n[제시된 출처]\n{src}\n\n"
+        "특히 시점(현재 진행중인지/이미 종료됐는지)과 수치·조건이 출처 본문과 일치하는지 확인하고, "
+        "반증을 찾으면 무엇이 어떻게 다른지 NOTE 에 구체적으로 적으세요.\n"
         "판정 규칙: 출처가 주장을 뒷받침하면 supported, 출처와 충돌하거나 반증을 찾으면 disputed, "
         "출처가 없거나 확인 불가면 unverified.\n"
         "반드시 마지막 줄에 다음 형식만 출력: STATUS=supported|disputed|unverified | NOTE=한 줄 근거"
@@ -270,24 +349,40 @@ def _build_verify_prompt(claim: str, urls: list[str]) -> str:
 
 def _build_synthesize_prompt(question: str, findings_block: str) -> str:
     return (
-        "아래는 여러 AI 가 분담 조사하고 교차검증한 결과입니다. 이를 종합해 사용자 질문에 답하세요.\n"
-        f"[사용자 질문]\n{question}\n\n[조사 결과]\n{findings_block}\n\n"
+        "아래는 여러 AI 가 1차 출처를 직접 확인하며 분담 조사하고 교차검증한 결과입니다. "
+        "이를 종합해 사용자 질문에 정교하게 답하세요.\n"
+        f"[사용자 질문]\n{question}\n\n[조사 결과(검증 상태·검증 메모 포함)]\n{findings_block}\n\n"
         "규칙:\n"
-        "- 검증된 사실 위주로 구조화(소제목/불릿)해 작성하고, 핵심 주장 옆에 출처 URL 을 유지하세요.\n"
-        "- 충돌하거나 미확인인 내용은 숨기지 말고 '불확실' 로 표시하세요.\n"
-        "- 에이전트 이름은 언급하지 말고 하나의 리포트로 작성. 한국어. 1500자 이내."
+        "- 검증 상태가 disputed 인 항목은 검증 메모(NOTE)를 사실로 받아들여 결론을 교정하거나 "
+        "철회하세요. 검증이 찾은 반증을 무시하고 원래 주장을 그대로 유지하지 마세요.\n"
+        "- 각 핵심 주장은 1차 출처 1개를 포함해 서로 다른 출처가 2개 이상일 때만 '확정'으로 쓰고, "
+        "그렇지 않으면 '불확실'로 표시하세요.\n"
+        "- 시점이 중요한 질문이면 '현재 진행 중 / 과거 종료 / 불확실' 세 묶음으로 명확히 나누고, "
+        "종료된 항목은 추천에서 제외하세요.\n"
+        "- 비교·추천형 질문이면 진행 중 후보를 표 또는 순위 목록(핵심 혜택·기간·조건·1차 출처)으로 "
+        "정리하고, 1순위와 그 근거를 분명히 밝히세요.\n"
+        "- 핵심 주장 옆에 실제 원본 출처 URL 을 유지하세요(그라운딩 redirect 말고 원본 도메인).\n"
+        "- 에이전트 이름은 언급하지 말고 하나의 리포트로 작성. 한국어. 2500자 이내."
     )
 
 
 def _findings_block(findings: list[dict], verdicts: list[dict]) -> str:
-    """종합 프롬프트용 findings+verdicts 텍스트 블록."""
+    """종합 프롬프트용 findings+verdicts 텍스트 블록.
+
+    검증자의 NOTE(반증·교정 사실)를 반드시 포함한다. 이게 빠지면 교차검증이 찾은 교정
+    사실이 종합 단계에 전달되지 않아 틀린 결론이 그대로 살아남는다(과거 회귀: '키움뿐').
+    """
     vmap = {v["subq_id"]: v for v in verdicts}
     blocks = []
     for f in findings:
         v = vmap.get(f["subq_id"])
         st = v["status"] if v else "unverified"
+        note = (v.get("note") if v else "") or ""
         srcs = " ".join(s["url"] for s in f.get("sources", []))
-        blocks.append(f"[{st}] {f['text']}\n출처: {srcs or '없음'}")
+        block = f"[검증:{st}] {f['text']}\n출처: {srcs or '없음'}"
+        if note:
+            block += f"\n검증 메모: {note}"
+        blocks.append(block)
     return "\n\n".join(blocks)
 
 
@@ -350,20 +445,18 @@ class ResearchMode:
             print(f"[SLACK ERROR] {e}")
 
     def _post_long(self, channel, thread_ts, text):
-        MAX_LEN = 3900
-        while text:
-            chunk, text = text[:MAX_LEN], text[MAX_LEN:]
+        # 링크/줄 경계를 보존하는 안전 분할(긴 <url|label> 토큰을 두 동강 내지 않음).
+        for chunk in _split_for_slack(text):
             self._post(channel, thread_ts, chunk)
 
     def _broadcast_long(self, channel, thread_ts, text):
         """첫 청크는 채널에도 브로드캐스트(reply_broadcast), 나머지는 스레드에만.
 
         debate 모드처럼 최종 결론을 스레드뿐 아니라 채널 타임라인에도 노출한다.
+        분할은 `_split_for_slack` 로 링크/줄 경계를 보존한다.
         """
-        MAX_LEN = 3900
         first = True
-        while text:
-            chunk, text = text[:MAX_LEN], text[MAX_LEN:]
+        for chunk in _split_for_slack(text):
             kwargs = {"channel": channel, "thread_ts": thread_ts, "text": chunk}
             if first:
                 kwargs["reply_broadcast"] = True
