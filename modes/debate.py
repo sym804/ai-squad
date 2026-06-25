@@ -306,12 +306,25 @@ class DebateMode:
         self._replaced = set()  # 이미 교체된 에이전트 이름
         self._bot_user_id = None
 
-    def _bind_thread(self, thread_ts: str):
-        """모든 에이전트에 현재 스레드 정보 설정."""
+    def _bind_thread(self, thread_ts: str, request_text: str = ""):
+        """모든 에이전트에 현재 스레드 정보 + 작업 디렉토리(cwd) 설정.
+
+        토론 주제/후속 질문에 ALLOWED_WORK_DIRS 안의 경로가 명시되면 그 경로를 모든
+        에이전트의 cwd 로 잡는다. Codex 는 `-s workspace-write` 샌드박스가 cwd 밖 파일
+        접근을 막아, cwd 를 설정하지 않으면 외부 경로(평가 대상 프로젝트 등)를 읽지 못한다
+        (Windows 에서 0xC0000142 STATUS_DLL_INIT_FAILED 로 표면화). Gemini/Claude CLI 는
+        이런 워크스페이스 스코프가 없어 영향받지 않는다. 경로 미지정/비허용이면 cwd 는
+        None(기존 동작 유지).
+        """
+        from config import ALLOWED_WORK_DIRS
+        from security import validate_work_dir, extract_work_path
+        work_dir = validate_work_dir(extract_work_path(request_text), ALLOWED_WORK_DIRS)
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
+            agent._cwd = work_dir
         for backup in self._backup_pool:
             backup._current_thread_ts = thread_ts
+            backup._cwd = work_dir
 
     def _get_backup(self, agent):
         """동적 백업 선택.
@@ -394,8 +407,9 @@ class DebateMode:
         attachments 가 있으면 각 라운드의 ask_with_progress 호출에 그대로 전달해
         비전 지원 에이전트가 분석하도록 한다.
         """
-        self._bind_thread(thread_ts)
         original_topic = self._fetch_original_topic(channel, thread_ts)
+        # 경로는 보통 원 주제에 있으므로 후속 질문 + 원 주제를 함께 넘겨 cwd 를 잡는다.
+        self._bind_thread(thread_ts, f"{question}\n{original_topic}")
         history = self._fetch_thread_history(channel, thread_ts)
 
         self._post(channel, thread_ts, f"💬 *추가 토론 시작*\n질문: {question}")
@@ -693,7 +707,7 @@ class DebateMode:
 
         attachments 는 사용자 첨부 파일 메타데이터 리스트 (이미지/PDF). 지원 에이전트가 분석.
         """
-        self._bind_thread(thread_ts)
+        self._bind_thread(thread_ts, topic)
         self._post(channel, thread_ts, f"*토론을 시작합니다*\n주제: {topic}")
 
         # 당일 이전 토론 합의 결론을 컨텍스트에 포함

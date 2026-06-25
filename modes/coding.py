@@ -179,23 +179,12 @@ class CodingMode:
 
     @staticmethod
     def _extract_path(text: str) -> str | None:
-        """메시지에서 Windows 경로를 추출. 존재하는 디렉토리만 반환."""
-        import os
-        # C:\... 패턴 매칭 (공백 ���함 경로 지원: 메시지 끝까지 잡고 역방향으로 줄임)
-        m = re.search(r'[A-Za-z]:\\[^<>"|?*\n]+', text)
-        if m:
-            candidate = m.group(0).rstrip(' \\')
-            # 끝에서부터 줄여가며 유효한 디렉토리 찾기
-            while candidate and '\\' in candidate:
-                if os.path.isdir(candidate):
-                    return candidate
-                candidate = candidate.rsplit(' ', 1)[0].rstrip(' \\') if ' ' in candidate else candidate
-                if os.path.isdir(candidate):
-                    return candidate
-                break
-            if os.path.isdir(candidate):
-                return candidate
-        return None
+        """메시지에서 Windows 경로를 추출. 존재하는 디렉토리만 반환.
+
+        구현은 security.extract_work_path 로 공유(debate 모드와 동일 로직).
+        """
+        from security import extract_work_path
+        return extract_work_path(text)
 
     def _bind_thread(self, thread_ts, request_text: str = ""):
         from config import ALLOWED_WORK_DIRS

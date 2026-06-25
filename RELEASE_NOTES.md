@@ -42,6 +42,19 @@
 | v0.8.5 | 2026-06-11 | 리서치 응답성: 하위 주제 6→4 축소(호출 13→10회) + 분담조사/교차검증 진행 카운터(`(n/N)` 실시간 갱신) |
 | v0.8.6 | 2026-06-16 | 리서치 모드 재설계: 1차 출처 정독 + 결론 정교화(검증 NOTE 반영·증거 게이트·진행중/종료 구분) + 링크 안전 분할(긴 그라운딩 URL 두 동강 방지) |
 | v0.8.7 | 2026-06-16 | v0.8.6 라이브 검증서 드러난 리서치 약점 3건 수정: 분해가 부모 질문·제약 누락(F1) / 종합 실패 시 raw 에러 방송(F2) / 타임아웃성 응답이 finding 으로 노출(F3) |
+| v0.8.8 | 2026-06-25 | 토론 모드 cwd 미설정으로 Codex(workspace-write 샌드박스)가 외부 경로 평가 시 차단되던 버그 수정: 주제/질문의 화이트리스트 경로를 모든 에이전트 cwd 로 바인딩 |
+
+## v0.8.8 (2026-06-25)
+
+토론 모드에서 "경로 X 의 프로젝트를 평가해줘" 류 주제를 줄 때 Codex 만 해당 경로를 읽지 못하고 실패(Windows `exited -1073741502` = 0xC0000142 STATUS_DLL_INIT_FAILED)하던 문제. Codex 는 `codex exec -s workspace-write` 샌드박스라 cwd(워크스페이스) 밖 파일 접근이 막히는데, 토론 모드는 coding/bridge 모드와 달리 작업 디렉토리를 전혀 설정하지 않아 Codex 워크스페이스가 봇 폴더에 고정됐다. Gemini/Claude CLI 는 워크스페이스 스코프가 없어 영향받지 않아, 같은 토론에서 Codex 만 "권한 문제"처럼 보이며 평가를 보류했다(실제로는 권한이 아니라 샌드박스 자식 프로세스 시작 실패).
+
+### 버그 수정
+- **[Major / backend] 토론 모드가 cwd 미설정이라 Codex 가 외부 경로를 못 읽음**: `DebateMode._bind_thread(thread_ts, request_text)` 로 변경해, 주제(start)·후속질문+원주제(followup)에서 화이트리스트(`ALLOWED_WORK_DIRS`) 안의 경로를 추출(`security.extract_work_path`)·검증(`validate_work_dir`)해 모든 에이전트와 백업 풀의 `_cwd` 로 바인딩한다(미지정/비허용 시 None 으로 초기화해 스레드 간 cwd 누수 방지). 경로 추출 로직은 `CodingMode._extract_path` 에서 `security.extract_work_path` 로 공유화하고, 자연어 suffix("...경로 를 평가해줘")도 디렉토리까지 줄여 찾도록 보강.
+
+### 검증
+- 신규 테스트 7건(`test_debate_cwd`): 화이트리스트 경로/하위경로/자연어 suffix/비허용/무경로/스레드 reset/followup 원주제 바인딩. 광범위 회귀 **123건 통과**(coding_gate·config·debate integration/improvements/gates·consensus·bridge·process 포함).
+- **Codex 교차검증 2라운드**: 1차에서 Major 1건(다단어 suffix 추출 실패) + Minor 3건 지적 → 전부 반영. 2차에서 잔여 이슈 없음 확인.
+- **운영자 조치 필요**: 토론으로 평가할 프로젝트는 `.env` 의 `CODING_ALLOWED_DIRS` 에 등록해야 한다. sym-ui 평가용으로 `C:\Users\ymseo\Documents\sym-ui` 추가. 이 화이트리스트는 coding 모드 쓰기 범위도 겸하므로, 등록 경로는 coding 쓰기 신뢰 대상이기도 하다(읽기 전용 분리는 추후 옵션).
 
 ## v0.8.7 (2026-06-16)
 
