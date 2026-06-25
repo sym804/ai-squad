@@ -43,6 +43,21 @@
 | v0.8.6 | 2026-06-16 | 리서치 모드 재설계: 1차 출처 정독 + 결론 정교화(검증 NOTE 반영·증거 게이트·진행중/종료 구분) + 링크 안전 분할(긴 그라운딩 URL 두 동강 방지) |
 | v0.8.7 | 2026-06-16 | v0.8.6 라이브 검증서 드러난 리서치 약점 3건 수정: 분해가 부모 질문·제약 누락(F1) / 종합 실패 시 raw 에러 방송(F2) / 타임아웃성 응답이 finding 으로 노출(F3) |
 | v0.8.8 | 2026-06-25 | 토론 모드 cwd 미설정으로 Codex(workspace-write 샌드박스)가 외부 경로 평가 시 차단되던 버그 수정: 주제/질문의 화이트리스트 경로를 모든 에이전트 cwd 로 바인딩 |
+| v0.8.9 | 2026-06-25 | `!bot restart` 한 번에 봇이 5중 spawn 되던 버그 수정: 재시작 디바운스+재진입 가드. 단일 인스턴스 lock 을 Windows named mutex(원자적·자동해제)로 하드닝 |
+
+## v0.8.9 (2026-06-25)
+
+`!bot restart` 를 한 번 보냈는데 워치독이 봇을 5개(서로 다른 PID, 일부 6ms 간격 동시) spawn 한 사고. 워치독은 단일 인스턴스(`.watchdog.lock`)·단일 스레드인데도 `start_bot()` 의 재진입 가드(`bot_process.poll() is None`)가 비원자적(TOCTOU)이라 재시작이 짧게 겹치면 중복 spawn 됐다. 중복 봇들은 Slack 소켓 충돌로 곧 죽고 1개로 수렴했으나, 근본 원인을 제거했다.
+
+### 버그 수정
+- **[Major / etc] `!bot restart` 1회에 봇 다중 spawn**: `restart_bot()` 에 재진입 가드(`_restart_in_progress`)와 디바운스(`RESTART_DEBOUNCE=10`초, `time.monotonic` 기준)를 추가해 단일 명령 = 단일 재시작을 보장. 진행 중이거나 직전 재시작 직후의 중복 요청은 무시. `finally` 에서 `auto_restart`/`manual_stop`/`_restart_in_progress` 를 항상 정상 post-restart 값으로 복구해, 도중 `stop_bot()`/`notify` 예외로 플래그가 누수돼 이후 크래시 자동재시작을 건너뛰던 결함도 차단.
+
+### 하드닝
+- **[Major / etc] 단일 인스턴스 lock 을 Windows named mutex 로 전환**: 기존 PID lockfile 의 `acquire_lock()` 은 `O_EXCL` 경쟁 패배 시 lock 을 덮어쓰고 계속 실행해 중복 워치독을 허용할 수 있었다(원인 사고와는 별개의 잠재 결함). Windows 는 커널 named mutex(`CreateMutexW`)로 전환 - 생성이 원자적이고 프로세스 종료 시 OS 가 자동 해제하므로 stale lock/빈창/double-takeover race 가 원천 소거된다. 이미 보유 중이면(`ERROR_ALREADY_EXISTS`) 즉시 종료, 생성 실패 시 racy 폴백으로 내려가지 않고 fail-closed 종료. 비-Windows 폴백 파일락도 takeover 없이 fail-closed 로 단순화.
+
+### 검증
+- 신규/강화 테스트(`test_watchdog`) 총 **17건**: restart 디바운스/재진입/예외 시 상태복구, Windows mutex 디스패치·이미보유시종료·생성실패 fail-closed, `_acquire_win_mutex` 단위(신규생성/ALREADY_EXISTS/실패), 파일락 생성·기존존재 종료, `release_lock`(mutex CloseHandle/파일 unlink). 전체 회귀 **405건 통과**(사전이슈 `test_gemini` 4건은 `.env` `GEMINI_CLI_BINARY=agy` 환경누수로 무관).
+- **Codex 교차검증 5라운드**: Major 4건(자연어 경로추출, 파일락 race 2건, Windows 폴백 도달성, 비-Windows takeover race) + Minor 4건(monotonic, manual_stop/auto_restart 누수, 테스트 커버리지)을 라운드별로 전부 반영. 최종 6라운드(확인)는 Codex 컴패니언 작업이 멈춰 보류, 마지막 1줄(auto_restart) 수정은 직전 라운드에서 승인된 manual_stop 수정과 동일 패턴 + 테스트 커버.
 
 ## v0.8.8 (2026-06-25)
 

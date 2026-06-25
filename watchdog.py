@@ -17,6 +17,7 @@ import sys
 import time
 import subprocess
 import signal
+import ctypes
 from datetime import datetime
 
 # Windows cp949 인코딩 에러 방지
@@ -58,6 +59,11 @@ manual_stop = False  # 수동 종료 시 크래시 알림 방지
 crash_times = []
 handled_ts = set()  # 이미 처리한 메시지 timestamp
 _HANDLED_MAX = 100  # handled_ts 최대 크기
+_restart_in_progress = False  # 재시작 진행 중 재진입 가드
+_last_restart_at = 0.0        # 마지막 재시작 시각 (디바운스 기준)
+RESTART_DEBOUNCE = 10         # 초: 이 시간 내 중복 재시작 요청은 무시 (중복 spawn 방지)
+_lock_handle = None           # Windows named mutex 핸들 (프로세스 생존 동안 유지)
+_MUTEX_NAME = "Local\\slack_multi_agent_watchdog"
 
 
 def get_bot_user_id():
@@ -167,15 +173,37 @@ def stop_bot():
 
 
 def restart_bot():
-    """봇을 재시작합니다."""
-    global manual_stop, auto_restart
-    manual_stop = True
-    notify_active_threads()
-    stop_bot()
-    time.sleep(2)
-    auto_restart = True
-    manual_stop = False
-    return start_bot()
+    """봇을 재시작합니다.
+
+    단일 명령이 여러 번(폴링 중복/재진입) 처리돼도 봇이 중복 spawn 되지 않도록
+    재진입 가드(_restart_in_progress)와 디바운스(RESTART_DEBOUNCE)를 둔다.
+    """
+    global manual_stop, auto_restart, _restart_in_progress, _last_restart_at
+    # 디바운스는 시계 역행에 영향받지 않도록 monotonic 시간을 쓴다.
+    now = time.monotonic()
+    if _restart_in_progress:
+        return "⚠️ 이미 재시작 진행 중입니다. 중복 요청 무시."
+    if now - _last_restart_at < RESTART_DEBOUNCE:
+        return f"⚠️ 직전 재시작 직후({RESTART_DEBOUNCE}초 디바운스)라 중복 요청을 무시합니다."
+    _restart_in_progress = True
+    try:
+        manual_stop = True
+        notify_active_threads()
+        stop_bot()
+        time.sleep(2)
+        auto_restart = True
+        manual_stop = False
+        result = start_bot()
+        _last_restart_at = time.monotonic()
+        return result
+    finally:
+        # 도중(notify/stop_bot)에 예외가 나도 restart 가 건드린 상태 플래그를 정상 post-restart
+        # 값으로 복구한다. stop_bot 은 진입 즉시 auto_restart=False 로 만들므로, 예외 시 그대로
+        # 남으면 이후 check_bot_health 가 크래시 자동재시작을 건너뛴다. manual_stop 가 True 로
+        # 남으면 크래시를 수동중지로 오인한다. 둘 다 복구한다.
+        auto_restart = True
+        manual_stop = False
+        _restart_in_progress = False
 
 
 def bot_status():
@@ -318,36 +346,89 @@ def _is_pid_alive(pid: int) -> bool:
             return False
 
 
-def acquire_lock():
-    """중복 실행 방지 — lockfile로 PID 확인."""
-    lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
-    if os.path.exists(lock_path):
-        try:
-            with open(lock_path, "r") as f:
-                old_pid = int(f.read().strip())
-            if _is_pid_alive(old_pid):
-                print(f"[WATCHDOG] 이미 실행 중 (PID: {old_pid}). 종료합니다.")
-                sys.exit(0)
-        except (ValueError, OSError):
-            pass
-    # 새 lockfile 작성 — O_EXCL 원자적 생성 시도, 실패 시 덮어쓰기
+def _read_lock_pid(lock_path):
+    """lockfile 의 PID 를 읽는다. 읽기/파싱 실패 시 None."""
+    try:
+        with open(lock_path, "r") as f:
+            return int(f.read().strip())
+    except (ValueError, OSError):
+        return None
+
+
+def _acquire_win_mutex():
+    """Windows named mutex 로 단일 인스턴스를 강제한다.
+
+    mutex 는 커널 객체라 생성이 원자적이고, 프로세스가 죽으면 OS 가 핸들을 닫아 자동 해제한다
+    (= stale lock 문제 자체가 없다). 이미 보유 중이면 sys.exit(0). 생성 실패 시 None(파일 폴백).
+    핸들은 닫지 않고 호출측이 프로세스 생존 동안 유지해야 한다.
+    """
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.CreateMutexW.restype = ctypes.c_void_p
+    kernel32.CreateMutexW.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p]
+    handle = kernel32.CreateMutexW(None, 0, _MUTEX_NAME)
+    err = ctypes.get_last_error()
+    if not handle:
+        return None
+    ERROR_ALREADY_EXISTS = 183
+    if err == ERROR_ALREADY_EXISTS:
+        print("[WATCHDOG] 이미 실행 중입니다. 종료합니다.")
+        sys.exit(0)
+    return handle
+
+
+def _acquire_file_lock(lock_path=None):
+    """PID lockfile 기반 단일 인스턴스 (비-Windows 폴백).
+
+    프로덕션(Windows)은 named mutex 를 쓰므로 이 경로는 폴백 전용이다. O_EXCL 로 원자 생성만
+    시도하고, lock 이 이미 있으면(생존/stale 무관) fail-closed 로 종료한다. stale 인수 로직을
+    두지 않아 동시 진입 시 takeover race 가 없다(중복 기동 방지 우선). stale lock 은 운영자가
+    제거한다.
+    """
+    if lock_path is None:
+        lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
     try:
         fd = os.open(lock_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL)
-        os.write(fd, str(os.getpid()).encode())
-        os.close(fd)
     except FileExistsError:
-        # 이미 stale lockfile이 남아있는 경우 (위에서 PID 검사 통과)
-        with open(lock_path, "w") as f:
-            f.write(str(os.getpid()))
+        holder = _read_lock_pid(lock_path)
+        print(f"[WATCHDOG] lock 이 이미 존재합니다 (PID: {holder}). 종료합니다.")
+        sys.exit(0)
+    try:
+        os.write(fd, str(os.getpid()).encode())
+    finally:
+        os.close(fd)
     return lock_path
 
 
-def release_lock(lock_path):
-    """lockfile 제거."""
-    try:
-        os.unlink(lock_path)
-    except OSError:
-        pass
+def acquire_lock(lock_path=None):
+    """단일 인스턴스 강제. Windows 는 named mutex(원자적·종료 시 자동 해제), 그 외는 PID lockfile."""
+    global _lock_handle
+    if sys.platform == "win32":
+        handle = _acquire_win_mutex()
+        if handle is None:
+            # mutex 생성 실패(이례적: 핸들 고갈 등). 단일 인스턴스를 보장할 수 없으므로 racy
+            # 파일락 폴백으로 내려가 중복 워치독을 허용하지 않고 fail-closed 로 종료한다.
+            print("[WATCHDOG] 단일 인스턴스 mutex 생성 실패. 안전을 위해 종료합니다.")
+            sys.exit(1)
+        _lock_handle = handle
+        return handle
+    return _acquire_file_lock(lock_path)
+
+
+def release_lock(lock_ref):
+    """Windows mutex 핸들이면 CloseHandle, 파일 경로면 unlink."""
+    global _lock_handle
+    if isinstance(lock_ref, int):
+        try:
+            ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(lock_ref))
+        except Exception:
+            pass
+        _lock_handle = None
+        return
+    if isinstance(lock_ref, str):
+        try:
+            os.unlink(lock_ref)
+        except OSError:
+            pass
 
 
 def main():
