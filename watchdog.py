@@ -402,6 +402,8 @@ def _acquire_file_lock(lock_path=None):
 def acquire_lock(lock_path=None):
     """단일 인스턴스 강제. Windows 는 named mutex(원자적·종료 시 자동 해제), 그 외는 PID lockfile."""
     global _lock_handle
+    if lock_path is None:
+        lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
     if sys.platform == "win32":
         handle = _acquire_win_mutex()
         if handle is None:
@@ -410,6 +412,14 @@ def acquire_lock(lock_path=None):
             print("[WATCHDOG] 단일 인스턴스 mutex 생성 실패. 안전을 위해 종료합니다.")
             sys.exit(1)
         _lock_handle = handle
+        # watchdog_guard 의 lockfile 기반 생존 체크(is_watchdog_running)를 위해 PID 를
+        # heartbeat 로 기록한다. 실제 단일 인스턴스 보장은 mutex 가 하며, lockfile 은 가드
+        # 정보용이다. 종료 시 stale 가 되면 가드가 dead 로 보고 정상 재기동한다.
+        try:
+            with open(lock_path, "w") as f:
+                f.write(str(os.getpid()))
+        except OSError:
+            pass
         return handle
     return _acquire_file_lock(lock_path)
 

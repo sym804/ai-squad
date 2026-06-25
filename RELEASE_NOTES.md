@@ -44,6 +44,18 @@
 | v0.8.7 | 2026-06-16 | v0.8.6 라이브 검증서 드러난 리서치 약점 3건 수정: 분해가 부모 질문·제약 누락(F1) / 종합 실패 시 raw 에러 방송(F2) / 타임아웃성 응답이 finding 으로 노출(F3) |
 | v0.8.8 | 2026-06-25 | 토론 모드 cwd 미설정으로 Codex(workspace-write 샌드박스)가 외부 경로 평가 시 차단되던 버그 수정: 주제/질문의 화이트리스트 경로를 모든 에이전트 cwd 로 바인딩 |
 | v0.8.9 | 2026-06-25 | `!bot restart` 한 번에 봇이 5중 spawn 되던 버그 수정: 재시작 디바운스+재진입 가드. 단일 인스턴스 lock 을 Windows named mutex(원자적·자동해제)로 하드닝 |
+| v0.8.10 | 2026-06-25 | v0.8.9 후속: mutex 전환으로 lockfile 을 안 쓰게 되며 watchdog_guard 의 lockfile 기반 생존체크가 3분마다 헛 재기동(churn)하던 문제를, mutex 획득 후 lockfile 에 PID heartbeat 기록으로 해소 |
+
+## v0.8.10 (2026-06-25)
+
+v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 주기 예약작업)의 `is_watchdog_running()` 이 `.watchdog.lock` 의 PID 로 워치독 생존을 판정한다는 사실을 확인. 새 워치독이 mutex 만 쓰고 lockfile 을 안 써서 가드가 'dead' 로 오판 → 3분마다 워치독을 재기동(매번 mutex `ERROR_ALREADY_EXISTS` 로 즉시 종료)하는 churn/콘솔 깜빡임이 발생할 수 있었다(실제로 구버전 lock 의 중복 방지 실패로 워치독 2개가 동시 가동 중인 것도 확인).
+
+### 버그 수정
+- **[Minor / etc] mutex 전환 후 watchdog_guard churn 방지(lockfile heartbeat)**: `acquire_lock()` 의 Windows 경로에서 mutex 획득 성공 후 `.watchdog.lock` 에 현재 PID 를 heartbeat 로 기록. 실제 단일 인스턴스 보장은 여전히 mutex(원자적·종료 시 OS 자동해제)가 하고, lockfile 은 가드 생존체크용 정보일 뿐이라 race 와 무관. 가드가 live PID 를 보는 동안 lockfile 을 건드리지 않으므로 1회 기록으로 churn 해소. 종료/크래시 시 stale 가 되면 가드가 dead 로 보고 정상 재기동(새 워치독이 mutex 획득 후 lockfile 갱신).
+
+### 검증
+- `test_watchdog` 17건(`test_acquire_lock_uses_mutex_on_win32` 이 tmp lockfile 에 PID heartbeat 기록을 단언, 실제 `.watchdog.lock` 미오염 확인) + 전체 405 통과.
+- **Codex 교차검증**: 핵심 4항목(heartbeat 가 mutex 단일성 불침해 / 가드 churn 해소 / 정상·크래시 시 stale→재기동 흐름 / 테스트 적절성) 전부 통과. 잔여 Minor/Trivial(lockfile 쓰기 실패 시 churn 잔존-단 중복은 mutex 가 차단, PID 재사용, 동시 가드 경합)은 모두 기존 가드 liveness 방식의 한계로 이번 변경과 무관.
 
 ## v0.8.9 (2026-06-25)
 

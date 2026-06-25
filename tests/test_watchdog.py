@@ -114,14 +114,17 @@ def test_restart_bot_clears_flag_on_exception(monkeypatch):
     assert watchdog._restart_in_progress is False
 
 
-def test_acquire_lock_uses_mutex_on_win32(monkeypatch):
-    """Windows 에서는 named mutex 핸들을 잡고 _lock_handle 에 보관한다."""
+def test_acquire_lock_uses_mutex_on_win32(monkeypatch, tmp_path):
+    """Windows 에서는 named mutex 핸들을 잡아 _lock_handle 에 보관하고, 가드용 heartbeat 로
+    lockfile 에 PID 를 기록한다."""
     watchdog = load_watchdog_module(monkeypatch)
     monkeypatch.setattr(watchdog.sys, "platform", "win32")
     monkeypatch.setattr(watchdog, "_acquire_win_mutex", lambda: 4242)
-    result = watchdog.acquire_lock()
+    lock = tmp_path / ".watchdog.lock"
+    result = watchdog.acquire_lock(str(lock))
     assert result == 4242
     assert watchdog._lock_handle == 4242
+    assert lock.read_text().strip() == str(os.getpid())  # 가드 생존체크용 heartbeat
 
 
 def test_acquire_lock_exits_when_mutex_already_held(monkeypatch):
