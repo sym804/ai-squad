@@ -405,6 +405,24 @@ def acquire_lock(lock_path=None):
     if lock_path is None:
         lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
     if sys.platform == "win32":
+        # 크로스세션 단일 인스턴스 pre-check.
+        # named mutex 는 `Local\` 네임스페이스라 세션(로그온 세션)별로 격리된다. 즉
+        # S4U 예약작업(세션 0)과 대화형 예약작업(대화형 세션)이 각자 워치독을 띄우면
+        # 서로의 mutex 를 못 보고 둘 다 살아남아, `!bot restart` 한 번에 봇이 세션 수만큼
+        # 중복 spawn 된다(2026-07-03 재시작 4중 메시지 회귀). lockfile 의 PID 는
+        # OpenProcess 로 세션 무관하게 생존 확인이 되므로, 살아있는 다른 워치독이 이미
+        # 있으면 여기서 종료해 세션 경계를 넘는 중복을 막는다. (동일 세션 내 원자적
+        # 배제는 여전히 아래 mutex 가 담당.)
+        # 한계: 서로 다른 세션의 두 워치독이 stale lockfile 상태에서 '동시에' cold-start
+        # 하면 둘 다 통과할 수 있으나(예약작업 주기가 3분/5분로 달라 실제 정렬 확률 낮음),
+        # 정상 가동 중이면 후발 기동이 항상 살아있는 PID 를 보고 종료하므로 정상상태는
+        # 단일 인스턴스로 수렴한다. 완전한 원자적 크로스세션 배제는 `Global\` mutex 가
+        # 필요하나 S4U Limited 에서 SeCreateGlobalPrivilege 부재 시 생성 실패(fail-closed)
+        # 위험이 있어 채택하지 않는다.
+        existing = _read_lock_pid(lock_path)
+        if existing and existing != os.getpid() and _is_pid_alive(existing):
+            print(f"[WATCHDOG] 다른 세션에 워치독(PID {existing}) 이 이미 실행 중입니다. 종료합니다.")
+            sys.exit(0)
         handle = _acquire_win_mutex()
         if handle is None:
             # mutex 생성 실패(이례적: 핸들 고갈 등). 단일 인스턴스를 보장할 수 없으므로 racy

@@ -47,6 +47,23 @@
 | v0.8.10 | 2026-06-25 | v0.8.9 후속: mutex 전환으로 lockfile 을 안 쓰게 되며 watchdog_guard 의 lockfile 기반 생존체크가 3분마다 헛 재기동(churn)하던 문제를, mutex 획득 후 lockfile 에 PID heartbeat 기록으로 해소 |
 | v0.8.11 | 2026-07-03 | Claude 세션 한도 초과 메시지가 fatal 로 안 잡혀 백업 미투입 + "합의된 답변"으로 방송되던 버그 수정: 세션/사용량 한도 문자열 탐지 추가 + 최종답변 방어선 |
 | v0.8.12 | 2026-07-03 | 테스트 격리: dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 config reload 시 monkeypatch 를 덮어써 `test_gemini.py::TestBinarySelection` 4건이 실패하던 문제를 load_dotenv 무력화로 해소(production config 미변경) |
+| v0.8.13 | 2026-07-03 | `!bot restart` 한 번에 봇이 세션 수만큼(4중) 중복 spawn 되던 회귀 완화: `Local\` mutex 가 세션별이라 크로스세션 워치독을 못 막던 것을 lockfile PID alive-check 로 보강(잔여 동시 cold-start 레이스는 후속 LockFileEx 로 추적) |
+
+## v0.8.13 (2026-07-03)
+
+사용자가 `!bot restart` 를 한 번 눌렀는데 "재시작 완료, Bot 시작됨" 메시지가 서로 다른 PID 로 **4번** 떴다. 실측(Win32 프로세스 트리): watchdog.py 프로세스가 **5개**(S4U 세션 0 에 4개 + 대화형 세션에 1개) 동시 가동 중이었고, 각 워치독이 `!bot restart` 를 독립 처리해 봇을 하나씩 spawn 했다. 근본 원인은 watchdog.py 의 단일 인스턴스 mutex 이름이 `Local\slack_multi_agent_watchdog` 로 **세션별(per-logon-session) 네임스페이스**라, 예약작업 2개(`SlackBotWatchdog`=Interactive, `SlackBotWatchdogGuard`=S4U 세션 0)가 서로 다른 세션에서 띄운 워치독끼리 mutex 로 배제되지 않고 무기한 공존한 것(+ mutex 도입 전 기동된 6월 스테일 워치독 누적).
+
+### 버그 수정
+- **[Major / etc] 크로스세션 워치독 중복 완화(lockfile alive-check)**: `acquire_lock` 의 win32 경로에서 mutex 획득 전에 `.watchdog.lock` 의 PID 를 `_is_pid_alive`(OpenProcess, 세션 무관)로 확인해, **살아있는 다른 워치독이 있으면 exit(0)**. `Local\` mutex 는 동일 세션 원자성용으로 유지. 후발 기동이 항상 기존 워치독을 보고 종료하므로 정상상태는 단일 인스턴스로 수렴한다. `Global\` mutex 는 S4U Limited 에서 `SeCreateGlobalPrivilege` 부재 시 생성 실패(fail-closed)로 워치독이 아예 안 뜰 위험이 있어 채택하지 않았다.
+
+### 알려진 한계 (후속 추적)
+- 서로 다른 세션의 두 워치독이 **stale lockfile 상태에서 동시에 cold-start** 하면 둘 다 pre-check 를 통과할 수 있는 잔여 레이스가 남는다(예약작업 주기 3분/5분로 정렬 확률은 낮음). 완전한 원자적 크로스세션 배제는 `LockFileEx`(커널 파일락, 세션 무관·특권 불필요·종료 시 자동 해제)로 봉합 예정. GitHub 이슈로 추적.
+- lockfile PID 가 무관 프로세스에 재사용되면 `_is_pid_alive` 오탐으로 기동이 억제될 수 있다(기존 `watchdog_guard.is_watchdog_running` 과 동일한 한계). PID 신원검증(생성시각/cmdline)은 후속 하드닝에서 함께 처리.
+
+### 검증
+- 신규 테스트 3건(`test_acquire_lock_exits_when_other_session_watchdog_alive`/`_proceeds_when_lockfile_pid_dead`/`_proceeds_when_lockfile_pid_is_self`) + 기존 mutex 테스트 2건을 tmp_path 로 결정론화. watchdog 테스트 20건 통과, 전체 424건 통과(회귀 없음).
+- **Codex 교차검증**: pre-check 로직 정합성·정상 재시작 무영향·기존 mutex 경로 보존·Global 회피 정당성 전부 PASS. Major(잔여 동시 cold-start 레이스)는 mitigation 의 알려진 한계로 위 '알려진 한계'에 명시 + 후속 이슈로 추적. Minor(PID 재사용)는 기존 공유 한계로 문서화.
+- **스테일 프로세스 정리**: 이미 떠 있는 세션 0 스테일 워치독/봇은 코드로 못 죽인다(대화형 세션에서 Access denied, 관리자 권한 필요). 운영자가 elevated 로 정리.
 
 ## v0.8.12 (2026-07-03)
 
