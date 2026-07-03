@@ -46,6 +46,18 @@
 | v0.8.9 | 2026-06-25 | `!bot restart` 한 번에 봇이 5중 spawn 되던 버그 수정: 재시작 디바운스+재진입 가드. 단일 인스턴스 lock 을 Windows named mutex(원자적·자동해제)로 하드닝 |
 | v0.8.10 | 2026-06-25 | v0.8.9 후속: mutex 전환으로 lockfile 을 안 쓰게 되며 watchdog_guard 의 lockfile 기반 생존체크가 3분마다 헛 재기동(churn)하던 문제를, mutex 획득 후 lockfile 에 PID heartbeat 기록으로 해소 |
 | v0.8.11 | 2026-07-03 | Claude 세션 한도 초과 메시지가 fatal 로 안 잡혀 백업 미투입 + "합의된 답변"으로 방송되던 버그 수정: 세션/사용량 한도 문자열 탐지 추가 + 최종답변 방어선 |
+| v0.8.12 | 2026-07-03 | 테스트 격리: dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 config reload 시 monkeypatch 를 덮어써 `test_gemini.py::TestBinarySelection` 4건이 실패하던 문제를 load_dotenv 무력화로 해소(production config 미변경) |
+
+## v0.8.12 (2026-07-03)
+
+`tests/test_gemini.py::TestBinarySelection` 4건(default/empty/explicit-gemini/invalid)이 봇을 agy 로 가동 중인 개발 머신에서 실패했다. 원인은 `config.py` 가 import 시 `load_dotenv(override=True)` 로 .env 를 읽는데, 이 테스트들이 `GEMINI_CLI_BINARY` 를 monkeypatch 한 뒤 `importlib.reload(config)` 를 하면 reload 가 `load_dotenv(override=True)` 를 재실행하면서 dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 monkeypatch 값을 덮어써 config 가 항상 agy 로 잡힌 것(테스트 격리 결함). v0.8.11 작업 중 발견.
+
+### 버그 수정
+- **[Minor / etc] TestBinarySelection 의 .env 누수 차단(테스트 격리)**: `_restore_gemini_default` autouse fixture 에 `monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)` 추가. config reload 가 .env 를 다시 읽지 않아 monkeypatch 한 값이 유지된다. monkeypatch 가 fixture teardown 이후 마지막에 undo 되므로 teardown 의 reload 동안에도 패치가 유효해, teardown 이 config 를 gemini 기본값으로 정상 복원한다. production `config.py` 의 `override=True`(shell env 보다 .env 우선)는 봇 동작상 의도된 정책이라 미변경.
+
+### 검증
+- `test_gemini.py::TestBinarySelection` 10건 전부 통과(이전 4 실패 → 0), 전체 스위트 421건 통과(회귀 없음).
+- **Codex 교차검증**: 병합 차단 사유 없음(통과). 패치 재바인딩 방식·fixture/monkeypatch teardown 순서·격리 범위·conftest 무충돌·override=True 유지 판단 전부 확인. 발견 이슈 전부 Minor/Trivial(제품 결함 아님).
 
 ## v0.8.11 (2026-07-03)
 

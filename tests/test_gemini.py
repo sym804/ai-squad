@@ -142,7 +142,22 @@ class TestBinarySelection:
 
     @pytest.fixture(autouse=True)
     def _restore_gemini_default(self, monkeypatch):
-        """각 테스트 후 모듈 상태를 기본값(gemini)으로 되돌려 후속 테스트 격리."""
+        """config reload 시 실제 dev .env 가 monkeypatch 한 GEMINI_CLI_BINARY 를
+        덮어쓰지 않도록 load_dotenv 를 무력화(테스트 격리)한 뒤, 각 테스트 후
+        모듈 상태를 기본값(gemini)으로 되돌린다.
+
+        config.py 는 import 시 `load_dotenv(override=True)` 로 .env 를 읽는데,
+        이 클래스의 테스트들은 GEMINI_CLI_BINARY 를 monkeypatch 한 뒤 config 를
+        importlib.reload 한다. reload 가 load_dotenv(override=True) 를 재실행하면
+        dev .env 의 `GEMINI_CLI_BINARY=agy`(봇 실가동 설정)가 monkeypatch 값을
+        덮어써 default/empty/explicit-gemini/invalid 케이스가 전부 agy 로 잡혀
+        실패한다. 여기서 load_dotenv 를 no-op 으로 패치하면 reload 가 .env 를
+        다시 읽지 않아 monkeypatch 한 값이 그대로 유지된다. production config.py
+        의 override=True(shell env 보다 .env 우선)는 봇 동작상 의도된 것이라
+        건드리지 않는다. (monkeypatch 는 테스트 종료 시 마지막에 undo 되므로
+        아래 teardown reload 동안에도 패치가 유지된다.)
+        """
+        monkeypatch.setattr("dotenv.load_dotenv", lambda *a, **k: False)
         yield
         import importlib
         monkeypatch.delenv("GEMINI_CLI_BINARY", raising=False)
