@@ -24,6 +24,15 @@ _FATAL_SUBSTRINGS = (
     # 5xx 서버 에러 / 과부하 (Claude Code CLI 가 API 500/529 hit 시 result 로 내보냄)
     "internal server error",
     "overloaded_error",
+    # 세션/사용량 한도 (Claude Code CLI 가 5시간 세션·사용량 한도 초과 시 예외가
+    # 아니라 평범한 stdout 텍스트로 내보냄. 예: "You've hit your session limit ·
+    # resets 7:50pm". 이게 fatal 로 안 잡히면 백업 교체가 트리거되지 않아 해당
+    # 에이전트가 죽은 참가자로 남고, 그 한도 메시지가 합의문으로 방송됨 -
+    # Slack thread 1782980989 회귀. full phrase 라 일반 대화의 "session limit"/
+    # "한도" 언급에는 오탐하지 않음.
+    "hit your session limit",
+    "reached your session limit",
+    "usage limit reached",
     # 기타
     "unexpected critical error",
 )

@@ -1049,12 +1049,19 @@ class DebateMode:
         """합의문으로 방송하면 안 되는 응답인지 판정.
 
         - 빈 응답
-        - fatal error(5xx/과부하/쿼터/rate limit) 가 _is_fatal_error 로 감지된 경우
+        - fatal error(5xx/과부하/쿼터/rate limit/세션 한도) 가 _is_fatal_error 로 감지된 경우
         - 타임아웃/취소 등 에이전트 내부 폴백 메시지(`[Name] ...`)
         """
         if not answer:
             return True
         if getattr(agent, "has_error", False) or getattr(agent, "timed_out", False):
+            return True
+        # 방어선(defense-in-depth): has_error 플래그가 어떤 이유로 안 잡혔더라도
+        # fatal 패턴(세션 한도 등)이 답변 본문에 있으면 방송 차단. _is_fatal_error 는
+        # _FATAL_SUBSTRINGS/_FATAL_REGEX 를 단일 소스로 쓰므로 탐지 계층과 자동 동기.
+        # callable 가드: 비표준 에이전트가 동명의 호출불가 속성을 가져도 TypeError 방지.
+        checker = getattr(agent, "_is_fatal_error", None)
+        if callable(checker) and checker(answer):
             return True
         # "[Claude] 오류: ...", "[Codex] 응답 시간 초과 (...)", "[Gemini] 작업 취소됨" 등
         # 에이전트 내부 상태 메시지는 답변이 아니다.

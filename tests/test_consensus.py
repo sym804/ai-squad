@@ -230,3 +230,38 @@ class TestGenerateFinalAnswerErrorGuard:
         d.agents = [_StubAgent("Claude", "🟠", [answer])]
         result = await d._generate_final_answer("주제", [], _consensuses())
         assert result == "통합 답변 본문."
+
+    @pytest.mark.asyncio
+    async def test_session_limit_not_broadcast_as_answer(self):
+        """세션 한도 메시지가 합의된 답변으로 방송되면 안 됨 (폴백 머지).
+
+        회귀: Slack thread 1782980989 - Claude 가 세션 한도에 걸려 9라운드 내내
+        "You've hit your session limit · resets 7:50pm" 만 반환했는데, 이게
+        fatal 로 안 잡혀 최종 "💡 합의된 답변" 으로 그대로 방송됨.
+        """
+        limit = "You've hit your session limit · resets 7:50pm (Asia/Seoul)"
+        d = _make_debate()
+        d.agents = [
+            _StubAgent("Claude", "🟠", [limit]),
+            _StubAgent("Codex", "🟢", [limit]),
+            _StubAgent("Gemini", "🔵", [limit]),
+        ]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert "session limit" not in result
+        assert "resets" not in result
+        # 결정론적 머지로 폴백 → 각 에이전트 summary 포함
+        assert "삼성전자 코스피 비중" in result
+
+    @pytest.mark.asyncio
+    async def test_session_limit_first_agent_falls_back_to_second(self):
+        """첫 후보가 세션 한도면 다음 후보의 정상 답변을 사용."""
+        limit = "You've hit your session limit · resets 7:50pm (Asia/Seoul)"
+        good = "코스피 급락 시 분할 매수로 대응하는 것이 합리적입니다."
+        d = _make_debate()
+        d.agents = [
+            _StubAgent("Claude", "🟠", [limit, limit]),
+            _StubAgent("Codex", "🟢", [good]),
+            _StubAgent("Gemini", "🔵", ["사용 안 됨"]),
+        ]
+        result = await d._generate_final_answer("주제", [], _consensuses())
+        assert result == good

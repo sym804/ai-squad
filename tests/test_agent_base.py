@@ -210,6 +210,48 @@ class TestFatalErrorDetection:
         await agent.ask("test")
         assert agent.has_error is False, f"오탐: {benign!r}"
 
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("pattern", [
+        # Claude Code CLI 5시간 세션 한도 (Slack thread 1782980989 실측 메시지)
+        "You've hit your session limit · resets 7:50pm (Asia/Seoul)",
+        "You've hit your session limit ∙ resets 11pm",
+        # 세션 한도 변형
+        "You've reached your session limit. Try again later.",
+        # 구형 Claude 사용량 한도 메시지
+        "Claude usage limit reached. Your limit will reset at 8pm.",
+        "usage limit reached",
+    ])
+    async def test_session_limit_detected(self, pattern):
+        """세션/사용량 한도 초과 메시지가 fatal 로 탐지되어야 함.
+
+        Claude Code CLI 는 세션 한도 초과 시 예외가 아니라 평범한 텍스트를
+        정상 stdout 으로 반환한다. 이게 fatal 로 잡혀야 백업 교체가 트리거되고
+        (needs_replacement) 그 메시지가 합의문으로 방송되지 않는다.
+        회귀: Slack thread 1782980989 - Claude 9라운드 내내 죽은 참가자로 남음.
+        """
+        agent = FakeAgent()
+        agent._cli_response = pattern
+        await agent.ask("test")
+        assert agent.has_error is True, f"undetected limit message: {pattern!r}"
+        assert agent.needs_replacement is True
+        assert agent.timed_out is False
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("benign", [
+        # 일반 대화에서 'limit'/'session' 이 등장해도 full phrase 가 아니면 오탐 금지
+        "API 호출 시 세션 한도(session limit)를 정해 두는 것이 좋습니다",
+        "You should set a session limit for concurrent connections",
+        "일일 매수 한도를 초과하지 않도록 관리하세요",
+        "이 전략의 리스크 한도(risk limit)는 -5%입니다",
+    ])
+    async def test_benign_limit_mentions_not_flagged(self, benign):
+        """'session limit'/'한도' 가 콘텐츠로 언급돼도 오류로 오탐되면 안 됨."""
+        agent = FakeAgent()
+        agent._cli_response = f"작업 결과:\n{benign}\n완료"
+        await agent.ask("test")
+        assert agent.has_error is False, f"오탐: {benign!r}"
+        assert agent.needs_replacement is False
+
 
 # ── 예외 처리 ───────────────────────────────────────────────────
 

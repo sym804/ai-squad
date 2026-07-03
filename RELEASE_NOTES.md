@@ -45,6 +45,20 @@
 | v0.8.8 | 2026-06-25 | 토론 모드 cwd 미설정으로 Codex(workspace-write 샌드박스)가 외부 경로 평가 시 차단되던 버그 수정: 주제/질문의 화이트리스트 경로를 모든 에이전트 cwd 로 바인딩 |
 | v0.8.9 | 2026-06-25 | `!bot restart` 한 번에 봇이 5중 spawn 되던 버그 수정: 재시작 디바운스+재진입 가드. 단일 인스턴스 lock 을 Windows named mutex(원자적·자동해제)로 하드닝 |
 | v0.8.10 | 2026-06-25 | v0.8.9 후속: mutex 전환으로 lockfile 을 안 쓰게 되며 watchdog_guard 의 lockfile 기반 생존체크가 3분마다 헛 재기동(churn)하던 문제를, mutex 획득 후 lockfile 에 PID heartbeat 기록으로 해소 |
+| v0.8.11 | 2026-07-03 | Claude 세션 한도 초과 메시지가 fatal 로 안 잡혀 백업 미투입 + "합의된 답변"으로 방송되던 버그 수정: 세션/사용량 한도 문자열 탐지 추가 + 최종답변 방어선 |
+
+## v0.8.11 (2026-07-03)
+
+Slack thread 1782980989 회귀. Claude Code CLI 가 5시간 세션 한도에 걸리면 예외가 아니라 평범한 stdout 텍스트 `You've hit your session limit · resets 7:50pm (Asia/Seoul)` 를 정상 반환하는데, 기존 fatal 에러 탐지(`agents/base.py` `_is_fatal_error`)의 `_FATAL_SUBSTRINGS`/`_FATAL_REGEX` 가 이 문자열을 커버하지 않았다. 그 결과 (1) `has_error=False` → `needs_replacement=False` → 백업 대체 투입이 트리거되지 않아 Claude 가 9라운드 내내 `출력 0` 죽은 참가자로 남고, (2) `_generate_final_answer` 가 교체 안 된 Claude 를 통합문 후보로 잡고 `_is_bad_final_answer` 도 이 메시지를 못 걸러서, 최종 "💡 합의된 답변" 이 세션 한도 메시지 그 자체로 방송됐다(사용자 질문에 대한 답이 "너 세션 한도 초과됨"). v0.7.7(API 500 방송 수정)과 동형 버그의 세션 한도 버전.
+
+### 버그 수정
+- **[Major / backend] 세션 한도 메시지 fatal 탐지 추가(탐지 계층)**: `_FATAL_SUBSTRINGS` 에 `hit your session limit`/`reached your session limit`/`usage limit reached` 3개 full-phrase 추가. 실측 문구(`You've hit your session limit ·`) + 널리 문서화된 변형(`Claude usage limit reached ...`)을 커버. full-phrase 라 일반 토론의 `session limit`/`한도` 단독 언급에는 오탐하지 않음(benign 테스트로 확인). 이 하나로 백업 자동 투입이 정상화되고, 교체된 Claude 가 최종답변 후보에서도 자동 제외됨.
+- **[Major / backend] 최종답변 방어선(defense-in-depth)**: `_is_bad_final_answer` 에 `_is_fatal_error(answer)` 검사 추가(`callable` 가드 포함). 탐지 계층이 어떤 이유로 놓치더라도 fatal 패턴이 답변 본문에 있으면 "합의된 답변" 방송을 차단. `_is_fatal_error` 가 `_FATAL_SUBSTRINGS`/`_FATAL_REGEX` 단일 소스를 쓰므로 탐지 계층과 자동 동기.
+
+### 검증
+- 신규 테스트 11건(`test_session_limit_detected` 5 파라미터 + `test_benign_limit_mentions_not_flagged` 4 파라미터 + `test_session_limit_not_broadcast_as_answer` + `test_session_limit_first_agent_falls_back_to_second`) 통과. TDD 레드→그린 확인.
+- 전체 스위트: 기존 회귀 없음(무관한 `test_gemini.py::TestBinarySelection` 4건은 로컬 `.env` 의 `GEMINI_CLI_BINARY=agy` 로 인한 기존 실패, stash 대조로 이번 변경과 무관 확인).
+- **Codex 교차검증**: 병합 차단 사유 없음(통과). 탐지 경로(has_error→needs_replacement→백업 교체)·최종답변 guard 통합·import 정합성·보안 전부 통과. 발견 이슈 전부 Minor/Trivial: Trivial(guard `callable` 가드)만 반영, 나머지(변형 문구 추정 확장 자제·긴 로그 가운데 미검사·결정적 merge fatal 필터)는 기존 설계 트레이드오프이거나 별개 하드닝(scope)이라 이번 변경서 제외.
 
 ## v0.8.10 (2026-06-25)
 
