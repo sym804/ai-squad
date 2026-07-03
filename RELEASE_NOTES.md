@@ -48,6 +48,28 @@
 | v0.8.11 | 2026-07-03 | Claude 세션 한도 초과 메시지가 fatal 로 안 잡혀 백업 미투입 + "합의된 답변"으로 방송되던 버그 수정: 세션/사용량 한도 문자열 탐지 추가 + 최종답변 방어선 |
 | v0.8.12 | 2026-07-03 | 테스트 격리: dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 config reload 시 monkeypatch 를 덮어써 `test_gemini.py::TestBinarySelection` 4건이 실패하던 문제를 load_dotenv 무력화로 해소(production config 미변경) |
 | v0.8.13 | 2026-07-03 | `!bot restart` 한 번에 봇이 세션 수만큼(4중) 중복 spawn 되던 회귀 완화: `Local\` mutex 가 세션별이라 크로스세션 워치독을 못 막던 것을 lockfile PID alive-check 로 보강(잔여 동시 cold-start 레이스는 후속 LockFileEx 로 추적) |
+| v0.8.14 | 2026-07-03 | v0.8.13 후속: 워치독 크로스세션 단일 인스턴스를 커널 파일락(`msvcrt.locking`)으로 원자적 봉합. 동시 cold-start 잔여 레이스 제거(비원자 PID pre-check 대체). 실측(크로스프로세스 배제+강제 kill 자동해제) 검증 |
+
+## v0.8.14 (2026-07-03)
+
+v0.8.13 의 lockfile PID alive-check 는 서로 다른 세션의 두 워치독이 stale lockfile 상태로 동시에 cold-start 하면 둘 다 통과할 수 있는 잔여 레이스가 있었다(Codex Major). 이를 커널 바이트영역 파일락으로 **원자적으로** 봉합한다.
+
+### 개선
+- **[Major / etc] 크로스세션 단일 인스턴스 원자적 봉합(커널 파일락)**: `_acquire_single_instance_filelock()` 신설. `.watchdog.single` 파일을 열어 `msvcrt.locking(LK_NBLCK, 1)` 로 1바이트 배타 잠금. `acquire_lock`(win32)에서 mutex 획득 후 이 파일락을 획득하고, 실패하면 `exit(0)`. v0.8.13 의 비원자 PID pre-check 는 제거(파일락이 대체하며 PID 재사용 오탐도 함께 제거). `release_lock` 에 핸들 해제 추가.
+  - **원자성**: 커널 byte-range 락이라 open→lock 사이 TOCTOU 없이 정확히 하나만 승리. 동시 cold-start 레이스 제거.
+  - **세션 무관**: named mutex `Local\` 가 세션별이라 S4U 세션 0 vs 대화형 세션 워치독을 못 막던 게 근본 원인이었는데, 파일락은 세션 경계와 무관하게 배제.
+  - **자동 해제**: 프로세스가 죽으면(크래시/kill/로그아웃) OS 가 락을 회수 → stale lock 없음.
+  - **특권 불필요**: `Global\` mutex 와 달리 `SeCreateGlobalPrivilege` 불필요 → S4U Limited 에서도 fail-closed 안 됨.
+  - heartbeat 용 `.watchdog.lock`(guard 가 read) 과 락 파일 `.watchdog.single` 을 분리해 mandatory 락이 guard 의 PID read 를 막지 않게 함.
+
+### 검증
+- **실측(mock 아님)**: (1) pytest win32 - 동일 프로세스 두 핸들 상호배제 + close 시 자동해제, 파일락 보유 중 `.watchdog.lock` read 정상. (2) 크로스프로세스 스크립트 - 자식이 락 보유 중 부모 배제(None), 자식 **강제 kill** 후 부모 획득 성공(OS 자동해제). (3) 실제 프로젝트 디렉터리(OneDrive 밖, 로컬 NTFS)에서 바이트락 배제 동작 확인.
+- watchdog 21건 / 전체 425건 통과(회귀 없음). v0.8.13 의 비원자 pre-check 테스트 3건은 파일락 테스트로 교체.
+- **Codex 교차검증**: 원자성·fail-closed·핸들 수명·guard 분리·release/restart 무회귀 전부 PASS. 이전 Major(동시 cold-start 레이스) 해소 확인. Minor 하나(락 성공 전 non-OSError 예외 시 핸들 누수) 반영(try/finally 로 close). 나머지 Trivial(heartbeat 실패 로깅, mutex 잉여)은 무해로 유지.
+
+### 한계 (문서화)
+- **로컬 파일시스템 전용**: OneDrive/네트워크 공유처럼 서로 다른 머신의 동기화 복사본은 동일 커널 파일 객체가 아니라 cross-machine 배제는 제공하지 않는다(단일 머신 단일 인스턴스가 목표라 무관). 현 배포 경로는 로컬 NTFS(OneDrive 밖) 확인.
+- 가동 중 `.watchdog.single` 을 수동 삭제/이동하지 말 것(핸들 보유 중 삭제는 로컬 NTFS 에서 기본 거부됨).
 
 ## v0.8.13 (2026-07-03)
 

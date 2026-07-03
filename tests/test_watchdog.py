@@ -115,15 +115,18 @@ def test_restart_bot_clears_flag_on_exception(monkeypatch):
 
 
 def test_acquire_lock_uses_mutex_on_win32(monkeypatch, tmp_path):
-    """Windows 에서는 named mutex 핸들을 잡아 _lock_handle 에 보관하고, 가드용 heartbeat 로
-    lockfile 에 PID 를 기록한다."""
+    """Windows 에서는 named mutex 핸들을 잡아 _lock_handle 에 보관하고, 크로스세션 파일락을
+    획득한 뒤 가드용 heartbeat 로 lockfile 에 PID 를 기록한다."""
     watchdog = load_watchdog_module(monkeypatch)
     monkeypatch.setattr(watchdog.sys, "platform", "win32")
     monkeypatch.setattr(watchdog, "_acquire_win_mutex", lambda: 4242)
+    fake_fh = MagicMock()
+    monkeypatch.setattr(watchdog, "_acquire_single_instance_filelock", lambda base: fake_fh)
     lock = tmp_path / ".watchdog.lock"
     result = watchdog.acquire_lock(str(lock))
     assert result == 4242
     assert watchdog._lock_handle == 4242
+    assert watchdog._single_lock_fh is fake_fh  # 파일락 핸들 보관
     assert lock.read_text().strip() == str(os.getpid())  # 가드 생존체크용 heartbeat
 
 
@@ -156,47 +159,60 @@ def test_acquire_lock_exits_when_mutex_creation_fails_on_win32(monkeypatch, tmp_
     file_lock.assert_not_called()  # 폴백으로 내려가지 않음
 
 
-def test_acquire_lock_exits_when_other_session_watchdog_alive(monkeypatch, tmp_path):
-    """크로스세션 단일 인스턴스: lockfile 이 다른(살아있는) 워치독 PID 를 가리키면
-    mutex 획득 전에 종료한다. (Local\\ mutex 는 세션별이라 S4U 세션0 vs 대화형 세션의
-    워치독을 배제 못 하던 다중 spawn 회귀 - Slack 재시작 4중 메시지 - 방지.)"""
+def test_acquire_lock_exits_when_filelock_held(monkeypatch, tmp_path):
+    """크로스세션 원자적 배제: 파일락이 이미 잡혀 있으면(다른 세션 포함 워치독 존재)
+    mutex 는 통과해도 파일락 단계에서 exit(0) 한다."""
     watchdog = load_watchdog_module(monkeypatch)
     monkeypatch.setattr(watchdog.sys, "platform", "win32")
+    monkeypatch.setattr(watchdog, "_acquire_win_mutex", lambda: 4242)
+    monkeypatch.setattr(watchdog, "_acquire_single_instance_filelock", lambda base: None)
     lock = tmp_path / ".watchdog.lock"
-    lock.write_text("424242")  # 다른 세션의 살아있는 워치독 PID
-    monkeypatch.setattr(watchdog, "_is_pid_alive", lambda pid: pid == 424242)
-    mutex = MagicMock()
-    monkeypatch.setattr(watchdog, "_acquire_win_mutex", mutex)
     with pytest.raises(SystemExit):
         watchdog.acquire_lock(str(lock))
-    mutex.assert_not_called()  # 크로스세션 중복 → mutex 획득 시도 전에 종료
-    assert lock.read_text().strip() == "424242"  # 남의 lockfile 을 덮어쓰지 않음
+    assert not lock.exists()  # 파일락 실패 → heartbeat PID 도 안 씀
 
 
-def test_acquire_lock_proceeds_when_lockfile_pid_dead(monkeypatch, tmp_path):
-    """lockfile PID 가 죽었으면 정상 진행(mutex 획득 + 자기 PID heartbeat 갱신)."""
+def test_acquire_lock_proceeds_when_filelock_free(monkeypatch, tmp_path):
+    """파일락이 비어 있으면 정상 진행(mutex + 파일락 획득 + 자기 PID heartbeat)."""
     watchdog = load_watchdog_module(monkeypatch)
     monkeypatch.setattr(watchdog.sys, "platform", "win32")
-    lock = tmp_path / ".watchdog.lock"
-    lock.write_text("999999999")  # 죽은 PID
-    monkeypatch.setattr(watchdog, "_is_pid_alive", lambda pid: False)
     monkeypatch.setattr(watchdog, "_acquire_win_mutex", lambda: 4242)
+    fake_fh = MagicMock()
+    monkeypatch.setattr(watchdog, "_acquire_single_instance_filelock", lambda base: fake_fh)
+    lock = tmp_path / ".watchdog.lock"
     result = watchdog.acquire_lock(str(lock))
     assert result == 4242
-    assert lock.read_text().strip() == str(os.getpid())  # 자기 PID 로 갱신
+    assert watchdog._single_lock_fh is fake_fh
+    assert lock.read_text().strip() == str(os.getpid())
 
 
-def test_acquire_lock_proceeds_when_lockfile_pid_is_self(monkeypatch, tmp_path):
-    """lockfile PID 가 자기 자신이면(재획득/모듈 reload) pre-check 를 건너뛰고 진행한다."""
+@pytest.mark.skipif(sys.platform != "win32", reason="msvcrt 파일락은 Windows 전용")
+def test_single_instance_filelock_excludes_and_autoreleases(monkeypatch, tmp_path):
+    """실측(mock 아님): 커널 파일락이 (1) 두 번째 획득을 원자적으로 배제하고
+    (2) 첫 핸들이 닫히면(프로세스 死 대체) 자동 해제되는지 실제 msvcrt 로 검증."""
     watchdog = load_watchdog_module(monkeypatch)
-    monkeypatch.setattr(watchdog.sys, "platform", "win32")
-    lock = tmp_path / ".watchdog.lock"
-    lock.write_text(str(os.getpid()))  # 자기 PID
-    # _is_pid_alive 를 True 로 둬도 self 는 pre-check 대상이 아님을 검증
-    monkeypatch.setattr(watchdog, "_is_pid_alive", lambda pid: True)
-    monkeypatch.setattr(watchdog, "_acquire_win_mutex", lambda: 4242)
-    result = watchdog.acquire_lock(str(lock))
-    assert result == 4242
+    base = str(tmp_path)
+    fh1 = watchdog._acquire_single_instance_filelock(base)
+    assert fh1 is not None                                        # 첫 획득 성공
+    assert watchdog._acquire_single_instance_filelock(base) is None  # 두 번째는 배제
+    fh1.close()                                                  # 해제(프로세스 종료 대체)
+    fh2 = watchdog._acquire_single_instance_filelock(base)
+    assert fh2 is not None                                       # 해제 후 재획득 성공
+    fh2.close()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="msvcrt 파일락은 Windows 전용")
+def test_single_lock_does_not_block_heartbeat_read(monkeypatch, tmp_path):
+    """실측: 파일락(.watchdog.single)을 쥔 상태에서도 guard 가 읽는 .watchdog.lock 은
+    정상 read 된다(별도 파일이라 mandatory 락 간섭 없음)."""
+    watchdog = load_watchdog_module(monkeypatch)
+    base = str(tmp_path)
+    (tmp_path / ".watchdog.lock").write_text("12345")
+    fh = watchdog._acquire_single_instance_filelock(base)
+    assert fh is not None
+    # guard.is_watchdog_running 의 read 경로와 동일
+    assert (tmp_path / ".watchdog.lock").read_text().strip() == "12345"
+    fh.close()
 
 
 def test_acquire_lock_uses_file_lock_on_non_win32(monkeypatch, tmp_path):

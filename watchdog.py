@@ -64,6 +64,8 @@ _last_restart_at = 0.0        # 마지막 재시작 시각 (디바운스 기준)
 RESTART_DEBOUNCE = 10         # 초: 이 시간 내 중복 재시작 요청은 무시 (중복 spawn 방지)
 _lock_handle = None           # Windows named mutex 핸들 (프로세스 생존 동안 유지)
 _MUTEX_NAME = "Local\\slack_multi_agent_watchdog"
+_single_lock_fh = None        # 크로스세션 파일락 핸들 (프로세스 생존 동안 유지)
+_SINGLE_LOCK_NAME = ".watchdog.single"  # 파일락 전용 파일 (heartbeat .watchdog.lock 과 분리)
 
 
 def get_bot_user_id():
@@ -376,6 +378,41 @@ def _acquire_win_mutex():
     return handle
 
 
+def _acquire_single_instance_filelock(base_dir):
+    """크로스세션 원자적 단일 인스턴스 파일락 (Windows).
+
+    msvcrt.locking 은 커널 바이트영역 락(LockFile)이라:
+      (1) 로그온 세션과 무관하게 원자적으로 상호 배제한다. named mutex 의 `Local\\`
+          네임스페이스가 세션별이라 S4U 세션 0 vs 대화형 세션의 워치독을 못 막던
+          문제(다중 spawn)를 세션 경계까지 봉합한다.
+      (2) 프로세스가 죽으면(크래시/kill/로그아웃) OS 가 락을 자동 해제한다(stale 없음).
+      (3) Global mutex 와 달리 특권(SeCreateGlobalPrivilege)이 필요 없다. 파일 접근만
+          있으면 되므로 S4U Limited 에서도 fail-closed 되지 않는다.
+
+    heartbeat 용 .watchdog.lock(guard 가 PID 를 read) 과 별도 파일(.watchdog.single)을
+    잠근다. mandatory 락이라 잠근 바이트영역의 read/write 가 막히는데, 파일을 분리하면
+    guard 의 PID read 와 간섭하지 않는다.
+
+    획득 성공 시 파일 객체(호출측이 프로세스 생존 동안 유지해야 함)를 반환한다. 이미
+    잠겨 있으면 None. 파일 자체를 못 열면 예외를 전파(호출측이 fail-closed 처리).
+    """
+    import msvcrt
+    path = os.path.join(base_dir, _SINGLE_LOCK_NAME)
+    fh = open(path, "a+")
+    try:
+        fh.seek(0)
+        # LK_NBLCK: 논블로킹 배타 잠금. 이미 잠겨 있으면 즉시 OSError.
+        msvcrt.locking(fh.fileno(), msvcrt.LK_NBLCK, 1)
+        return fh
+    except OSError:
+        fh.close()
+        return None
+    except BaseException:
+        # 락 성공 전 어떤 예외에서도 지역 핸들을 닫아 누수 방지(호출측은 fail-closed).
+        fh.close()
+        raise
+
+
 def _acquire_file_lock(lock_path=None):
     """PID lockfile 기반 단일 인스턴스 (비-Windows 폴백).
 
@@ -401,38 +438,32 @@ def _acquire_file_lock(lock_path=None):
 
 def acquire_lock(lock_path=None):
     """단일 인스턴스 강제. Windows 는 named mutex(원자적·종료 시 자동 해제), 그 외는 PID lockfile."""
-    global _lock_handle
+    global _lock_handle, _single_lock_fh
     if lock_path is None:
         lock_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".watchdog.lock")
     if sys.platform == "win32":
-        # 크로스세션 단일 인스턴스 pre-check.
-        # named mutex 는 `Local\` 네임스페이스라 세션(로그온 세션)별로 격리된다. 즉
-        # S4U 예약작업(세션 0)과 대화형 예약작업(대화형 세션)이 각자 워치독을 띄우면
-        # 서로의 mutex 를 못 보고 둘 다 살아남아, `!bot restart` 한 번에 봇이 세션 수만큼
-        # 중복 spawn 된다(2026-07-03 재시작 4중 메시지 회귀). lockfile 의 PID 는
-        # OpenProcess 로 세션 무관하게 생존 확인이 되므로, 살아있는 다른 워치독이 이미
-        # 있으면 여기서 종료해 세션 경계를 넘는 중복을 막는다. (동일 세션 내 원자적
-        # 배제는 여전히 아래 mutex 가 담당.)
-        # 한계: 서로 다른 세션의 두 워치독이 stale lockfile 상태에서 '동시에' cold-start
-        # 하면 둘 다 통과할 수 있으나(예약작업 주기가 3분/5분로 달라 실제 정렬 확률 낮음),
-        # 정상 가동 중이면 후발 기동이 항상 살아있는 PID 를 보고 종료하므로 정상상태는
-        # 단일 인스턴스로 수렴한다. 완전한 원자적 크로스세션 배제는 `Global\` mutex 가
-        # 필요하나 S4U Limited 에서 SeCreateGlobalPrivilege 부재 시 생성 실패(fail-closed)
-        # 위험이 있어 채택하지 않는다.
-        existing = _read_lock_pid(lock_path)
-        if existing and existing != os.getpid() and _is_pid_alive(existing):
-            print(f"[WATCHDOG] 다른 세션에 워치독(PID {existing}) 이 이미 실행 중입니다. 종료합니다.")
-            sys.exit(0)
+        # 1) 동일 세션 원자적 배제: named mutex.
         handle = _acquire_win_mutex()
         if handle is None:
-            # mutex 생성 실패(이례적: 핸들 고갈 등). 단일 인스턴스를 보장할 수 없으므로 racy
-            # 파일락 폴백으로 내려가 중복 워치독을 허용하지 않고 fail-closed 로 종료한다.
+            # mutex 생성 실패(이례적: 핸들 고갈 등). 단일 인스턴스를 보장할 수 없으므로
+            # 중복 워치독을 허용하지 않고 fail-closed 로 종료한다.
             print("[WATCHDOG] 단일 인스턴스 mutex 생성 실패. 안전을 위해 종료합니다.")
             sys.exit(1)
         _lock_handle = handle
-        # watchdog_guard 의 lockfile 기반 생존 체크(is_watchdog_running)를 위해 PID 를
-        # heartbeat 로 기록한다. 실제 단일 인스턴스 보장은 mutex 가 하며, lockfile 은 가드
-        # 정보용이다. 종료 시 stale 가 되면 가드가 dead 로 보고 정상 재기동한다.
+        # 2) 크로스세션 원자적 배제: 커널 파일락.
+        # named mutex 는 `Local\` 네임스페이스라 로그온 세션별로 격리된다. 그래서 예약작업
+        # 2개(SlackBotWatchdog=Interactive, SlackBotWatchdogGuard=S4U 세션 0)가 서로 다른
+        # 세션에서 띄운 워치독끼리 배제되지 않아 `!bot restart` 한 번에 봇이 세션 수만큼
+        # 중복 spawn 됐다(2026-07-03 회귀). 파일락은 세션 무관하게 원자적으로 배제하므로
+        # (동시 cold-start 레이스도 없음) 세션 경계를 넘는 중복을 근본 차단한다. 프로세스
+        # 종료 시 OS 가 자동 해제해 stale lock 도 없다.
+        fh = _acquire_single_instance_filelock(os.path.dirname(lock_path))
+        if fh is None:
+            print("[WATCHDOG] 다른 워치독이 이미 실행 중입니다(파일락). 종료합니다.")
+            sys.exit(0)
+        _single_lock_fh = fh
+        # 3) guard 의 생존 체크(is_watchdog_running)용 PID heartbeat. 단일 인스턴스 보장은
+        # 위 mutex + 파일락이 하며, 이 lockfile 은 가드 정보용이다.
         try:
             with open(lock_path, "w") as f:
                 f.write(str(os.getpid()))
@@ -443,8 +474,15 @@ def acquire_lock(lock_path=None):
 
 
 def release_lock(lock_ref):
-    """Windows mutex 핸들이면 CloseHandle, 파일 경로면 unlink."""
-    global _lock_handle
+    """Windows mutex 핸들이면 CloseHandle, 파일 경로면 unlink. 파일락 핸들도 함께 해제."""
+    global _lock_handle, _single_lock_fh
+    # 크로스세션 파일락 해제(핸들 close → OS 가 락 해제). mutex/파일 경로와 독립.
+    if _single_lock_fh is not None:
+        try:
+            _single_lock_fh.close()
+        except Exception:
+            pass
+        _single_lock_fh = None
     if isinstance(lock_ref, int):
         try:
             ctypes.WinDLL("kernel32").CloseHandle(ctypes.c_void_p(lock_ref))
