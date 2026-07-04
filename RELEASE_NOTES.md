@@ -49,6 +49,24 @@
 | v0.8.12 | 2026-07-03 | 테스트 격리: dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 config reload 시 monkeypatch 를 덮어써 `test_gemini.py::TestBinarySelection` 4건이 실패하던 문제를 load_dotenv 무력화로 해소(production config 미변경) |
 | v0.8.13 | 2026-07-03 | `!bot restart` 한 번에 봇이 세션 수만큼(4중) 중복 spawn 되던 회귀 완화: `Local\` mutex 가 세션별이라 크로스세션 워치독을 못 막던 것을 lockfile PID alive-check 로 보강(잔여 동시 cold-start 레이스는 후속 LockFileEx 로 추적) |
 | v0.8.14 | 2026-07-03 | v0.8.13 후속: 워치독 크로스세션 단일 인스턴스를 커널 파일락(`msvcrt.locking`)으로 원자적 봉합. 동시 cold-start 잔여 레이스 제거(비원자 PID pre-check 대체). 실측(크로스프로세스 배제+강제 kill 자동해제) 검증 |
+| v0.8.15 | 2026-07-04 | agy 1.0.16 에서 upstream #76(`-p` stdout 미출력) 해소 실측 확인 + winpty 우회 부적합 판정(비-TTY 에서 실행 불가). 현재 디스크 복구 방식 유지(무비용 안전망). 코드 변경 없음(검증/문서) |
+
+## v0.8.15 (2026-07-04)
+
+`agy -p` stdout 미출력 버그(upstream #76, v0.7.10 에서 디스크 transcript 복구로 우회)에 대해, "winpty 를 앞에 붙여 가상 TTY 를 강제하면 agy 가 stdout 을 뱉는다"는 대안 우회를 실호출로 비교 검증했다. 결론: **winpty 방식은 봇 환경에서 원천적으로 실행 불가**이며, 부수적으로 **agy 1.0.16(7/3 갱신)에서 #76 자체가 해소**됐음을 확인했다. 코드/테스트 변경 없음(현행 유지).
+
+### 실측 (봇과 동일 조건: `stdin=DEVNULL`, `stdout=PIPE`, `AGY_CLI_DISABLE_AUTO_UPDATE=1`)
+- **A) 순수 `agy -p`**: `exit=0`, stdout=`"51\n"`(정상 출력). 반복 4회 100% 재현(51/100/101/102), 회당 약 6.5초. **#76 이 1.0.16 에서는 비-TTY(pipe/subprocess)에서도 재현되지 않음** (릴리즈 노트상 원 버그는 1.0.0~1.0.6 기준).
+- **B) `winpty agy -p`**: `exit=1`, stdout 0바이트, stderr=`"stdin is not a tty"`. `stdin=DEVNULL`/`PIPE` 둘 다 동일 실패. winpty `--help` 에 non-TTY 우회 옵션 없음. **winpty 자체가 stdin 이 실제 TTY 가 아니면 실행을 거부**하므로, 봇(headless subprocess)에서는 agy 실행조차 불가.
+- **C) 현재 디스크 복구(`_recover_agy_response_retry`, 실코드)**: agy 원출력이 3바이트로 나오므로 실제 봇 경로에선 `if GEMINI_CLI_BINARY == "agy" and not out_text:` 가 거짓 -> 복구 미발동, stdout 직접 사용. 복구 함수 자체는 정상 동작(`"51"` 회수) 확인.
+
+### 판정
+- **winpty 교체 안 함**: winpty 는 대화형 터미널 전용 도구라 봇의 비-TTY subprocess 에서 `stdin is not a tty` 로 죽는다. 이식성/출력 오염(ANSI 이스케이프) 이전에 실행 자체가 안 되므로 후보에서 제외.
+- **현재 방식 유지**: #76 이 1.0.16 에서 해소돼 봇은 이제 빠른 stdout 직행 경로로 동작한다. 디스크 복구 코드는 stdout 결손 시에만 발동(발동 시에도 무비용)하므로, agy 향후 회귀 대비 **무비용 안전망**으로 존치. `AGY_CLI_DISABLE_AUTO_UPDATE=1` 로 버전 고정 중이나 수동 업데이트 회귀 대비 목적.
+
+### 참고
+- agy 1.0.16 로 `& agy -p` 직접 호출 hang(#76 부작용, v0.7.10 참고)도 재현되지 않음(봇은 `stdin=DEVNULL` 이라 원래도 영향권 밖).
+- 코드/테스트 무변경이라 커밋 대상은 문서(RELEASE_NOTES.md)/이슈로그뿐.
 
 ## v0.8.14 (2026-07-03)
 
