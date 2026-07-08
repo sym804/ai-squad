@@ -308,3 +308,65 @@ class TestCodexAvoidShellDirective:
         assert rc.avoid_shell is True
         rcb = next(b for b in r._backup_pool if b.base_family == "codex")
         assert rcb.avoid_shell is True
+
+
+class TestCodexTransientMcpNotFatal:
+    """일시적 원격 MCP 오류(HTTP 503 등)로 유효 답변을 낸 Codex 가 백업으로
+    교체되지 않도록, ask_with_progress 가 정제된 답변 기준으로 has_error 를 재판정한다.
+    (Slack thread 1783481931 회귀, v0.8.18)"""
+
+    @pytest.mark.asyncio
+    async def test_transient_mcp_error_recomputed_non_fatal(self, monkeypatch):
+        agent = CodexAgent()
+        raw = (
+            "2026-07-08T03:38:57.362893Z ERROR rmcp::transport::worker: worker quit with "
+            "fatal: unexpected server response: HTTP 503: upstream connect error, when "
+            "send initialized notification\n"
+            "조회: 오늘 추천 종목은 두산에너빌리티입니다.\n"
+        )
+
+        async def fake_base(self_, prompt, on_progress=None, timeout=None):
+            self_.has_error = True   # base 가 raw(HTTP 503)로 fatal 오판
+            self_.timed_out = False
+            return raw
+        monkeypatch.setattr("agents.base.AgentBase.ask_with_progress", fake_base)
+
+        result = await agent.ask_with_progress("질문")
+        assert "rmcp::" not in result and "HTTP 503" not in result
+        assert "두산에너빌리티" in result
+        assert agent.has_error is False   # 정제 후 재판정 → fatal 아님 → 벤치 안 됨
+
+    @pytest.mark.asyncio
+    async def test_real_fatal_still_detected(self, monkeypatch):
+        """진짜 API fatal(쿼터 등)은 정제 후에도 남아 여전히 fatal 로 잡힌다."""
+        agent = CodexAgent()
+        raw = "quota exceeded: 사용량 한도를 초과했습니다.\n"
+
+        async def fake_base(self_, prompt, on_progress=None, timeout=None):
+            self_.has_error = True
+            self_.timed_out = False
+            return raw
+        monkeypatch.setattr("agents.base.AgentBase.ask_with_progress", fake_base)
+
+        result = await agent.ask_with_progress("질문")
+        assert agent.has_error is True   # 진짜 fatal 은 유지
+
+    @pytest.mark.asyncio
+    async def test_empty_after_clean_keeps_base_verdict(self, monkeypatch):
+        """정제 후 유효 답변이 없으면(로그만 있었음) base 의 has_error 판정을 유지해
+        Codex 가 빈 답으로 방송되지 않고 백업으로 교체되게 한다."""
+        agent = CodexAgent()
+        raw = (
+            "2026-07-08T03:38:57.362893Z ERROR rmcp::transport::worker: worker quit with "
+            "fatal: HTTP 503 upstream connect error, when send initialized notification\n"
+        )
+
+        async def fake_base(self_, prompt, on_progress=None, timeout=None):
+            self_.has_error = True   # base 가 raw 로 fatal 판정
+            self_.timed_out = False
+            return raw
+        monkeypatch.setattr("agents.base.AgentBase.ask_with_progress", fake_base)
+
+        result = await agent.ask_with_progress("질문")
+        assert result == ""            # 로그만 있어 정제 후 빈 답변
+        assert agent.has_error is True  # cleaned 비어 재판정 스킵 → base 판정 유지

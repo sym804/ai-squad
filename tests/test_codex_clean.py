@@ -141,6 +141,50 @@ class TestExecLogLeak:
         assert "exited 1 in the previous run" in cleaned
 
 
+class TestTracingLogLeak:
+    """Codex/Rust tracing 로그(원격 MCP transport 오류 등)가 답변에 누출되지 않는지 검증.
+
+    Slack thread 1783481931 회귀: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이
+    `<ISO8601>Z ERROR rmcp::transport::worker: ... HTTP 503 ...` 형태로 답변에 누출되고,
+    그 `HTTP 503` 이 봇 fatal 감지까지 오탐시켜 Codex 가 백업으로 교체됐다.
+    """
+
+    def test_rmcp_transport_error_line_removed(self):
+        raw = (
+            "2026-07-08T03:38:57.362893Z ERROR rmcp::transport::worker: worker quit with "
+            "fatal: unexpected server response: HTTP 503: upstream connect error or "
+            "disconnect/reset before headers. reset reason: remote connection failure, "
+            "when send initialized notification\n"
+            "조회: 오늘 후보는 두산에너빌리티, 한화에어로스페이스입니다.\n"
+        )
+        cleaned = _clean_codex_output(raw)
+        assert "rmcp::" not in cleaned
+        assert "HTTP 503" not in cleaned
+        assert "ERROR" not in cleaned
+        assert "두산에너빌리티, 한화에어로스페이스" in cleaned
+
+    def test_various_tracing_levels_removed(self):
+        raw = (
+            "2026-07-08T03:38:57.362893Z WARN codex_core::something: retrying\n"
+            "2026-07-08T03:38:58.000000Z INFO codex_core: session started\n"
+            "실제 답변 본문\n"
+        )
+        cleaned = _clean_codex_output(raw)
+        assert "WARN" not in cleaned
+        assert "INFO" not in cleaned
+        assert "실제 답변 본문" in cleaned
+
+    def test_prose_with_timestamp_like_text_preserved(self):
+        """답변 본문이 타임스탬프+레벨 형식이 아니면(예: 날짜 언급) 보존."""
+        raw = (
+            "2026년 7월 8일 기준 삼성전자는 강세입니다.\n"
+            "ERROR 라는 단어가 문장 중간에 있어도 로그가 아니다.\n"
+        )
+        cleaned = _clean_codex_output(raw)
+        assert "2026년 7월 8일 기준 삼성전자" in cleaned
+        assert "문장 중간에 있어도" in cleaned
+
+
 class TestPreserveAnswer:
     def test_plain_answer_passes_through(self):
         raw = "분석 결과: 코스피는 박스권에서 등락 중입니다.\n핵심 지지선은 7,000pt.\n"

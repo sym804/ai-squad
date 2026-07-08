@@ -52,6 +52,26 @@
 | v0.8.15 | 2026-07-04 | agy 1.0.16 에서 upstream #76(`-p` stdout 미출력) 해소 실측 확인 + winpty 우회 부적합 판정(비-TTY 에서 실행 불가). 현재 디스크 복구 방식 유지(무비용 안전망). 코드 변경 없음(검증/문서) |
 | v0.8.16 | 2026-07-08 | Codex exec 실행 로그(`exited -1073741502`=0xC0000142 등) Slack 누출 필터 보강(음수 exit·소수 duration·MCP failed/error·`Output:` 단독). 근본원인 규명: 봇이 S4U 세션0(무데스크톱)에서 뜨면 Codex 셸/스킬 자식이 STATUS_DLL_INIT_FAILED 로 전멸→무근거 답변(아키텍처 수정은 별도 이슈 추적) |
 | v0.8.17 | 2026-07-08 | issue #131 대응(Option 1): 봇 S4U 세션0 에서 Codex 로컬 셸 도구가 0xC0000142 로 죽는 문제를, 토론/리서치 Codex 에 "로컬 셸 말고 MCP/지식으로 답하라" 지시(`avoid_shell`) 주입으로 doomed 셸 시도 억제. 무깜빡임 S4U 유지 + openaiDeveloperDocs MCP 그라운딩 존치 |
+| v0.8.18 | 2026-07-08 | 재기동 후 Codex 오류: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이 rmcp tracing 로그로 답변 누출 + fatal 오탐(→Codex 백업 교체). `_CODEX_TRACING_LOG` 필터 + `ask_with_progress` 가 정제된 답변으로 has_error 재판정(진짜 API fatal 은 유지) |
+
+## v0.8.18 (2026-07-08)
+
+v0.8.16/17 적용 후 봇 재기동(`!bot restart`, 세션0 유지)에서 셸 크래시(`exited -1073741502`)는 사라졌으나, 재기동 직후 토론에서 Codex 가 원격 MCP `openaiDeveloperDocs` 초기화 중 **일시적 HTTP 503**을 만나 그 rmcp 로그가 답변에 누출되고 봇이 Codex 를 백업(Gemini-B)으로 교체하는 새 증상이 나타났다. Slack thread `1783481931`.
+
+### 원인
+- `openaiDeveloperDocs` MCP 는 **원격**(`url=https://developers.openai.com/mcp`)이라 세션과 무관. 재기동 직후 이 엔드포인트가 일시적으로 503(연결 거부)을 반환 -> Codex 가 `<ISO8601>Z ERROR rmcp::transport::worker: ... HTTP 503 ...` tracing 로그를 출력.
+- (1) 이 로그가 답변 본문에 누출됨(v0.8.16 필터는 exec-log/`Output:`/`mcp:` 형식만 잡아 tracing 로그는 못 잡음).
+- (2) 로그의 `HTTP 503` 이 봇 `_is_fatal_error`(base) 를 오탐 -> `has_error=True` -> Codex 가 유효 답변(두산에너빌리티/한화에어로스페이스 추천)을 냈는데도 백업으로 교체됨. 봇은 progress 경로에서 **정제 전 raw** 로 fatal 을 판정하므로 필터만으론 교체를 못 막음.
+- 엔드포인트는 조사 시점 정상(HTTP 200) -> 503 은 재기동 직후의 일시적 blip.
+
+### 수정
+- **[Minor / backend] tracing 로그 라인 필터 + fatal 재판정** (`agents/codex.py`):
+  - `_CODEX_TRACING_LOG` 정규식(`<ISO8601 타임스탬프>Z LEVEL target:` 형식) 신설 -> rmcp/transport 등 Codex 내부 tracing 로그 라인 제거(누출 봉합). `LEVEL target:` 까지 요구해 일반 산문/로그 예시 오삭제 최소화.
+  - `CodexAgent.ask_with_progress` 가 base 의 raw 기반 `has_error` 를 **정제된 답변 기준으로 재판정**(cleaned 비어있지 않고 timed_out 아닐 때). 일시적 MCP 오류로 유효 답변을 낸 Codex 가 벤치되지 않게. 진짜 API fatal(쿼터/5xx/세션한도)은 필터가 안 지우므로 그대로 유지.
+- 회귀 테스트 6건(tracing 제거 3 + 재판정 3: 일시오류 비fatal / 진짜fatal 유지 / 빈답변 base유지), 전체 443건 통과. Codex 교차검증 반영(정규식 엄격화 `LEVEL target:`, 넓은 `rmcp::` substring 제거).
+
+### 참고
+- MCP 엔드포인트가 지속적으로 죽으면 별개 문제. `openaiDeveloperDocs` 는 OpenAI 문서 검색용이라 일반 토론엔 무관하나(정상 시 OpenAI-docs 질문엔 유용), 이번 수정으로 그 일시적 실패를 답변 누출·fatal 오탐 없이 견딘다.
 
 ## v0.8.17 (2026-07-08)
 

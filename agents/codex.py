@@ -86,6 +86,22 @@ _CODEX_EXEC_LOG_LINE = re.compile(
     re.IGNORECASE,
 )
 
+# Codex/Rust tracing 로그 라인(ISO8601 타임스탬프 + 로그레벨). Codex 내부 로그(특히
+# 원격 MCP `openaiDeveloperDocs` 의 일시적 HTTP 503/transport 오류)가 답변에 그대로
+# 누출되는 것 차단. 예:
+#   `2026-07-08T03:38:57.362893Z ERROR rmcp::transport::worker: worker quit with fatal:
+#    unexpected server response: HTTP 503: upstream connect error ...`
+# 라인 시작(타임스탬프+레벨+target:)만 매치하므로 답변 본문은 영향 없다. 이 leak 은
+# 봇의 fatal 감지(`HTTP 503`)까지 오탐시켜 Codex 를 백업으로 교체하게 만들었다(v0.8.18).
+# `LEVEL target:` 형식(예: `ERROR rmcp::transport::worker:`)까지 요구해, 타임스탬프로
+# 시작하는 일반 산문/로그 예시 오삭제를 최소화(Codex 교차검증 반영). 실측상 tracing
+# 로그는 단일 물리 라인이라 continuation 처리는 불필요.
+_CODEX_TRACING_LOG = re.compile(
+    r'^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?Z\s+'
+    r'(?:ERROR|WARN|INFO|DEBUG|TRACE)\s+[\w:.\-]+:',
+    re.IGNORECASE,
+)
+
 
 def _normalize_ws(s: str) -> str:
     """공백/줄바꿈 정규화: ANSI 제거, 수평 공백 축소, 줄바꿈 통일."""
@@ -161,6 +177,9 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
             continue
         # Codex exec 실행 로그 (exited -1073741502 in.., mcp: .., Output: 단독)
         if _CODEX_EXEC_LOG_LINE.match(stripped):
+            continue
+        # Codex/Rust tracing 로그 (원격 MCP transport 오류 등: 타임스탬프+레벨 시작)
+        if _CODEX_TRACING_LOG.match(stripped):
             continue
         # 디렉토리 목록 (d-----  또는 -a---- 패턴)
         if stripped.startswith(("d-----", "d-r---", "d--hsl", "-a----")):
@@ -306,4 +325,13 @@ class CodexAgent(AgentBase):
                 on_progress(_clean_codex_output(raw_text, prompt))
         # attachments 는 base 호출에 전달하지 않는다 (CodexAgent 는 이미 prompt 에 노트로 끼움).
         result = await super().ask_with_progress(prompt, _filtered_progress, timeout)
-        return _clean_codex_output(result, prompt)
+        cleaned = _clean_codex_output(result, prompt)
+        # base.ask_with_progress 는 정제 전 raw output 으로 has_error(fatal) 를 판정한다.
+        # Codex 도구 노이즈(특히 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503/transport
+        # 오류)가 fatal 오탐을 유발해, 유효 답변을 낸 Codex 가 백업으로 교체된다(v0.8.18).
+        # 정제된 답변 기준으로 재판정한다: 필터가 노이즈만 지우므로 진짜 API fatal(쿼터/
+        # 5xx/세션한도)은 그대로 남아 잡힌다. timed_out 은 건드리지 않고, 정제 후 비어 있으면
+        # (유효 답변 없음) base 판정을 유지한다.
+        if cleaned and not getattr(self, "timed_out", False):
+            self.has_error = self._is_fatal_error(cleaned)
+        return cleaned
