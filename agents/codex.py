@@ -197,10 +197,35 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
     return result
 
 
+# 로컬 셸(PowerShell) 도구 사용 억제 지시. 봇이 S4U 세션0(무데스크톱)에서 구동되면
+# Codex 의 shell 도구가 콘솔 자식을 못 띄워 0xC0000142 로 즉사한다(issue #131). 토론/
+# 리서치는 로컬 셸이 거의 불필요하고(범용 웹검색 도구도 없음) openaiDeveloperDocs MCP +
+# 지식으로 충분하므로, 이 지시로 doomed shell 시도 자체를 줄여 크래시/지연/토큰낭비를
+# 방지한다. in-process 도구(read, MCP)는 세션0 에서도 동작하므로 막지 않는다.
+_NO_SHELL_DIRECTIVE = (
+    "[실행 환경 제약] 이 환경에서는 로컬 셸(PowerShell/bash) 명령 실행 도구가 동작하지 "
+    "않는다. 셸 명령을 실행하려 시도하지 마라. 근거가 필요하면 openaiDeveloperDocs MCP"
+    "(문서 검색/조회)와 네 지식으로 확보해 답하라. 파일 읽기(read)나 MCP 는 사용해도 된다.\n\n"
+)
+
+
 class CodexAgent(AgentBase):
     name = "Codex"
     emoji = "🟢"
     base_family = "codex"
+    # 토론/리서치에서 True: 로컬 셸 도구 사용 억제(issue #131, S4U 세션0 대응).
+    # 코딩 모드는 기본 False(셸이 필요하고, 대화형 세션으로 돌리면 정상 동작).
+    avoid_shell = False
+
+    def __init__(self, avoid_shell: bool = False):
+        super().__init__()
+        self.avoid_shell = avoid_shell
+
+    def _maybe_prepend_directive(self, prompt: str) -> str:
+        """avoid_shell 이면 셸 억제 지시를 prompt 앞에 붙인다(멱등: 이미 붙어 있으면 재주입 안 함)."""
+        if self.avoid_shell and not prompt.startswith(_NO_SHELL_DIRECTIVE):
+            return _NO_SHELL_DIRECTIVE + prompt
+        return prompt
 
     def _build_cmd(self, tmp: str) -> list[str]:
         # `--full-auto` 는 Codex CLI 0.129 부터 deprecated. 명시적으로
@@ -249,7 +274,7 @@ class CodexAgent(AgentBase):
         return prompt + note
 
     async def _run_cli(self, prompt: str, attachments: list[dict] | None = None) -> str:
-        prompt = self._augment_with_attachments(prompt, attachments)
+        prompt = self._augment_with_attachments(self._maybe_prepend_directive(prompt), attachments)
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -275,7 +300,7 @@ class CodexAgent(AgentBase):
 
     async def ask_with_progress(self, prompt, on_progress=None, timeout=None, attachments: list[dict] | None = None):
         """base의 ask_with_progress 호출 후 노이즈 제거. progress 콜백도 정제."""
-        prompt = self._augment_with_attachments(prompt, attachments)
+        prompt = self._augment_with_attachments(self._maybe_prepend_directive(prompt), attachments)
         def _filtered_progress(raw_text):
             if on_progress:
                 on_progress(_clean_codex_output(raw_text, prompt))

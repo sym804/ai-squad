@@ -290,10 +290,13 @@ def _count_agrees(round_consensuses: list[dict]) -> list[dict]:
 class DebateMode:
     def __init__(self, slack_client):
         self.slack = slack_client
-        self.agents = [ClaudeAgent(), CodexAgent(), GeminiAgent()]
+        # Codex 는 avoid_shell=True: 봇이 S4U 세션0(무데스크톱)에서 뜨면 로컬 셸 도구가
+        # 0xC0000142 로 죽으므로(issue #131), 토론에선 셸 시도를 억제하고 MCP/지식으로
+        # 답하게 한다(토론은 로컬 셸이 거의 불필요).
+        self.agents = [ClaudeAgent(), CodexAgent(avoid_shell=True), GeminiAgent()]
         # 백업 풀: 3계열 distinct 인스턴스. 동적 선택이 이 풀에서 고른다.
         self._claude_b = ClaudeBackupAgent()
-        self._codex_b = CodexBackupAgent()
+        self._codex_b = CodexBackupAgent(avoid_shell=True)
         self._gemini_b = GeminiBackupAgent()
         self._backup_pool = [self._claude_b, self._codex_b, self._gemini_b]
         # 정적 기본/타이브레이크 매핑(계열 회전, 자기 계열 회피).

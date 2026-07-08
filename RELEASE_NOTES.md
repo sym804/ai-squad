@@ -51,6 +51,26 @@
 | v0.8.14 | 2026-07-03 | v0.8.13 후속: 워치독 크로스세션 단일 인스턴스를 커널 파일락(`msvcrt.locking`)으로 원자적 봉합. 동시 cold-start 잔여 레이스 제거(비원자 PID pre-check 대체). 실측(크로스프로세스 배제+강제 kill 자동해제) 검증 |
 | v0.8.15 | 2026-07-04 | agy 1.0.16 에서 upstream #76(`-p` stdout 미출력) 해소 실측 확인 + winpty 우회 부적합 판정(비-TTY 에서 실행 불가). 현재 디스크 복구 방식 유지(무비용 안전망). 코드 변경 없음(검증/문서) |
 | v0.8.16 | 2026-07-08 | Codex exec 실행 로그(`exited -1073741502`=0xC0000142 등) Slack 누출 필터 보강(음수 exit·소수 duration·MCP failed/error·`Output:` 단독). 근본원인 규명: 봇이 S4U 세션0(무데스크톱)에서 뜨면 Codex 셸/스킬 자식이 STATUS_DLL_INIT_FAILED 로 전멸→무근거 답변(아키텍처 수정은 별도 이슈 추적) |
+| v0.8.17 | 2026-07-08 | issue #131 대응(Option 1): 봇 S4U 세션0 에서 Codex 로컬 셸 도구가 0xC0000142 로 죽는 문제를, 토론/리서치 Codex 에 "로컬 셸 말고 MCP/지식으로 답하라" 지시(`avoid_shell`) 주입으로 doomed 셸 시도 억제. 무깜빡임 S4U 유지 + openaiDeveloperDocs MCP 그라운딩 존치 |
+
+## v0.8.17 (2026-07-08)
+
+v0.8.16 에서 규명한 근본 원인(봇이 S4U 세션0=무데스크톱에서 뜨면 Codex 로컬 `shell` 도구가 콘솔 자식 생성 실패 `0xC0000142` 로 즉사)에 대해 **Option 1(S4U 무깜빡임 유지 + Codex 셸 억제)** 을 적용한다. 봇 소유자 결정: Slack 은 주로 토론/리서치 용도라 로컬 셸이 거의 불필요하고, cmd 창 깜빡임(v0.8.1~v0.8.2 에서 제거/수용)을 되살리지 않는 쪽을 택함.
+
+### 배경 (config 실측)
+- Codex MCP 서버는 `openaiDeveloperDocs`(search/fetch) 1개뿐이며 in-process 라 **세션0 에서도 정상 동작**. `~/.codex/skills` 는 비어 있어 로컬 스킬 없음. `features.memories` 도 in-process. 즉 세션0 에서 유일하게 죽는 건 내장 `shell`(PowerShell spawn) 도구 하나.
+- 토론/리서치(일반 지식·사실 주제)는 셸이 거의 불필요(범용 웹검색 도구도 없음) -> 셸 억제해도 실질 손실 없음. 셸이 필요한 건 코딩/로컬프로젝트 평가뿐(드묾).
+
+### 수정
+- **[Minor / backend] 토론/리서치 Codex 에 셸 억제 지시(`avoid_shell`)** (`agents/codex.py`, `modes/debate.py`, `modes/research.py`): `_NO_SHELL_DIRECTIVE`(로컬 셸 쓰지 말고 openaiDeveloperDocs MCP·지식으로 답하라; read/MCP 는 허용) 를 `CodexAgent(avoid_shell=True)` 일 때 프롬프트 앞에 1회 주입. 토론/리서치 Codex 메인+백업에 적용. 코딩 모드는 기본 False(셸 필요, 대화형 세션이면 정상 동작).
+- doomed 셸 시도 자체를 줄여 크래시·지연·토큰낭비 방지. 잔여 크래시는 v0.8.16 필터가 안전망.
+
+### 검증
+- 실측(`avoid_shell=True` + 스레드 질문): raw 에 `exited -1073741502`·PowerShell 시도 흔적 없음, Codex 가 openaiDeveloperDocs MCP·지식으로 그라운딩된 답변 + 미확인 항목(agy)은 단정하지 않음(스레드의 과잉단정 개선).
+- 회귀 테스트 4건(`TestCodexAvoidShellDirective`), 전체 436건 통과. Codex 교차검증.
+
+### 남은 것
+- 코딩 모드 Codex 의 셸은 세션0 에서 여전히 못 씀(드문 용도라 수용). 완전 복구가 필요하면 Option 2(대화형 세션 상주 = 깜빡임 부활)를 별도 선택. issue #131 은 Option 1 적용으로 종료.
 
 ## v0.8.16 (2026-07-08)
 

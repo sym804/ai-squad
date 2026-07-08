@@ -261,3 +261,50 @@ class TestCodexImageNote:
         assert "--full-auto" not in cmd, "deprecated 플래그가 다시 들어감"
         assert "-s" in cmd or "--sandbox" in cmd
         assert "workspace-write" in cmd
+
+
+class TestCodexAvoidShellDirective:
+    """avoid_shell 지시(issue #131, S4U 세션0 대응) 회귀 가드."""
+
+    def test_default_no_directive(self):
+        """기본(코딩 모드)은 avoid_shell=False → 프롬프트 무변경."""
+        a = CodexAgent()
+        assert a.avoid_shell is False
+        assert a._maybe_prepend_directive("원본 질문") == "원본 질문"
+
+    def test_avoid_shell_prepends_directive(self):
+        """avoid_shell=True 면 셸 억제 지시가 프롬프트 앞에 붙는다."""
+        a = CodexAgent(avoid_shell=True)
+        out = a._maybe_prepend_directive("원본 질문")
+        assert out.endswith("원본 질문")
+        assert "셸" in out and "MCP" in out
+        assert out != "원본 질문"
+
+    def test_backup_agent_accepts_avoid_shell(self):
+        from agents.codex_backup import CodexBackupAgent
+        b = CodexBackupAgent(avoid_shell=True)
+        assert b.avoid_shell is True
+        assert b._maybe_prepend_directive("q").startswith("[실행 환경 제약]")
+
+    def test_directive_is_idempotent(self):
+        """이미 지시문이 붙은 프롬프트에 재적용해도 두 번 붙지 않는다(멱등)."""
+        a = CodexAgent(avoid_shell=True)
+        once = a._maybe_prepend_directive("질문")
+        twice = a._maybe_prepend_directive(once)
+        assert once == twice
+        assert twice.count("[실행 환경 제약]") == 1
+
+    def test_debate_research_codex_avoid_shell(self):
+        """DebateMode/ResearchMode 의 Codex(메인+백업)가 avoid_shell=True 로 구성된다."""
+        from unittest.mock import MagicMock
+        from modes.debate import DebateMode
+        from modes.research import ResearchMode
+        d = DebateMode(MagicMock())
+        dc = next(a for a in d.agents if a.name == "Codex")
+        assert dc.avoid_shell is True
+        assert d._codex_b.avoid_shell is True
+        r = ResearchMode(MagicMock())
+        rc = next(a for a in r.agents if a.name == "Codex")
+        assert rc.avoid_shell is True
+        rcb = next(b for b in r._backup_pool if b.base_family == "codex")
+        assert rcb.avoid_shell is True

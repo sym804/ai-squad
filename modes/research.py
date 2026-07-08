@@ -448,8 +448,14 @@ from agents import (
 class ResearchMode:
     def __init__(self, slack_client):
         self.slack = slack_client
-        self.agents = [ClaudeAgent(), CodexAgent(), GeminiAgent()]
-        self._backup_pool = [ClaudeBackupAgent(), CodexBackupAgent(), GeminiBackupAgent()]
+        # Codex 는 avoid_shell=True: S4U 세션0 에서 로컬 셸 도구가 0xC0000142 로 죽으므로
+        # (issue #131) 셸 시도를 억제하고 openaiDeveloperDocs MCP/지식으로 조사·답하게 한다.
+        self.agents = [ClaudeAgent(), CodexAgent(avoid_shell=True), GeminiAgent()]
+        self._backup_pool = [
+            ClaudeBackupAgent(),
+            CodexBackupAgent(avoid_shell=True),
+            GeminiBackupAgent(),
+        ]
 
     def _bind_thread(self, thread_ts: str):
         for a in self.agents + self._backup_pool:
