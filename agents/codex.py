@@ -34,8 +34,10 @@ _CODEX_NOISE_CONTAINS = [
     "+   ~~~",
     "succeeded in",
     "web search:",
-    "exited 1 in",
-    "exited 0 in",
+    # NOTE: `exited 0 in`/`exited 1 in` 리터럴은 제거함. substring 매치라
+    # 산문("...process exited 0 in my demo")을 오삭제할 수 있어, 아래 앵커드
+    # 정규식 `_CODEX_EXEC_LOG_LINE`(음수 exit code·소수 duration 포함, 단독
+    # 라인만)이 모든 exit 로그 라인을 전담한다.
     "Wall time:",
     "tokens used",
     # PowerShell dir/ls 출력
@@ -70,6 +72,19 @@ _CODEX_DEPRECATION_LINE = re.compile(
 # 예: routers/payment.py:188:    con = sqlite3.connect(...)
 #     app.js:323
 _FILE_LINE_REF = re.compile(r'^[\w./\\\-]+\.\w{1,10}:\d+(?::|\s|$)')
+
+# Codex exec 실행 로그 라인(스킬/셸/MCP 도구 호출 흔적). ^...$ 로 앵커해 단독
+# 라인일 때만 제거하므로 답변 본문의 단어 언급("함수의 Output: 42" 등 뒤에 내용이
+# 붙는 문장)은 보존된다. 음수 exit code(예: -1073741502 = 0xC0000142
+# STATUS_DLL_INIT_FAILED)는 기존 `exited 0/1 in` 리터럴 필터가 못 잡아 Slack
+# 본문에 그대로 누출됐다. `Output:` 단독, `mcp: <srv>/<tool> started|(completed)`
+# 도 함께 제거.
+_CODEX_EXEC_LOG_LINE = re.compile(
+    r'^(?:exited\s+-?\d+\s+in\s+\d+(?:\.\d+)?\s*m?s:?'
+    r'|mcp:\s+\S+\s+\(?(?:started|completed|failed|error)\)?'
+    r'|Output:)\s*$',
+    re.IGNORECASE,
+)
 
 
 def _normalize_ws(s: str) -> str:
@@ -143,6 +158,9 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         if any(noise in line for noise in _CODEX_NOISE_CONTAINS):
             continue
         if _CODEX_DEPRECATION_LINE.match(line):
+            continue
+        # Codex exec 실행 로그 (exited -1073741502 in.., mcp: .., Output: 단독)
+        if _CODEX_EXEC_LOG_LINE.match(stripped):
             continue
         # 디렉토리 목록 (d-----  또는 -a---- 패턴)
         if stripped.startswith(("d-----", "d-r---", "d--hsl", "-a----")):

@@ -50,6 +50,25 @@
 | v0.8.13 | 2026-07-03 | `!bot restart` 한 번에 봇이 세션 수만큼(4중) 중복 spawn 되던 회귀 완화: `Local\` mutex 가 세션별이라 크로스세션 워치독을 못 막던 것을 lockfile PID alive-check 로 보강(잔여 동시 cold-start 레이스는 후속 LockFileEx 로 추적) |
 | v0.8.14 | 2026-07-03 | v0.8.13 후속: 워치독 크로스세션 단일 인스턴스를 커널 파일락(`msvcrt.locking`)으로 원자적 봉합. 동시 cold-start 잔여 레이스 제거(비원자 PID pre-check 대체). 실측(크로스프로세스 배제+강제 kill 자동해제) 검증 |
 | v0.8.15 | 2026-07-04 | agy 1.0.16 에서 upstream #76(`-p` stdout 미출력) 해소 실측 확인 + winpty 우회 부적합 판정(비-TTY 에서 실행 불가). 현재 디스크 복구 방식 유지(무비용 안전망). 코드 변경 없음(검증/문서) |
+| v0.8.16 | 2026-07-08 | Codex exec 실행 로그(`exited -1073741502`=0xC0000142 등) Slack 누출 필터 보강(음수 exit·소수 duration·MCP failed/error·`Output:` 단독). 근본원인 규명: 봇이 S4U 세션0(무데스크톱)에서 뜨면 Codex 셸/스킬 자식이 STATUS_DLL_INIT_FAILED 로 전멸→무근거 답변(아키텍처 수정은 별도 이슈 추적) |
+
+## v0.8.16 (2026-07-08)
+
+Slack `#ai-토론` 스레드(`1783475712`)에서 Codex 답변에 `Output:` 빈 블록과 `exited -1073741502 in 31ms:`, `mcp: openaiDeveloperDocs/search_openai_docs (completed)` 같은 실행 로그 조각이 누출되고, Codex 가 실제 도구 없이 무근거로 답하던 문제를 조사했다. 표면 누출은 노이즈 필터로 봉합하고, 근본 원인(세션/데스크톱)을 규명했다.
+
+### 근본 원인 (규명)
+- `exited -1073741502` = `0xC0000142` = **STATUS_DLL_INIT_FAILED**: 자식 콘솔 프로세스가 데스크톱/윈도우 스테이션 없이 초기화에 실패하는 Windows 코드.
+- 봇이 **S4U 세션 0(대화형 데스크톱 없음)**에서 구동되면 Codex 가 셸/스킬용으로 띄우는 PowerShell·스킬 러너 자식이 전부 이 코드로 즉사한다. in-process MCP(`search_openai_docs (completed)`)는 콘솔 자식이 아니라 정상 -> 스레드에서 MCP 만 성공하고 셸/스킬만 죽은 것과 일치.
+- 어느 워치독이 단일 인스턴스 락을 먼저 잡느냐로 세션이 갈린다: `watchdog_guard.py`(S4U, 세션 0)의 `start_watchdog()` 가 이기면 봇->Codex->PowerShell 트리가 세션 0에 뜬다. Interactive 워치독이 이기면 데스크톱이 있어 Codex 도구가 정상 동작(활성 세션 A/B 실측: workspace-write·danger-full-access 둘 다 무크래시).
+- 즉 v0.8.1 의 "S4U 비대화형으로 옮겨 cmd 창 깜빡임 제거"가 Codex 셸/스킬 도구를 깨뜨린 상충. **아키텍처 수정(봇을 항상 데스크톱 세션에서 구동 vs 깜빡임 감수)은 별도 이슈로 추적.**
+
+### 수정 (이번 커밋 = 표면 누출 필터)
+- **[Minor / backend] Codex 실행 로그 누출 필터 보강** (`agents/codex.py`): `_CODEX_EXEC_LOG_LINE` 앵커드 정규식 신설. 단독 라인 `exited -?\d+ in \d+(.\d+)?m?s:`(음수·소수 duration 포함), `mcp: <srv>/<tool> started|completed|failed|error`, `Output:` 를 제거. 기존 `exited 0/1 in` 서브스트링 리터럴은 산문 오삭제 위험이 있어 제거하고 앵커드 정규식이 전담(`^...$` 라 "함수의 Output: 42"·"process exited 0 in my demo" 같은 본문은 보존).
+- 회귀 테스트 7건(`tests/test_codex_clean.py::TestExecLogLeak`), 전체 432건 통과.
+- Codex 교차검증 PASS(앵커링·백트래킹·커버리지). 제안 3건(소수 duration·MCP failed/error·기존 리터럴 제거) 전부 반영.
+
+### 참고
+- danger-full-access 로 샌드박스를 여는 방향도 검토했으나, 활성 세션 A/B 에서 workspace-write 든 danger-full-access 든 크래시가 재현되지 않아 **크래시의 원인이 샌드박스가 아님**을 확인 -> 채택하지 않음(보안 유지, workspace-write 존치).
 
 ## v0.8.15 (2026-07-04)
 
