@@ -17,46 +17,8 @@ MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))
 # 죽은 설정이었다. 조기 종료는 COMPLEX_MIN_ROUNDS + 요약 수렴 판정으로만 결정된다.
 # 복잡한 주제는 만장일치여도 이 라운드 전엔 조기 종료 금지 (반동조)
 COMPLEX_MIN_ROUNDS = int(os.environ.get("COMPLEX_MIN_ROUNDS", "3"))
-# ── 타임아웃 정책 (v0.8.21) ────────────────────────────────────────────
-#
-# 원칙: 호출부가 넘긴 timeout 이 그 호출의 예산이다. ask() 든 ask_with_progress()
-# 든, 에이전트가 Claude 든 Codex 든 Gemini 든 같은 값을 넘기면 같은 예산이다.
-#
-# 예전엔 스트리밍 구현이 내부에서 timeout 을 조용히 2배로 늘렸고(readline 고정
-# 60초 때문에 거기서 더 넘겼다) base 구현은 안 늘렸다. 그래서 같은 timeout=300
-# 을 넘겨도 Codex 는 300초, Claude 는 660초까지 갔고, 한 실행에 "[Claude] 응답
-# 시간 초과 (300초)" 와 "[Claude] 응답 대기 시간 초과 (574초)" 가 같이 찍혔다
-# (574 는 stale 값이고 실제로는 634초였다). 숨은 배수를 없애고 모드별 예산을
-# 숫자로 못박는다.
-#
-# 예산 변경 내역 (실효 기준. "유지" 가 아니라 의도적 조정이다):
-#   코딩   Claude 660초 -> 600초 (축소, 정직해짐) / Codex 300초 -> 600초 (확대)
-#          Codex 확대는 의도다. 예전엔 Codex 만 절반 예산이라 정상적인 장시간
-#          테스트 작성 중에 혼자 먼저 타임아웃 나서 불필요하게 백업으로 교체됐다.
-#   토론   Claude 420초 -> 360초 (축소) / Codex 180초 -> 360초 (확대)
-#          라운드는 gather 로 병렬이라 라운드 체감 상한은 420초 -> 360초로 오히려 줄어든다.
-#   리서치 180초 유지 (짧고 병렬이라 전용 상수로 분리해 예산 상향에서 제외)
-CLI_TIMEOUT = 360  # 토론/브릿지/기본
-CLI_TIMEOUT_CODING = 600  # 코딩 (도구 호출이 많아 예산이 크다)
-CLI_TIMEOUT_RESEARCH = 180  # 리서치 분담 조사
-
-# 스트리밍 읽기 루프 파라미터
-# - STREAM_IDLE_TIMEOUT: 이 시간 동안 한 줄도 안 나오면 무응답 판정. 단 프로세스가
-#   살아있으면 예산(t)까지는 계속 기다린다(도구 호출 중엔 원래 출력이 멎는다).
-#   readline 대기는 항상 남은 예산으로 잘라서 데드라인을 넘기지 않는다.
-# - STREAM_GUARD_FACTOR: 외부 가드 배수. 정상 경로의 상한은 t 다. 다만 읽기 루프가
-#   아예 돌지 못하는 병리적 hang(Semaphore acquire 멈춤 - v0.7.3.2 Gemini 33분 hang
-#   사고, stdin drain 블록, proc.wait 미복귀)은 내부 데드라인 검사 자체에 도달하지
-#   못한다. 그 경우만 잡는 최후 방어선이라 t 보다 커야 한다(t 와 같으면 정상
-#   타임아웃 경로를 앞질러 잘라 정리/메시지가 망가진다).
-#   즉 상한은 "정상 t, 병리적 hang 시 t*1.25" 다.
-STREAM_IDLE_TIMEOUT = 60
-STREAM_GUARD_FACTOR = 1.25
-
-# 재시도 정책: 타임아웃은 재시도하지 않는다. 이미 예산을 다 쓴 호출을 같은 예산으로
-# 다시 돌리면 실패까지 걸리는 시간만 2배가 된다. 타임아웃은 곧바로 백업 에이전트
-# 교체로 넘기고, 백업은 primary 와 "같은" 예산을 받는다. 재시도는 transient 인프라
-# 에러(5xx/429)에 한해 최대 1회만 한다 (debate 합의 경로, Gemini 429 백오프).
+CLI_TIMEOUT = 180
+CLI_TIMEOUT_CODING = 300  # 코딩 모드는 5분
 
 # Gemini 계열 CLI 바이너리 선택 (2026-06-18 Gemini CLI 서비스 종료 대비)
 # - "gemini" (기본): 기존 Gemini CLI. stdin pipe + -m model fallback + -y.
