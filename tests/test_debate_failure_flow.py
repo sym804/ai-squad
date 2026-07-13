@@ -71,6 +71,19 @@ class TestFailedResponseNotPosted:
         assert any("대체 투입" in t for t in posted), "폴백 경고는 남아야 함"
 
     @pytest.mark.asyncio
+    async def test_failure_text_is_logged(self, capsys):
+        """Slack 에 안 띄우는 대신 로그에는 남겨야 한다 (안 그러면 원인 추적 불가)."""
+        mode = DebateMode(_make_slack())
+        _mock_all(mode, _resp("공통 결론"))
+        _fail(mode.agents[0], SESSION_LIMIT)
+
+        await mode.start("C1", "ts1", "주제")
+
+        captured = capsys.readouterr().out
+        assert "session limit" in captured, "실패 원문이 로그에도 안 남으면 진단이 불가능하다"
+        assert "Claude" in captured
+
+    @pytest.mark.asyncio
     async def test_backup_failure_text_also_not_posted(self):
         """이중 장애: 백업까지 실패하면 백업의 에러 원문도 게시하면 안 된다."""
         mode = DebateMode(_make_slack())

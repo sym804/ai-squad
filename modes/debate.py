@@ -550,6 +550,10 @@ class DebateMode:
                 if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
                     reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    # 실패 원문은 Slack 에 안 띄우므로(오독 방지) 로그에는 반드시 남긴다.
+                    # 안 남기면 왜 죽었는지 추적할 방법이 사라진다.
+                    print(f"[FALLBACK] {agent.name} {reason} | 실패 원문: "
+                          f"{str(response)[:600]!r}", flush=True)
                     if not backup:
                         # 백업이 없으면 침묵 대신 실패 사실을 알린다.
                         self._post(channel, thread_ts,
@@ -893,6 +897,10 @@ class DebateMode:
                 if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
                     reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+                    # 실패 원문은 Slack 에 안 띄우므로(오독 방지) 로그에는 반드시 남긴다.
+                    # 안 남기면 왜 죽었는지 추적할 방법이 사라진다.
+                    print(f"[FALLBACK] {agent.name} {reason} | 실패 원문: "
+                          f"{str(response)[:600]!r}", flush=True)
                     if not backup:
                         # 백업이 없으면 침묵 대신 실패 사실을 알린다.
                         self._post(channel, thread_ts,
