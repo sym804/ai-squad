@@ -1,4 +1,6 @@
 import asyncio
+import contextlib
+import contextvars
 import os
 import re
 import time
@@ -59,25 +61,54 @@ _FATAL_REGEX = re.compile(
 )
 
 
+# 이 호출(=한 번의 ask/ask_with_progress)이 띄운 프로세스만 담는 스코프.
+# 예전에는 타임아웃 정리가 cancel.active_processes[thread_ts] 전체를 죽였는데, 한
+# 토론/리서치의 3개 에이전트가 같은 thread_ts 를 공유하며 gather 로 병렬 실행된다.
+# 즉 한 에이전트의 타임아웃이 **답변 중이던 형제 에이전트의 CLI 프로세스까지** 죽였다
+# (이슈 #145. 실측: 리서치 한 런에서 Claude-B/Codex-B 가 동시에 180초 타임아웃).
+# contextvar 라 같은 인스턴스를 동시에 두 번 호출해도(리서치 라운드로빈) 섞이지 않는다.
+_CALL_PROCS: contextvars.ContextVar = contextvars.ContextVar("_agent_call_procs", default=None)
+
+
 class AgentBase:
     name: str = "Agent"
     emoji: str = "🤖"
     _current_thread_ts: str = None  # 현재 작업 중인 스레드
     _cwd: str = None  # 작업 디렉토리 (None이면 프로세스 기본값)
 
+    @contextlib.contextmanager
+    def _call_scope(self):
+        """이 호출이 띄운 프로세스를 모으는 스코프. 타임아웃 kill 사정거리를 여기로 한정."""
+        procs: list = []
+        token = _CALL_PROCS.set(procs)
+        try:
+            yield procs
+        finally:
+            _CALL_PROCS.reset(token)
+
+    def _register_proc(self, proc):
+        """띄운 subprocess 등록. (1) /cancel 용 thread 전역 (2) 이 호출 스코프."""
+        if self._current_thread_ts:
+            register_process(self._current_thread_ts, proc)
+        procs = _CALL_PROCS.get()
+        if procs is not None:
+            procs.append(proc)
+
     def _kill_registered_processes(self):
-        """타임아웃/에러 시 이 에이전트가 등록한 프로세스를 정리."""
-        if not self._current_thread_ts:
+        """타임아웃/에러 시 **이 호출이 띄운** 프로세스만 정리 (형제 에이전트 보호).
+
+        스코프 밖에서 불리면(=띄운 프로세스를 특정 못 하면) 아무것도 죽이지 않는다.
+        스레드 전체 kill 은 /cancel(cancel.cancel) 의 의도된 동작이라 거기서만 한다.
+        """
+        procs = _CALL_PROCS.get()
+        if not procs:
             return
-        from cancel import active_processes, _lock
-        with _lock:
-            procs = active_processes.get(self._current_thread_ts, [])
-            for proc in procs:
-                try:
-                    if proc.returncode is None:
-                        kill_process_tree(proc)
-                except Exception:
-                    pass
+        for proc in procs:
+            try:
+                if proc.returncode is None:
+                    kill_process_tree(proc)
+            except Exception:
+                pass
 
     async def ask(self, prompt: str, timeout: int = None, attachments: list[dict] | None = None) -> str:
         t = timeout or CLI_TIMEOUT
@@ -86,23 +117,24 @@ class AgentBase:
             self.timed_out = False
             self.has_error = False
             return f"[{self.name}] 작업 취소됨"
-        try:
-            result = await asyncio.wait_for(
-                self._run_cli(prompt, attachments=attachments),
-                timeout=t
-            )
-            self.timed_out = False
-            self.has_error = self._is_fatal_error(result)
-            return result
-        except asyncio.TimeoutError:
-            self.timed_out = True
-            self.has_error = False
-            self._kill_registered_processes()
-            return f"[{self.name}] 응답 시간 초과 ({t}초)"
-        except Exception as e:
-            self.timed_out = False
-            self.has_error = True
-            return f"[{self.name}] 오류: {str(e)}"
+        with self._call_scope():
+            try:
+                result = await asyncio.wait_for(
+                    self._run_cli(prompt, attachments=attachments),
+                    timeout=t
+                )
+                self.timed_out = False
+                self.has_error = self._is_fatal_error(result)
+                return result
+            except asyncio.TimeoutError:
+                self.timed_out = True
+                self.has_error = False
+                self._kill_registered_processes()
+                return f"[{self.name}] 응답 시간 초과 ({t}초)"
+            except Exception as e:
+                self.timed_out = False
+                self.has_error = True
+                return f"[{self.name}] 오류: {str(e)}"
 
     def _is_fatal_error(self, output: str) -> bool:
         """응답 내용에 치명적 오류 패턴이 포함되어 있는지 확인.
@@ -148,14 +180,39 @@ class AgentBase:
         """타임아웃/취소/예외로 빠져나갈 때 남은 CLI 부산물 정리 훅. 기본 no-op."""
         return None
 
+    # 외부 가드 배수: 내부 데드라인(t)을 넘겨도 읽기 루프 **밖**(stdin drain, proc.wait 등)에서
+    # 멈추면 영구 hang 이 된다(이슈 #146. Gemini 33분 hang 사고와 동일 계열). 내부 정리에
+    # 여유를 주되 무한 대기는 끊도록 t 의 1.25배에서 하드 컷한다.
+    GUARD_FACTOR = 1.25
+
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
-        """stdout+stderr를 동시에 읽으며 on_progress 콜백 호출."""
+        """스트리밍 실행 + 외부 가드. 실제 구현은 _stream_once.
+
+        timeout=t 는 **모든 에이전트에서 같은 뜻**이다: 이 호출의 예산이 t 초.
+        예전엔 Claude/Gemini 가 내부에서 t*2 로 부풀려 같은 인자가 에이전트마다 다른
+        예산을 뜻했고(이슈 #144), 그래서 코딩 모드에서 Codex 만 먼저 죽었다.
+        """
         t = timeout or CLI_TIMEOUT
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             self.timed_out = False
             self.has_error = False
             return f"[{self.name}] 작업 취소됨"
 
+        with self._call_scope():
+            try:
+                return await asyncio.wait_for(
+                    self._stream_once(prompt, on_progress, t, attachments),
+                    timeout=t * self.GUARD_FACTOR,
+                )
+            except asyncio.TimeoutError:
+                # 내부 데드라인이 못 잡은 hang. 프로세스를 정리하고 종료한다.
+                self.timed_out = True
+                self.has_error = False
+                self._kill_registered_processes()
+                return f"[{self.name}] 외부 가드 시간 초과 ({int(t * self.GUARD_FACTOR)}초, 내부 hang 감지)"
+
+    async def _stream_once(self, prompt: str, on_progress, t: int, attachments: list[dict] | None = None) -> str:
+        """stdout+stderr를 동시에 읽으며 on_progress 콜백 호출."""
         tmp = self._write_temp(prompt)
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
@@ -169,8 +226,7 @@ class AgentBase:
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                register_process(self._current_thread_ts, proc)
+            self._register_proc(proc)
 
             # stdin에 프롬프트 전달 후 닫기
             proc.stdin.write(stdin_data)

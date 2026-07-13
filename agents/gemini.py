@@ -494,8 +494,7 @@ class GeminiAgent(AgentBase):
                             cwd=self._cwd,
                             **subprocess_kwargs(),
                         )
-                        if self._current_thread_ts:
-                            register_process(self._current_thread_ts, proc)
+                        self._register_proc(proc)
                         try:
                             stdout, stderr = await proc.communicate(input=stdin_data)
                             exit_code = proc.returncode
@@ -573,8 +572,7 @@ class GeminiAgent(AgentBase):
             # leak 되지 않도록 try/finally 로 cleanup. spawn 이후~register 이전 cancel
             # window 차단.
             try:
-                if self._current_thread_ts:
-                    register_process(self._current_thread_ts, proc)
+                self._register_proc(proc)
                 if effective_stdin is not None:
                     proc.stdin.write(effective_stdin)
                     await proc.stdin.drain()
@@ -585,7 +583,7 @@ class GeminiAgent(AgentBase):
                 start_time = time.time()
                 saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
                 readline_timeout = 60
-                overall_timeout = t * 2
+                overall_timeout = t  # 예산은 호출자가 준 t 그대로 (숨은 배수 제거, 이슈 #144)
 
                 # 내부 재시도 로그 키워드, output에 포함하지 않고 rate-limit 힌트로만 기록
                 _RETRY_NOISE = ("Attempt ", "Retrying after")
@@ -697,13 +695,13 @@ class GeminiAgent(AgentBase):
                         result, rate_limited = await asyncio.wait_for(
                             self._run_progress_once(
                                 stdin_data, on_progress, t, model, prompt=prompt),
-                            timeout=t * 2.5,
+                            timeout=t * self.GUARD_FACTOR,
                         )
                     except asyncio.TimeoutError:
                         self.timed_out = True
                         self.has_error = False
                         self._kill_registered_processes()
-                        return f"[{self.name}] 외부 가드 시간 초과 ({int(t * 2.5)}초, 내부 hang 감지)"
+                        return f"[{self.name}] 외부 가드 시간 초과 ({int(t * self.GUARD_FACTOR)}초, 내부 hang 감지)"
 
                     if self.timed_out:
                         return result

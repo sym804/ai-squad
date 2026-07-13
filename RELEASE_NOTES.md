@@ -54,6 +54,43 @@
 | v0.8.17 | 2026-07-08 | issue #131 대응(Option 1): 봇 S4U 세션0 에서 Codex 로컬 셸 도구가 0xC0000142 로 죽는 문제를, 토론/리서치 Codex 에 "로컬 셸 말고 MCP/지식으로 답하라" 지시(`avoid_shell`) 주입으로 doomed 셸 시도 억제. 무깜빡임 S4U 유지 + openaiDeveloperDocs MCP 그라운딩 존치 |
 | v0.8.18 | 2026-07-08 | 재기동 후 Codex 오류: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이 rmcp tracing 로그로 답변 누출 + fatal 오탐(→Codex 백업 교체). `_CODEX_TRACING_LOG` 필터 + `ask_with_progress` 가 정제된 답변으로 has_error 재판정(진짜 API fatal 은 유지) |
 | v0.8.19 | 2026-07-13 | Slack 최근 대화 실측 분석에서 나온 6대 결함 수정: 실패 응답 원문 게시 차단(P1) + 폴백 경고 중복 제거 + 동일 엔진 2인 구성 고지(P2) + 스레드 단위 교체 유지(P3) + 합의 종료 게이트 재설계(P4, 어휘 유사도는 수렴 확인에만) + Codex 툴콜 preamble 제거(P6, `codex exec -o`) + dead config 제거 |
+| v0.8.20 | 2026-07-13 | 타임아웃 정책/kill 사정거리 수정(이슈 #143~#149): 형제 에이전트 동반 사망 차단 + 에이전트별 숨은 타임아웃 배수 제거 + Claude 외부 가드 + 낡은 elapsed 보고 수정 + 코딩 백업 예산 동일화 + 리서치 자기-동시호출 제거 |
+
+## v0.8.20 (2026-07-13)
+
+Codex 교차검증이 지적하고 **Claude 가 코드로 재확인**한 타임아웃 계열 결함 6건. (Codex 가 자율적으로 커밋한 v0.8.21 은 리뷰 없이 들어가 되돌렸고(`0ced80b`), 여기서 직접 TDD 로 다시 구현했다.)
+
+### 원인과 수정
+
+- **[Major / backend] 한 에이전트의 타임아웃이 형제 에이전트 프로세스까지 죽였다** (`agents/base.py`, 이슈 #145)
+  - `_kill_registered_processes()` 는 이름과 달리 `cancel.active_processes[thread_ts]` **전체**를 죽였다. 그런데 한 토론/리서치의 3개 에이전트는 같은 thread_ts 를 공유하며 `gather` 로 병렬 실행된다. 즉 Codex 가 타임아웃되면 답변 중이던 Claude/Gemini 의 CLI 를 같이 죽였다.
+  - 실측 증거: 7/9 리서치 런 로그에 `[Claude-B] 응답 시간 초과 (180초)` 와 `[Codex-B] 응답 시간 초과 (180초)` 가 같은 런에서 동시에 찍혔다(조사 1건 유실).
+  - 수정: `contextvars` 기반 **호출 스코프**(`_call_scope`/`_register_proc`) 도입. 타임아웃 정리는 **그 호출이 띄운 프로세스만** 죽인다. 같은 인스턴스를 동시에 두 번 호출해도(리서치 라운드로빈) 섞이지 않는다. `/cancel` 의 스레드 전체 kill 은 의도된 동작이라 그대로 유지.
+
+- **[Major / backend] 같은 timeout 인자가 에이전트마다 다른 예산을 뜻했다** (`config.py`, `agents/claude.py`, `agents/gemini.py`, 이슈 #144)
+  - base(Codex)=t, Claude=t*2, Gemini=t*2(외부 가드 t*2.5). `CLI_TIMEOUT_CODING=300` 하나로 Codex 는 300초, Claude 는 600초, Gemini 는 750초를 받았다. 코딩 모드에서 Codex 만 먼저 죽고, 그 타임아웃이 #145 를 타고 형제까지 죽였다.
+  - 수정: 숨은 배수 전부 제거. `timeout=t` 는 모든 에이전트에서 "이 호출의 예산 t 초". 실효 예산을 유지하려고 상수를 올렸다: `CLI_TIMEOUT 180 → 360`, `CLI_TIMEOUT_CODING 300 → 600`.
+
+- **[Major / backend] 코딩 모드 백업이 primary 보다 짧은 예산으로 호출됐다** (`modes/coding.py`, 이슈 #148)
+  - `backup.ask(prompt)` 에 timeout 인자가 없어 기본 `CLI_TIMEOUT` 로 줄었다. primary 가 코딩 예산으로도 못 끝낸 일을 백업에 더 짧은 시간으로 시키는 꼴이라 이중 실패 확률만 올렸다. `timeout=CLI_TIMEOUT_CODING` 명시.
+
+- **[Major / backend] 리서치가 같은 에이전트 인스턴스에 소주제 2건을 동시 배정했다** (`modes/research.py`, 이슈 #149)
+  - 소주제 4개를 에이전트 3개에 라운드로빈하면 한 인스턴스가 2건을 맡는다. 동시에 돌리면 `timed_out`/`has_error`/`last_usage` 인스턴스 상태가 서로 덮어써져 멀쩡한 조사가 "실패" 로 버려질 수 있다.
+  - 수정: `_run_assigned()` 로 분리해 **에이전트 간에는 병렬, 같은 에이전트 안에서는 순차** 실행. 에이전트 간 병렬성은 그대로 유지된다.
+
+- **[Minor / backend] Claude 스트리밍에 외부 가드가 없어 읽기 루프 밖 hang 이 영구 대기** (`agents/base.py`, `agents/claude.py`, 이슈 #146)
+  - `await proc.stdin.drain()` 등 읽기 루프 **밖** await 에는 데드라인이 없었다(Gemini 33분 hang 사고와 같은 계열).
+  - 수정: `base.ask_with_progress` 가 `_stream_once` 를 `t * GUARD_FACTOR(1.25)` 로 감싸고, 가드 발동 시 그 호출의 프로세스만 정리한다. Claude 는 `_stream_once` 만 오버라이드하므로 자동 적용. Gemini 의 기존 가드도 `t*2.5 → t*1.25` 로 통일.
+
+- **[Minor / backend] 타임아웃 보고 숫자가 최대 60초 낡은 값이었다** (`agents/claude.py`, 이슈 #143)
+  - 루프 진입 시점에 `elapsed` 를 재고 readline 을 고정 60초 기다린 뒤 그 값을 보고했다(실측 "574초" = 실제 634초). 한도 검사도 루프 진입 시점에만 해서 실효 상한이 `t + 60` 이었다.
+  - 수정: readline 대기를 `min(60, 남은 예산)` 으로 자르고, 보고 직전 `elapsed` 재측정. `start_time` 을 spawn 전으로 옮겨 spawn/drain 도 예산에 포함.
+
+- 이슈 #147(가드 취소 시 부산물 누수)은 Codex 가 **자기가 새로 넣은 가드**를 전제로 쓴 지적이라 현재 코드엔 해당 없음. codex `-o` 파일은 v0.8.19 에서 이미 `finally` 정리된다.
+
+### 테스트
+- 신규 7건(`tests/test_timeout_and_kill_scope.py`): 형제 프로세스 보호 / `/cancel` 은 전체 kill 유지 / timeout 인자 = 실제 예산 / 낡은 elapsed 금지 / 루프 밖 hang 가드 / 코딩 백업 예산 동일 / 리서치 자기-동시호출 0. 전체 478건 통과.
+- 실제 CLI 3개(Claude·Codex·Gemini) 병렬 호출로 회귀 확인: 3개 모두 정상 응답, 형제 kill 없음.
 
 ## v0.8.19 (2026-07-13)
 

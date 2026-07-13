@@ -17,8 +17,13 @@ MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))
 # 죽은 설정이었다. 조기 종료는 COMPLEX_MIN_ROUNDS + 요약 수렴 판정으로만 결정된다.
 # 복잡한 주제는 만장일치여도 이 라운드 전엔 조기 종료 금지 (반동조)
 COMPLEX_MIN_ROUNDS = int(os.environ.get("COMPLEX_MIN_ROUNDS", "3"))
-CLI_TIMEOUT = 180
-CLI_TIMEOUT_CODING = 300  # 코딩 모드는 5분
+# 예산 상수. timeout=t 는 모든 에이전트에서 "이 호출의 예산 t 초" 라는 같은 뜻이다.
+# 예전엔 Claude/Gemini 가 내부에서 t*2 로 부풀려(가드는 t*2.5) 같은 인자가 에이전트마다
+# 다른 예산을 뜻했다(이슈 #144): timeout=300 이면 Codex 300초, Claude 660초, Gemini 750초.
+# 그래서 코딩 모드에서 Codex 만 먼저 죽고, 그 타임아웃이 형제 프로세스까지 죽였다(#145).
+# 배수를 없앤 대신, 기존 실효 예산(Claude 기준)에 맞춰 상수를 올린다.
+CLI_TIMEOUT = 360         # 토론/일반 (기존 180*2)
+CLI_TIMEOUT_CODING = 600  # 코딩 모드 (기존 300*2)
 
 # Gemini 계열 CLI 바이너리 선택 (2026-06-18 Gemini CLI 서비스 종료 대비)
 # - "gemini" (기본): 기존 Gemini CLI. stdin pipe + -m model fallback + -y.

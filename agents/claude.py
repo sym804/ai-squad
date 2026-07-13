@@ -144,21 +144,24 @@ class ClaudeAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
+    async def _stream_once(self, prompt: str, on_progress=None, t: int = None, attachments: list[dict] | None = None) -> str:
         """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱.
 
         attachments (이미지/PDF) 가 있으면 prompt 끝에 절대경로 블록을 붙여
         Claude Code 가 Read 도구로 읽도록 유도. SDK/API 키 불필요.
+
+        호출 스코프/외부 가드는 base.ask_with_progress 가 씌운다.
         """
         from config import CLI_TIMEOUT
-        from cancel import register_process, is_cancelled
-        t = timeout or CLI_TIMEOUT
+        from cancel import is_cancelled
+        t = t or CLI_TIMEOUT
 
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
 
         prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
+        start_time = time.time()  # spawn/drain 도 예산에 포함
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
@@ -171,48 +174,48 @@ class ClaudeAgent(AgentBase):
                 limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                register_process(self._current_thread_ts, proc)
+            self._register_proc(proc)
             proc.stdin.write(stdin_data)
             await proc.stdin.drain()
             proc.stdin.close()
 
             output = ""
             last_callback = time.time()
-            start_time = time.time()
             result_data = None
-            # readline 타임아웃: 60초 (도구 호출 중 출력 없어도 너무 빨리 죽이지 않음)
-            readline_timeout = 60
-            # 전체 타임아웃: 코딩 타임아웃의 2배 (도구 호출 포함 최대 대기)
-            overall_timeout = t * 2
+            # 무출력 상한: 도구 호출 중엔 출력이 없으므로 너무 빨리 죽이지 않는다.
+            idle_timeout = 60
+            # 전체 예산 = 호출자가 준 t 그대로. 예전엔 t*2 로 부풀려 같은 timeout 인자가
+            # 에이전트마다 다른 예산을 뜻했다(이슈 #144).
+            deadline = start_time + t
 
             while True:
-                elapsed = time.time() - start_time
-                # 전체 경과 시간 체크
-                if elapsed > overall_timeout:
+                remaining = deadline - time.time()
+                if remaining <= 0:
                     kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
                     self.last_usage = ""
-                    return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)"
+                    return f"[{self.name}] 전체 시간 초과 ({int(time.time() - start_time)}초)"
 
                 try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=readline_timeout)
+                    # 남은 예산보다 오래 기다리지 않는다. 예전엔 고정 60초를 기다린 뒤
+                    # 루프 진입 시점의 낡은 elapsed 를 보고해, 실제 634초를 "574초" 로
+                    # 표기하고 한도도 최대 60초 넘겼다(이슈 #143).
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(idle_timeout, remaining))
                 except asyncio.TimeoutError:
-                    # readline 타임아웃이지만 프로세스가 살아있고 전체 시간 남았으면 계속 대기
-                    if proc.returncode is None and time.time() - start_time < overall_timeout:
-                        # 프로세스 생존 확인 + progress 콜백
+                    # 프로세스가 살아있고 예산이 남았으면 계속 대기 (도구 호출 중)
+                    if proc.returncode is None and time.time() < deadline:
                         if on_progress and output:
                             on_progress(output)
                         continue
-                    # 전체 시간도 초과했거나 프로세스가 죽었으면 종료
                     kill_process_tree(proc)
                     await proc.wait()
                     self.timed_out = True
                     self.has_error = False
                     self.last_usage = ""
-                    return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)"
+                    return f"[{self.name}] 응답 대기 시간 초과 ({int(time.time() - start_time)}초)"
 
                 if not line:
                     break

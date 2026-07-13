@@ -544,6 +544,56 @@ class ResearchMode:
                 return f"[{backup.name}] 백업 호출 예외", backup.name
         return result, agent.name
 
+    async def _run_assigned(self, assigned: list[dict], question: str, channel: str,
+                            thread_ts: str, prog_ts: str | None = None) -> list:
+        """분담 조사 실행. **에이전트 간에는 병렬, 같은 에이전트 안에서는 순차.**
+
+        소주제 4개를 에이전트 3개에 라운드로빈하면 한 인스턴스가 2건을 맡는다. 그 2건을
+        동시에 돌리면 timed_out/has_error/last_usage 같은 인스턴스 상태가 서로 덮어써져
+        멀쩡한 조사가 "실패" 로 버려질 수 있다(이슈 #149). 에이전트별로 묶어 순차 실행하면
+        에이전트 간 병렬성은 그대로 유지하면서 자기 자신과의 경합만 없앤다.
+        """
+        total = len(assigned)
+        done = 0
+
+        async def _research_one(sq):
+            nonlocal done
+            if is_cancelled(thread_ts):
+                return None
+            text, used = await self._ask_named(
+                sq["agent"], _build_research_prompt(sq["text"], question))
+            done += 1  # await 이후 동기 구간이라 코루틴 간 경합 없음(이벤트 루프 단일 스레드)
+            if prog_ts:
+                self._update(channel, prog_ts, f"🔎 *분담 조사 중...* ({done}/{total})")
+            if _looks_like_failure(text):  # 타임아웃/한도/예외성 응답은 finding 에서 제외(F3)
+                logger.warning("research finding dropped (failure-like): %s", str(text)[:120])
+                return None
+            return {"subq_id": sq["id"], "agent": used, "text": text,
+                    "sources": _extract_sources(text)}
+
+        by_agent: dict[str, list[dict]] = {}
+        for sq in assigned:
+            by_agent.setdefault(sq["agent"], []).append(sq)
+
+        async def _run_serial(sqs):
+            out = []
+            for sq in sqs:
+                try:
+                    out.append(await _research_one(sq))
+                except Exception as e:  # 한 건 실패가 같은 에이전트의 나머지를 막지 않게
+                    out.append(e)
+            return out
+
+        groups = await asyncio.gather(
+            *[_run_serial(sqs) for sqs in by_agent.values()], return_exceptions=True)
+        results = []
+        for g in groups:
+            if isinstance(g, Exception):
+                results.append(g)
+            else:
+                results.extend(g)
+        return results
+
     async def start(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
         self._bind_thread(thread_ts)
         self._post(channel, thread_ts, f"🔎 *리서치를 시작합니다*\n질문: {question}")
@@ -559,27 +609,10 @@ class ResearchMode:
         names = [a.name for a in self.agents]
         assigned = _assign_subquestions(subqs, names)
 
-        # 1. 분담 조사 (병렬, 진행 카운터 갱신)
+        # 1. 분담 조사 (에이전트 간 병렬, 같은 에이전트 안에서는 순차)
         total = len(assigned)
         prog_ts = self._post_get_ts(channel, thread_ts, f"🔎 *분담 조사 중...* (0/{total})")
-        done = 0
-
-        async def _research_one(sq):
-            nonlocal done
-            if is_cancelled(thread_ts):
-                return None
-            text, used = await self._ask_named(
-                sq["agent"], _build_research_prompt(sq["text"], question))
-            done += 1  # await 이후 동기 구간이라 코루틴 간 경합 없음(이벤트 루프 단일 스레드)
-            self._update(channel, prog_ts, f"🔎 *분담 조사 중...* ({done}/{total})")
-            if _looks_like_failure(text):  # 타임아웃/한도/예외성 응답은 finding 에서 제외(F3)
-                logger.warning("research finding dropped (failure-like): %s", str(text)[:120])
-                return None
-            return {"subq_id": sq["id"], "agent": used, "text": text,
-                    "sources": _extract_sources(text)}
-
-        raw_findings = await asyncio.gather(
-            *[_research_one(sq) for sq in assigned], return_exceptions=True)
+        raw_findings = await self._run_assigned(assigned, question, channel, thread_ts, prog_ts)
         findings = []
         dropped = 0
         for r in raw_findings:

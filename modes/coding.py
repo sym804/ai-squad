@@ -561,7 +561,11 @@ class CodingMode:
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
                 )
-                response = await backup.ask(prompt, attachments=attachments)
+                # 백업도 primary 와 같은 예산을 받아야 한다. timeout 을 빼면 기본
+                # CLI_TIMEOUT 으로 줄어들어, primary 가 코딩 예산으로도 못 끝낸 일을
+                # 더 짧은 예산으로 시키는 꼴이다(이슈 #148).
+                response = await backup.ask(
+                    prompt, timeout=CLI_TIMEOUT_CODING, attachments=attachments)
                 try:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                 except Exception as e:
