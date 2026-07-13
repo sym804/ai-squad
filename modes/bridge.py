@@ -76,7 +76,7 @@ class BridgeMode:
         from agents.claude import ClaudeAgent
         agent = ClaudeAgent(continue_mode=False)
         agent._cwd = self.work_dir
-        return await agent.ask(prompt, attachments=attachments, timeout=CLI_TIMEOUT * 2)
+        return await agent.ask(prompt, attachments=attachments, timeout=CLI_TIMEOUT)
 
     async def _call_claude(self, prompt: str) -> str:
         """claude --continue -p 로 호출.
@@ -111,7 +111,8 @@ class BridgeMode:
 
     async def _run_cmd(self, cmd: list[str], stdin_data: bytes = None) -> str:
         """subprocess 실행 + 타임아웃. 타임아웃 시 프로세스 트리 kill."""
-        timeout = CLI_TIMEOUT * 2
+        # CLI_TIMEOUT 자체가 hard wall 이다 (v0.8.21 에서 숨은 *2 배수 제거).
+        timeout = CLI_TIMEOUT
 
         proc = await asyncio.create_subprocess_exec(
             *platform_cmd(cmd),

@@ -3,8 +3,8 @@ import json
 import os
 import time
 from agents.base import AgentBase
-from process import kill_process_tree, platform_cmd, subprocess_kwargs
-from config import make_filtered_env
+from process import platform_cmd, subprocess_kwargs
+from config import STREAM_IDLE_TIMEOUT, make_filtered_env
 
 # stream-json 한 라인 최대 크기. asyncio 기본은 64KB 인데, Claude Code 가
 # Read 도구로 이미지를 읽으면 user/tool_result 블록 한 줄에 base64 또는
@@ -126,9 +126,7 @@ class ClaudeAgent(AgentBase):
                 limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                from cancel import register_process
-                register_process(self._current_thread_ts, proc)
+            self._track_process(proc)
             stdout, stderr = await proc.communicate(input=stdin_data)
             raw = stdout.decode("utf-8", errors="replace").strip()
             try:
@@ -144,21 +142,21 @@ class ClaudeAgent(AgentBase):
         finally:
             os.unlink(tmp)
 
-    async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
+    async def _stream_once(self, prompt: str, on_progress, t: float, attachments: list[dict] | None) -> str:
         """stream-json으로 실행. 텍스트 내용을 on_progress로 전달. 토큰 사용량 파싱.
+
+        t 는 hard wall 이다. 취소 확인과 외부 가드는 base.ask_with_progress 담당.
 
         attachments (이미지/PDF) 가 있으면 prompt 끝에 절대경로 블록을 붙여
         Claude Code 가 Read 도구로 읽도록 유도. SDK/API 키 불필요.
         """
-        from config import CLI_TIMEOUT
-        from cancel import register_process, is_cancelled
-        t = timeout or CLI_TIMEOUT
-
-        if self._current_thread_ts and is_cancelled(self._current_thread_ts):
-            return f"[{self.name}] 작업 취소됨"
-
         prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
+        proc = None
+        # 데드라인은 spawn "전" 부터. Windows 에서 claude 는 .cmd 래퍼 -> node 부팅을
+        # 거치고 stdin drain 도 막힐 수 있는데, 그 시간이 예산에 안 잡히면 총 소요가
+        # t 를 넘긴다.
+        start_time = time.time()
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
@@ -171,48 +169,39 @@ class ClaudeAgent(AgentBase):
                 limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                register_process(self._current_thread_ts, proc)
+            self._track_process(proc)
             proc.stdin.write(stdin_data)
             await proc.stdin.drain()
             proc.stdin.close()
 
             output = ""
             last_callback = time.time()
-            start_time = time.time()
             result_data = None
-            # readline 타임아웃: 60초 (도구 호출 중 출력 없어도 너무 빨리 죽이지 않음)
-            readline_timeout = 60
-            # 전체 타임아웃: 코딩 타임아웃의 2배 (도구 호출 포함 최대 대기)
-            overall_timeout = t * 2
+            # 무응답 판정 한계. Claude Code 는 도구(WebSearch/Read)를 도는 동안
+            # stream-json 을 한 줄도 안 내보내므로, 프로세스가 살아있으면 이 한계에
+            # 걸려도 죽이지 않고 hard wall 까지 기다린다.
+            idle_timeout = min(STREAM_IDLE_TIMEOUT, t)
 
             while True:
                 elapsed = time.time() - start_time
-                # 전체 경과 시간 체크
-                if elapsed > overall_timeout:
-                    kill_process_tree(proc)
-                    await proc.wait()
-                    self.timed_out = True
-                    self.has_error = False
-                    self.last_usage = ""
-                    return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)"
+                remaining = t - elapsed
+                if remaining <= 0:
+                    return await self._abort(proc, elapsed, t)
 
+                # readline 대기를 남은 예산으로 자른다. 예전엔 고정 60초를 기다려서
+                # 데드라인(600초)을 최대 60초까지 넘겼고, 보고는 루프 진입 시점의
+                # stale elapsed 를 써서 실제 634초를 "574초" 로 찍었다.
                 try:
-                    line = await asyncio.wait_for(proc.stdout.readline(), timeout=readline_timeout)
+                    line = await asyncio.wait_for(
+                        proc.stdout.readline(), timeout=min(idle_timeout, remaining)
+                    )
                 except asyncio.TimeoutError:
-                    # readline 타임아웃이지만 프로세스가 살아있고 전체 시간 남았으면 계속 대기
-                    if proc.returncode is None and time.time() - start_time < overall_timeout:
-                        # 프로세스 생존 확인 + progress 콜백
+                    elapsed = time.time() - start_time  # stale 금지: 지금 다시 잰다
+                    if proc.returncode is None and elapsed < t:
                         if on_progress and output:
                             on_progress(output)
                         continue
-                    # 전체 시간도 초과했거나 프로세스가 죽었으면 종료
-                    kill_process_tree(proc)
-                    await proc.wait()
-                    self.timed_out = True
-                    self.has_error = False
-                    self.last_usage = ""
-                    return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)"
+                    return await self._abort(proc, elapsed, t)
 
                 if not line:
                     break
@@ -259,4 +248,11 @@ class ClaudeAgent(AgentBase):
             self.has_error = True
             return f"[{self.name}] 오류: {str(e)}"
         finally:
+            # 외부 가드 cancel 경로: 파일을 지우기 전에 아직 살아있는 CLI 부터 죽인다.
+            self._kill_if_alive(proc)
             os.unlink(tmp)
+
+    async def _abort(self, proc, elapsed: float, overall: float) -> str:
+        """데드라인 초과 정리. 토큰 사용량은 실패 말풍선에 붙이지 않는다."""
+        self.last_usage = ""
+        return await self._abort_stream(proc, elapsed, overall)

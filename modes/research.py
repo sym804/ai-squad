@@ -437,7 +437,7 @@ def _findings_block(findings: list[dict], verdicts: list[dict]) -> str:
 
 # --- 오케스트레이션 --------------------------------------------------------
 
-from config import RESEARCH_SUBQ_MAX, CLI_TIMEOUT
+from config import RESEARCH_SUBQ_MAX, CLI_TIMEOUT_RESEARCH
 from cancel import is_cancelled
 from agents import (
     ClaudeAgent, CodexAgent, GeminiAgent,
@@ -529,7 +529,7 @@ class ResearchMode:
         """
         agent = self._agent_by_name(name)
         try:
-            result = await agent.ask(prompt, timeout=CLI_TIMEOUT)
+            result = await agent.ask(prompt, timeout=CLI_TIMEOUT_RESEARCH)
             failed = getattr(agent, "needs_replacement", False)
         except Exception as e:
             logger.warning("primary %s ask raised: %s", name, e)
@@ -538,7 +538,7 @@ class ResearchMode:
             backup = self._get_backup(agent)
             backup._current_thread_ts = agent._current_thread_ts
             try:
-                return await backup.ask(prompt, timeout=CLI_TIMEOUT), backup.name
+                return await backup.ask(prompt, timeout=CLI_TIMEOUT_RESEARCH), backup.name
             except Exception as e:
                 logger.warning("backup %s ask raised: %s", backup.name, e)
                 return f"[{backup.name}] 백업 호출 예외", backup.name

@@ -345,9 +345,7 @@ class CodexAgent(AgentBase):
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )
-            if self._current_thread_ts:
-                from cancel import register_process
-                register_process(self._current_thread_ts, proc)
+            self._track_process(proc)
             stdout, stderr = await proc.communicate(input=stdin_data)
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:

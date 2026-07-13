@@ -8,8 +8,14 @@ import weakref
 from pathlib import Path
 from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
-from config import CLI_TIMEOUT, GEMINI_CLI_BINARY, make_filtered_env
-from cancel import register_process, is_cancelled
+from config import (
+    CLI_TIMEOUT,
+    GEMINI_CLI_BINARY,
+    STREAM_GUARD_FACTOR,
+    STREAM_IDLE_TIMEOUT,
+    make_filtered_env,
+)
+from cancel import is_cancelled
 
 # xterm.js 터미널 이스케이프 코드 및 노이즈 패턴
 _NOISE_PATTERNS = re.compile(
@@ -494,8 +500,7 @@ class GeminiAgent(AgentBase):
                             cwd=self._cwd,
                             **subprocess_kwargs(),
                         )
-                        if self._current_thread_ts:
-                            register_process(self._current_thread_ts, proc)
+                        self._track_process(proc)
                         try:
                             stdout, stderr = await proc.communicate(input=stdin_data)
                             exit_code = proc.returncode
@@ -538,12 +543,12 @@ class GeminiAgent(AgentBase):
     async def _run_progress_once(self, stdin_data: bytes, on_progress, t: int, model: str = None, prompt: str = ""):
         """1회 실행. (output, is_rate_limited) 반환.
 
-        타임아웃 전략 (agents/claude.py와 동일 패턴):
-        - readline_timeout = 60초: 매 라인 대기 한계
-        - overall_timeout  = t * 2: 전체 실행 한계
+        타임아웃 전략 (agents/base.py·claude.py와 동일 패턴):
+        - t: 이 호출의 hard wall (숨은 배수 없음)
+        - STREAM_IDLE_TIMEOUT(60초): 무응답 판정 한계. 매 readline 대기는 이 값과
+          "남은 예산" 중 작은 쪽으로 자른다 (데드라인 초과 금지).
         Gemini CLI는 복잡한 프롬프트에서 2~3분 버퍼링 후 한 번에 출력하는 경우가
-        있어서 단일 타임아웃(180초)으로는 종종 끊긴다. readline이 만료돼도
-        프로세스가 살아있고 전체 시간이 남아있으면 계속 폴링.
+        있다. readline이 만료돼도 프로세스가 살아있고 예산이 남았으면 계속 폴링한다.
 
         agy(Antigravity CLI) 분기: prompt 를 -p 인자로 직접 전달하므로 stdin 사용 안함.
         ``stdin_data`` 는 gemini 분기에서만 의미가 있고, agy 일 때는 무시되고 ``prompt``
@@ -559,6 +564,10 @@ class GeminiAgent(AgentBase):
         # 전역 직렬화: 병렬 debate에서 Gemini 호출 동시 폭주 방지.
         # 전체 subprocess 수명(spawn → read loop → wait)을 감싸야 실효성 있음.
         async with _get_gemini_concurrency():
+            # 데드라인은 spawn "전" 부터 잰다 (spawn + stdin drain 도 예산에 포함).
+            # Semaphore 대기 시간은 여기 안 들어간다 - 그 구간의 hang 은 외부 가드
+            # (t * STREAM_GUARD_FACTOR) 담당이다 (v0.7.3.2 33분 hang 사고).
+            start_time = time.time()
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE if effective_stdin is not None else asyncio.subprocess.DEVNULL,
@@ -573,8 +582,7 @@ class GeminiAgent(AgentBase):
             # leak 되지 않도록 try/finally 로 cleanup. spawn 이후~register 이전 cancel
             # window 차단.
             try:
-                if self._current_thread_ts:
-                    register_process(self._current_thread_ts, proc)
+                self._track_process(proc)
                 if effective_stdin is not None:
                     proc.stdin.write(effective_stdin)
                     await proc.stdin.drain()
@@ -582,38 +590,34 @@ class GeminiAgent(AgentBase):
 
                 output = ""
                 last_callback = time.time()
-                start_time = time.time()
                 saw_rate_limit_noise = False  # stream 중 rate-limit 문자열 목격 여부 (내부 재시도일 수 있음)
-                readline_timeout = 60
-                overall_timeout = t * 2
+                # 무응답 판정 한계. 도구 호출 중엔 출력이 원래 멎으므로, 프로세스가
+                # 살아있으면 이 한계에 걸려도 죽이지 않고 hard wall(t) 까지 기다린다.
+                idle_timeout = min(STREAM_IDLE_TIMEOUT, t)
 
                 # 내부 재시도 로그 키워드, output에 포함하지 않고 rate-limit 힌트로만 기록
                 _RETRY_NOISE = ("Attempt ", "Retrying after")
 
                 while True:
                     elapsed = time.time() - start_time
-                    if elapsed > overall_timeout:
-                        kill_process_tree(proc)
-                        await proc.wait()
-                        self.timed_out = True
-                        self.has_error = False
-                        return f"[{self.name}] 전체 시간 초과 ({overall_timeout}초)", False
+                    remaining = t - elapsed
+                    if remaining <= 0:
+                        return await self._abort_stream(proc, elapsed, t), False
 
+                    # readline 대기를 남은 예산으로 자른다. 예전엔 고정 60초를 기다려
+                    # 데드라인을 최대 60초 넘겼고, 보고는 루프 진입 시점의 stale elapsed
+                    # 를 써서 실제 경과와 다른 숫자를 찍었다 (Claude 574초 사고와 동형).
                     try:
                         line = await asyncio.wait_for(
-                            proc.stdout.readline(), timeout=readline_timeout
+                            proc.stdout.readline(), timeout=min(idle_timeout, remaining)
                         )
                     except asyncio.TimeoutError:
-                        # readline은 만료됐지만 프로세스 살아있고 전체 시간 남았으면 계속 대기
-                        if proc.returncode is None and time.time() - start_time < overall_timeout:
+                        elapsed = time.time() - start_time  # stale 금지: 지금 다시 잰다
+                        if proc.returncode is None and elapsed < t:
                             if on_progress and output:
                                 on_progress(_clean_output(output))
                             continue
-                        kill_process_tree(proc)
-                        await proc.wait()
-                        self.timed_out = True
-                        self.has_error = False
-                        return f"[{self.name}] 응답 대기 시간 초과 ({int(elapsed)}초)", False
+                        return await self._abort_stream(proc, elapsed, t), False
 
                     if not line:
                         break
@@ -678,6 +682,13 @@ class GeminiAgent(AgentBase):
         if self._current_thread_ts and is_cancelled(self._current_thread_ts):
             return f"[{self.name}] 작업 취소됨"
 
+        # base.ask_with_progress 를 우회하는 자체 구현이므로 호출 스코프를 직접 연다.
+        # (아래 _kill_registered_processes 가 "이 호출" 의 프로세스만 죽이게 하는 근거)
+        with self._call_scope():
+            return await self._ask_with_progress_inner(prompt, on_progress, t, attachments)
+
+    async def _ask_with_progress_inner(self, prompt: str, on_progress, t: float,
+                                       attachments: list[dict] | None) -> str:
         prompt = self._augment_with_attachments(prompt, attachments)
         tmp = self._write_temp(prompt)
         try:
@@ -690,20 +701,21 @@ class GeminiAgent(AgentBase):
                     if self._current_thread_ts and is_cancelled(self._current_thread_ts):
                         return f"[{self.name}] 작업 취소됨"
 
-                    # 외부 가드: _run_progress_once 내부 overall_timeout(t*2)이 어떤
-                    # 이유로든 발동 못 하면(예: Semaphore acquire 단계 hang) 봇 전체가
-                    # 멈춘다. asyncio.wait_for 로 t*2.5 하드 캡 적용해 무한 hang 차단.
+                    # 외부 가드: _run_progress_once 내부 데드라인(t)이 어떤 이유로든
+                    # 발동 못 하면(예: Semaphore acquire 단계 hang, stdin drain hang)
+                    # 봇 전체가 멈춘다. t * STREAM_GUARD_FACTOR 하드 캡으로 차단.
+                    guard = t * STREAM_GUARD_FACTOR
                     try:
                         result, rate_limited = await asyncio.wait_for(
                             self._run_progress_once(
                                 stdin_data, on_progress, t, model, prompt=prompt),
-                            timeout=t * 2.5,
+                            timeout=guard,
                         )
                     except asyncio.TimeoutError:
                         self.timed_out = True
                         self.has_error = False
                         self._kill_registered_processes()
-                        return f"[{self.name}] 외부 가드 시간 초과 ({int(t * 2.5)}초, 내부 hang 감지)"
+                        return f"[{self.name}] 외부 가드 시간 초과 ({int(guard)}초, 내부 hang 감지)"
 
                     if self.timed_out:
                         return result
