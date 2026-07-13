@@ -4,15 +4,27 @@ import asyncio
 import logging
 import random
 import datetime
+import threading
 
 from agents import (
     ClaudeAgent, CodexAgent, GeminiAgent,
     ClaudeBackupAgent, CodexBackupAgent, GeminiBackupAgent,
 )
-from config import MAX_DEBATE_ROUNDS, CONSENSUS_EARLY_ROUNDS, COMPLEX_MIN_ROUNDS
+from config import MAX_DEBATE_ROUNDS, COMPLEX_MIN_ROUNDS
 from cancel import is_cancelled, cleanup
 
 logger = logging.getLogger(__name__)
+
+# 스레드별 에이전트 교체 상태: thread_ts -> {원본 이름: 백업 이름}.
+# 봇은 메시지마다 DebateMode 를 새로 만들기 때문에(slack_bot.py:194,205) 인스턴스
+# 속성으로는 교체가 유지되지 않는다. 그 결과 세션 한도로 죽은 Claude 를 후속 질문마다
+# 다시 호출해 같은 에러를 반복 노출했다(실측: 한 스레드에서 3회). 스레드 단위로 기억해
+# 첫 라운드부터 백업으로 시작한다. 프로세스 재기동 시 초기화(=재시도)되는 것은 의도.
+_THREAD_REPLACED: dict[str, dict[str, str]] = {}
+_THREAD_REPLACED_MAX = 200  # 오래된 스레드부터 버리는 상한 (메모리 누수 방지)
+# 토론은 스레드마다 별도 OS 스레드 + 이벤트 루프에서 돈다(slack_bot.py). 위 dict 의
+# read-modify-write 를 직렬화한다.
+_THREAD_REPLACED_LOCK = threading.Lock()
 
 CONSENSUS_PATTERN = re.compile(r"<!--CONSENSUS:(.*?)-->", re.DOTALL)
 
@@ -321,6 +333,7 @@ class DebateMode:
         """
         from config import ALLOWED_WORK_DIRS
         from security import validate_work_dir, extract_work_path
+        self._apply_thread_replacements(thread_ts)
         work_dir = validate_work_dir(extract_work_path(request_text), ALLOWED_WORK_DIRS)
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
@@ -328,6 +341,51 @@ class DebateMode:
         for backup in self._backup_pool:
             backup._current_thread_ts = thread_ts
             backup._cwd = work_dir
+
+    def _apply_thread_replacements(self, thread_ts: str):
+        """이 스레드에서 이미 교체된 에이전트를 백업으로 갈아끼운 상태로 시작한다."""
+        with _THREAD_REPLACED_LOCK:
+            recorded = dict(_THREAD_REPLACED.get(thread_ts) or {})
+        if not recorded:
+            return
+        by_name = {b.name: b for b in self._backup_pool}
+        for original, backup_name in recorded.items():
+            backup = by_name.get(backup_name)
+            if not backup or original in self._replaced:
+                continue
+            self.agents = [backup if a.name == original else a for a in self.agents]
+            self._replaced.add(original)
+
+    def _remember_replacement(self, thread_ts: str, original: str, backup_name: str):
+        """교체 사실을 스레드 단위로 기억 (후속 질문에서 죽은 에이전트 재호출 방지).
+
+        용량 초과 폐기는 **새 스레드를 넣을 때만** 한다. 기존 스레드의 두 번째 교체를
+        기록하면서 가장 오래된 키를 버리면, 그 키가 바로 자신일 때 앞선 교체 기록이
+        날아가 죽은 에이전트가 다음 후속 질문에 다시 투입된다(Codex 교차검증 [4]).
+        """
+        if not thread_ts:
+            return
+        with _THREAD_REPLACED_LOCK:
+            if thread_ts not in _THREAD_REPLACED:
+                while len(_THREAD_REPLACED) >= _THREAD_REPLACED_MAX:
+                    _THREAD_REPLACED.pop(next(iter(_THREAD_REPLACED)))
+            _THREAD_REPLACED.setdefault(thread_ts, {})[original] = backup_name
+
+    def _duplicate_engine_note(self) -> str | None:
+        """살아있는 에이전트 중 같은 CLI 계열이 2인 이상이면 고지 문구를 반환.
+
+        폴백은 3계열(claude/codex/gemini)이 모두 점유된 상태에서 하나가 죽으면
+        살아있는 계열의 복제본을 투입할 수밖에 없다. 이때 두 에이전트는 같은 모델을
+        쓰므로 답변이 상관관계를 갖고, "전원 합의"가 실제보다 강해 보인다. 숨기지 말고
+        결론에 명시한다.
+        """
+        families = [getattr(a, "base_family", None) for a in self.agents]
+        dup = {f for f in families if f and families.count(f) >= 2}
+        if not dup:
+            return None
+        names = [a.name for a in self.agents if getattr(a, "base_family", None) in dup]
+        return (f"동일 엔진 2인 구성({', '.join(names)}) - 폴백으로 계열이 겹쳐 "
+                f"합의가 실제보다 강해 보일 수 있습니다.")
 
     def _get_backup(self, agent):
         """동적 백업 선택.
@@ -345,9 +403,11 @@ class DebateMode:
 
         # 이미 self.agents 에 들어있는 백업 인스턴스는 후보에서 제외해야
         # 동일 객체 중복(에이전트 리스트에 같은 인스턴스 2개)을 막는다.
+        # 풀이 소진되면 None: 같은 인스턴스를 재투입하면 한 객체가 동시에 두 번 호출되고
+        # 이미 죽은 백업을 또 부르는 셈이라, 차라리 그 슬롯 없이 진행한다(호출부가 고지).
         candidates = [b for b in self._backup_pool if b not in self.agents]
         if not candidates:
-            candidates = list(self._backup_pool)
+            return None
 
         def rank(b):
             not_failing = b.base_family != failing
@@ -393,16 +453,19 @@ class DebateMode:
         return stop_event, on_progress
 
     def _replace_agent(self, agent, channel, thread_ts, reason="타임아웃"):
-        """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드에도 유지."""
+        """오류/타임아웃된 에이전트를 백업으로 교체. 이후 라운드/후속 질문에도 유지.
+
+        교체 경고는 호출부(폴백 루프)가 "대체 투입" 으로 이미 게시했다. 여기서 또
+        게시하면 같은 사건에 경고가 2개씩 쌓여 스레드가 지저분해진다(중복 제거).
+        """
         if agent.name in self._replaced:
             return
         backup = self._get_backup(agent)
         if not backup:
             return
-        self._post(channel, thread_ts,
-            f"⚠️ *{agent.name} {reason} → 이후 라운드부터 {backup.name} 교체*")
         self.agents = [backup if a is agent else a for a in self.agents]
         self._replaced.add(agent.name)
+        self._remember_replacement(thread_ts, agent.name, backup.name)
 
     async def followup(self, channel: str, thread_ts: str, question: str, attachments: list[dict] | None = None):
         """스레드에서 사용자가 추가 질문 → 기존 대화 기반 추가 토론 (합의까지).
@@ -460,8 +523,10 @@ class DebateMode:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
                     pass
-                # 완료 즉시 응답 포스트
-                self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
+                # 실패 응답(세션 한도/타임아웃 원문)은 게시하지 않는다. 아래 폴백 루프가
+                # 경고 + 백업 답변으로 대체한다 (원문은 정상 답변처럼 보여 오독을 부름).
+                if not getattr(a, 'needs_replacement', False):
+                    self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
                 return result
 
             responses = await asyncio.gather(
@@ -470,6 +535,9 @@ class DebateMode:
 
             round_consensuses = []
             for agent, response in zip(shuffled, responses):
+                # 실패 응답은 히스토리/합의 집계에서 제외 (다음 라운드 프롬프트 오염 방지)
+                if getattr(agent, 'needs_replacement', False):
+                    continue
                 history.append({"name": agent.name, "text": response})
                 round_consensuses.append({
                     "agent_name": agent.name,
@@ -481,10 +549,14 @@ class DebateMode:
             for agent, response in zip(shuffled, responses):
                 if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
-                    if not backup:
-                        continue
                     reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                    if not backup:
+                        # 백업이 없으면 침묵 대신 실패 사실을 알린다.
+                        self._post(channel, thread_ts,
+                                   f"⚠️ *{agent.name} {reason} → 대체 에이전트 없음 (이번 라운드 제외)*")
+                        continue
+                    self._post(channel, thread_ts,
+                               f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 라운드도 {backup.name})*")
                     thinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -494,13 +566,19 @@ class DebateMode:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:
                         pass
-                    self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
-                    history.append({"name": backup.name, "text": backup_response})
-                    round_consensuses.append({
-                        "agent_name": backup.name,
-                        "agent_emoji": backup.emoji,
-                        "consensus": _parse_consensus(backup_response),
-                    })
+                    if getattr(backup, 'needs_replacement', False):
+                        # 이중 장애: 백업까지 실패. 백업의 에러 원문도 답변으로 게시하지 않고
+                        # 사실만 알린 뒤 이번 라운드는 남은 에이전트로 진행한다.
+                        self._post(channel, thread_ts,
+                                   f"⚠️ *{backup.name} 백업도 실패 → 이번 라운드는 {agent.name} 없이 진행*")
+                    else:
+                        self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
+                        history.append({"name": backup.name, "text": backup_response})
+                        round_consensuses.append({
+                            "agent_name": backup.name,
+                            "agent_emoji": backup.emoji,
+                            "consensus": _parse_consensus(backup_response),
+                        })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
                     self._replace_agent(agent, channel, thread_ts, reason)
 
@@ -512,10 +590,23 @@ class DebateMode:
             prev_summaries = curr_summaries
             outlier_history.append(_pair_outlier(round_consensuses, skip_names=self._replaced))
             persistent_outlier = _persistent_outlier(outlier_history)
-            can_conclude = round_num >= min_rounds
+            # 종료 게이트.
+            # 어휘 유사도(diverged)는 "수렴 확인"으로만 신뢰한다. 실측 보정 결과 낮은
+            # 유사도는 발산의 증거가 못 된다: 같은 결론을 다른 표현으로 쓴 실제 합의가
+            # bigram 0.027 인데 서로 배타적 결론(라멘/파스타/초밥)이 0.045 로 더 높았다.
+            # 따라서 요약이 확실히 수렴했을 때만 라운드 1 즉시 종료를 허용하고, 그 외에는
+            # **상호 검토 1회(라운드 2)** 를 채운 뒤 종료한다. 라운드 1 은 서로의 발언을
+            # 보기 전이라 agree=true 자체가 근거 없는 자기신고이기 때문.
+            can_conclude = round_num >= min_rounds and (round_num >= 2 or not diverged)
 
             if can_conclude and len(agrees) >= 3:
-                if diverged and not divergence_challenged:
+                # 만장일치인데도 라운드를 1회 더 도는 것은 **실제 쟁점이 기록됐을 때만**.
+                # 예전엔 어휘 Jaccard 기반 diverged 만 봤는데, 한국어 자유서술 요약은 같은
+                # 결론이어도 어휘가 갈려 실측 639라운드 중 606회(94.8%)가 발산으로 찍혔다
+                # = 만장일치마다 교전 라운드(에이전트 3회 호출)를 상시 낭비. issue_note 는
+                # CONSENSUS.disagreements(구조적 대립점)에서만 나오므로, 비어 있으면 다툴
+                # 거리가 없다는 뜻이라 즉시 종료한다.
+                if diverged and issue_note and not divergence_challenged:
                     divergence_challenged = True
                     pending_issue = issue_note
                 else:
@@ -774,8 +865,11 @@ class DebateMode:
                     self.slack.chat_delete(channel=channel, ts=thinking_msgs[a.name])
                 except Exception:
                     pass
-                # 완료 즉시 응답 포스트 (실제 완료 순서대로 사용자에게 표시)
-                self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
+                # 완료 즉시 응답 포스트 (실제 완료 순서대로 사용자에게 표시).
+                # 단, 실패 응답(세션 한도/타임아웃 원문)은 게시하지 않는다. 아래 폴백 루프가
+                # 경고 + 백업 답변으로 대체한다 (원문은 정상 답변처럼 보여 오독을 부름).
+                if not getattr(a, 'needs_replacement', False):
+                    self._post(channel, thread_ts, a.format_message(_strip_consensus(result)))
                 return result
 
             responses = await asyncio.gather(
@@ -784,6 +878,9 @@ class DebateMode:
 
             # history/consensus는 shuffled 순서로 기록 (재현성 유지)
             for agent, response in zip(shuffled, responses):
+                # 실패 응답은 히스토리/합의 집계에서 제외 (다음 라운드 프롬프트 오염 방지)
+                if getattr(agent, 'needs_replacement', False):
+                    continue
                 history.append({"name": agent.name, "text": response})
                 round_consensuses.append({
                     "agent_name": agent.name,
@@ -795,10 +892,14 @@ class DebateMode:
             for agent, response in zip(shuffled, responses):
                 if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
-                    if not backup:
-                        continue
                     reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                    if not backup:
+                        # 백업이 없으면 침묵 대신 실패 사실을 알린다.
+                        self._post(channel, thread_ts,
+                                   f"⚠️ *{agent.name} {reason} → 대체 에이전트 없음 (이번 라운드 제외)*")
+                        continue
+                    self._post(channel, thread_ts,
+                               f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 라운드도 {backup.name})*")
                     thinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -808,13 +909,19 @@ class DebateMode:
                         self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                     except Exception:
                         pass
-                    self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
-                    history.append({"name": backup.name, "text": backup_response})
-                    round_consensuses.append({
-                        "agent_name": backup.name,
-                        "agent_emoji": backup.emoji,
-                        "consensus": _parse_consensus(backup_response),
-                    })
+                    if getattr(backup, 'needs_replacement', False):
+                        # 이중 장애: 백업까지 실패. 백업의 에러 원문도 답변으로 게시하지 않고
+                        # 사실만 알린 뒤 이번 라운드는 남은 에이전트로 진행한다.
+                        self._post(channel, thread_ts,
+                                   f"⚠️ *{backup.name} 백업도 실패 → 이번 라운드는 {agent.name} 없이 진행*")
+                    else:
+                        self._post(channel, thread_ts, backup.format_message(_strip_consensus(backup_response)))
+                        history.append({"name": backup.name, "text": backup_response})
+                        round_consensuses.append({
+                            "agent_name": backup.name,
+                            "agent_emoji": backup.emoji,
+                            "consensus": _parse_consensus(backup_response),
+                        })
                     # 다음 라운드부터 이 에이전트를 백업으로 교체
                     self._replace_agent(agent, channel, thread_ts, reason)
 
@@ -829,12 +936,25 @@ class DebateMode:
             persistent_outlier = _persistent_outlier(outlier_history)
             print(f"[DEBUG] Round {round_num} agrees: {len(agrees)}/{len(round_consensuses)} diverged={diverged} no_progress={no_progress} outlier={outlier_history[-1]} persistent={persistent_outlier}")
 
-            can_conclude = round_num >= min_rounds
+            # 종료 게이트.
+            # 어휘 유사도(diverged)는 "수렴 확인"으로만 신뢰한다. 실측 보정 결과 낮은
+            # 유사도는 발산의 증거가 못 된다: 같은 결론을 다른 표현으로 쓴 실제 합의가
+            # bigram 0.027 인데 서로 배타적 결론(라멘/파스타/초밥)이 0.045 로 더 높았다.
+            # 따라서 요약이 확실히 수렴했을 때만 라운드 1 즉시 종료를 허용하고, 그 외에는
+            # **상호 검토 1회(라운드 2)** 를 채운 뒤 종료한다. 라운드 1 은 서로의 발언을
+            # 보기 전이라 agree=true 자체가 근거 없는 자기신고이기 때문.
+            can_conclude = round_num >= min_rounds and (round_num >= 2 or not diverged)
 
             if can_conclude and len(agrees) >= 3:
-                if diverged and not divergence_challenged:
-                    # 발산 상태인데 전원 agree=true 이고 아무도 차이를 안 다룸:
-                    # 영구 차단이 아니라 딱 1회 교전 라운드만 강제한다.
+                # 만장일치인데도 라운드를 1회 더 도는 것은 **실제 쟁점이 기록됐을 때만**.
+                # 예전엔 어휘 Jaccard 기반 diverged 만 봤는데, 한국어 자유서술 요약은 같은
+                # 결론이어도 어휘가 갈려 실측 639라운드 중 606회(94.8%)가 발산으로 찍혔다
+                # = 만장일치마다 교전 라운드(에이전트 3회 호출)를 상시 낭비. issue_note 는
+                # CONSENSUS.disagreements(구조적 대립점)에서만 나오므로, 비어 있으면 다툴
+                # 거리가 없다는 뜻이라 즉시 종료한다.
+                if diverged and issue_note and not divergence_challenged:
+                    # 기록된 쟁점이 있는데 전원 agree=true: 영구 차단이 아니라
+                    # 딱 1회 교전 라운드만 강제한다.
                     divergence_challenged = True
                     pending_issue = issue_note
                 else:
@@ -1109,7 +1229,14 @@ class DebateMode:
             print(f"[SLACK ERROR] {e}")
 
     def _broadcast(self, channel: str, thread_ts: str, text: str):
-        """Post a message to thread AND show in channel (reply_broadcast)."""
+        """결론 메시지를 스레드에 남기고 채널에도 노출(reply_broadcast).
+
+        폴백으로 같은 CLI 계열 2인 구성이 됐다면 그 사실을 결론에 덧붙인다.
+        같은 모델의 답변은 상관관계가 있어 "전원 합의"가 실제보다 강해 보인다.
+        """
+        note = self._duplicate_engine_note()
+        if note:
+            text = f"{text}\n\n⚠️ _{note}_"
         try:
             self.slack.chat_postMessage(
                 channel=channel,

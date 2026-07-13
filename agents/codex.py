@@ -250,7 +250,46 @@ class CodexAgent(AgentBase):
         # `--full-auto` 는 Codex CLI 0.129 부터 deprecated. 명시적으로
         # `-s workspace-write` 를 사용하면 같은 동작이며 stdout 에 deprecation
         # 경고가 찍히지 않는다. (이전 경고 텍스트가 응답 본문에 누출되던 문제)
-        return ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check"]
+        #
+        # `-o FILE` 은 **마지막 에이전트 메시지만** 파일에 쓴다. stdout 에는 툴 호출
+        # 로그와 함께 툴 실행 직전 preamble("먼저 ~를 확인하겠습니다")이 섞여 나오는데,
+        # stdout 전량을 답변으로 쓰면 그 준비 문장이 답변 앞머리에 그대로 붙는다.
+        # stdout 은 진행 상황 콜백용으로 계속 읽고, 최종 답변만 이 파일에서 가져온다.
+        # 경로는 호출마다 유일한 tmp 에서 파생한다(인스턴스 필드로 두면 같은 에이전트가
+        # 동시에 두 번 호출될 때 서로의 출력 파일을 읽거나 지운다: 리서치 분담 조사).
+        return ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check",
+                "-o", self._artifact_path(tmp)]
+
+    @staticmethod
+    def _artifact_path(tmp: str) -> str:
+        """이 호출의 `-o` 최종 메시지 파일 경로 (프롬프트 tmp 에서 파생)."""
+        return f"{tmp}.last.md"
+
+    def _take_last_message(self, tmp: str) -> str:
+        """`-o` 파일의 최종 메시지를 읽고 파일을 지운다. 없으면 빈 문자열."""
+        path = self._artifact_path(tmp)
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read().strip()
+        except OSError:
+            return ""
+        finally:
+            self._cleanup_artifact(tmp)
+        return text
+
+    def _cleanup_artifact(self, tmp: str) -> None:
+        """남은 `-o` 파일 삭제 (타임아웃/취소/예외 경로 포함, base 의 finally 가 호출)."""
+        try:
+            os.unlink(self._artifact_path(tmp))
+        except OSError:
+            pass
+
+    def _finalize_output(self, output: str, tmp: str) -> str:
+        """base 의 stdout 대신 `-o` 최종 메시지를 답변으로 채택(툴콜 preamble 제거).
+
+        파일이 없으면(구버전 CLI/비정상 종료) stdout 으로 폴백한다.
+        """
+        return self._take_last_message(tmp) or output
 
     @staticmethod
     def _augment_with_attachments(prompt: str, attachments: list[dict] | None) -> str:
@@ -313,8 +352,10 @@ class CodexAgent(AgentBase):
             output = stdout.decode("utf-8", errors="replace").strip()
             if not output and stderr:
                 output = stderr.decode("utf-8", errors="replace").strip()
-            return _clean_codex_output(output, prompt)
+            return _clean_codex_output(self._finalize_output(output, tmp), prompt)
         finally:
+            # 예외/취소로 빠져나갈 때 -o 파일이 임시 폴더에 남지 않게 한다(정상 경로는 no-op).
+            self._cleanup_artifact(tmp)
             os.unlink(tmp)
 
     async def ask_with_progress(self, prompt, on_progress=None, timeout=None, attachments: list[dict] | None = None):
@@ -324,6 +365,8 @@ class CodexAgent(AgentBase):
             if on_progress:
                 on_progress(_clean_codex_output(raw_text, prompt))
         # attachments 는 base 호출에 전달하지 않는다 (CodexAgent 는 이미 prompt 에 노트로 끼움).
+        # base 는 정상 종료 시 _finalize_output() 으로 `-o` 최종 메시지를 돌려주고,
+        # 타임아웃/취소면 안내 문자열을 돌려주며 finally 에서 파일을 정리한다.
         result = await super().ask_with_progress(prompt, _filtered_progress, timeout)
         cleaned = _clean_codex_output(result, prompt)
         # base.ask_with_progress 는 정제 전 raw output 으로 has_error(fatal) 를 판정한다.

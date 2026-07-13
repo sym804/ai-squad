@@ -220,8 +220,7 @@ class CodingMode:
         backup = self._get_backup(agent)
         if not backup:
             return
-        self._post(channel, thread_ts,
-            f"⚠️ *{agent.name} {reason} → 이후 라운드부터 {backup.name} 교체*")
+        # 교체 경고는 호출부가 "대체 투입" 으로 이미 게시했다 (중복 경고 제거).
         self.agents = [backup if a is agent else a for a in self.agents]
         if agent is self.claude:
             self.claude = backup
@@ -320,12 +319,13 @@ class CodingMode:
             responses = await asyncio.gather(*[_ask_agent(a) for a in agents])
 
             for agent, response in zip(agents, responses):
-                self._post(channel, thread_ts, agent.format_message(response))
+                if not getattr(agent, 'needs_replacement', False):
+                    self._post(channel, thread_ts, agent.format_message(response))
                 if getattr(agent, 'needs_replacement', False):
                     backup = self._get_backup(agent)
                     if backup:
                         reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                        self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                        self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 단계도 {backup.name})*")
                         thinking = self.slack.chat_postMessage(
                             channel=channel, thread_ts=thread_ts,
                             text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -337,6 +337,9 @@ class CodingMode:
                             self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                         except Exception:
                             pass
+                        if getattr(backup, 'needs_replacement', False):
+                            self._post(channel, thread_ts, f"⚠️ *{backup.name} 백업도 실패*")
+                            continue
                         self._post(channel, thread_ts, backup.format_message(backup_response))
                         self._replace_agent(agent, channel, thread_ts, reason)
 
@@ -548,8 +551,10 @@ class CodingMode:
             backup = self._get_backup(agent)
             if backup:
                 reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                self._post(channel, thread_ts, agent.format_message(response))
-                self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                # 실패 응답 원문(세션 한도/타임아웃)은 게시하지 않는다. 정상 답변처럼
+                # 보여 오독을 부른다 (실측: "[Claude] 응답 대기 시간 초과 (574초)" 말풍선).
+                self._post(channel, thread_ts,
+                           f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 단계도 {backup.name})*")
                 thinking = self.slack.chat_postMessage(
                     channel=channel, thread_ts=thread_ts,
                     text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -559,6 +564,10 @@ class CodingMode:
                     self.slack.chat_delete(channel=channel, ts=thinking["ts"])
                 except Exception as e:
                     print(f"[DELETE FAIL] backup: {e}")
+                if getattr(backup, 'needs_replacement', False):
+                    # 이중 장애: 백업 실패 원문도 답변으로 게시하지 않는다.
+                    self._post(channel, thread_ts, f"⚠️ *{backup.name} 백업도 실패*")
+                    return f"[{agent.name}] 응답을 받지 못했습니다 (백업 {backup.name} 도 실패).", backup
                 self._replace_agent(agent, channel, thread_ts, reason)
                 return response, backup
         return response, agent
@@ -630,12 +639,13 @@ class CodingMode:
         final_agents = []
         final_responses = []
         for agent, response in zip(agents, responses):
-            self._post(channel, thread_ts, agent.format_message(response))
+            if not getattr(agent, 'needs_replacement', False):
+                self._post(channel, thread_ts, agent.format_message(response))
             if getattr(agent, 'needs_replacement', False):
                 backup = self._get_backup(agent)
                 if backup:
                     reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
+                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 단계도 {backup.name})*")
                     bthinking = self.slack.chat_postMessage(
                         channel=channel, thread_ts=thread_ts,
                         text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
@@ -648,6 +658,9 @@ class CodingMode:
                         self.slack.chat_delete(channel=channel, ts=bthinking["ts"])
                     except Exception:
                         pass
+                    if getattr(backup, 'needs_replacement', False):
+                        self._post(channel, thread_ts, f"⚠️ *{backup.name} 백업도 실패*")
+                        continue
                     self._post(channel, thread_ts, backup.format_message(backup_response))
                     self._replace_agent(agent, channel, thread_ts, reason)
                     final_agents.append(backup)
@@ -808,50 +821,78 @@ class CodingMode:
         )
 
         # Phase 3 오류/타임아웃 체크 + 백업
-        for agent, result, label in [
-            (self.codex, codex_tests, "테스트 리더"),
-            (self.claude, claude_tests, "테스트 참여"),
-            (self.gemini, gemini_tests, "테스트 참여"),
-        ]:
-            self._post(channel, thread_ts, agent.format_message(f"*[{label}]*\n{result}"))
-            if getattr(agent, 'needs_replacement', False):
-                backup = self._get_backup(agent)
-                if backup:
-                    reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
-                    self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입*")
-                    thinking = self.slack.chat_postMessage(
-                        channel=channel, thread_ts=thread_ts,
-                        text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
-                    )
-                    bstop, bcb = self._make_progress_handler(channel, thread_ts, thinking["ts"], backup)
-                    backup_result = await backup.ask_with_progress(
-                        f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
-                        on_progress=bcb,
-                        timeout=CLI_TIMEOUT_CODING,
-                        attachments=attachments,
-                    )
-                    bstop.set()
-                    try:
-                        self.slack.chat_delete(channel=channel, ts=thinking["ts"])
-                    except Exception as e:
-                        print(f"[DELETE FAIL] backup: {e}")
-                    self._post(channel, thread_ts, backup.format_message(f"*[{label} 대체]*\n{backup_result}"))
-                    self._replace_agent(agent, channel, thread_ts, reason)
-                    if agent is self.codex:
-                        codex_tests = backup_result
-                    elif agent is self.claude:
-                        claude_tests = backup_result
-                    elif agent is self.gemini:
-                        gemini_tests = backup_result
+        #
+        # 실패 응답 원문("[Claude] 응답 대기 시간 초과 (574초 무응답)", 세션 한도 등)은
+        # 게시하지 않을 뿐 아니라(v0.8.19) 하류 프롬프트로도 흘려보내면 안 된다.
+        # 흘러가면: all_tests -> Codex 가 "타임아웃이라 판단 불가" 를 이슈로 보고 ->
+        # 그 가짜 이슈로 Claude 가 코드 대신 산문을 반환 -> current_code 오염 ->
+        # 다음 라운드에 "기존 코드" 로 재투입되는 재귀. 실패한 슬롯은 None 으로 버린다.
+        slots = [
+            {"agent": self.codex, "result": codex_tests, "label": "테스트 리더"},
+            {"agent": self.claude, "result": claude_tests, "label": "테스트 참여"},
+            {"agent": self.gemini, "result": gemini_tests, "label": "테스트 참여"},
+        ]
+        for slot in slots:
+            agent, label = slot["agent"], slot["label"]
+            if not getattr(agent, 'needs_replacement', False):
+                self._post(channel, thread_ts, agent.format_message(f"*[{label}]*\n{slot['result']}"))
+                continue
+
+            slot["result"] = None  # 실패 원문 폐기
+            backup = self._get_backup(agent)
+            if not backup:
+                self._post(channel, thread_ts,
+                           f"⚠️ *{agent.name} 응답 실패 → 백업 없음, {label} 결과 제외*")
+                continue
+
+            reason = "타임아웃" if getattr(agent, 'timed_out', False) else "오류 감지"
+            self._post(channel, thread_ts, f"⚠️ *{agent.name} {reason} → {backup.name} 대체 투입 (이후 단계도 {backup.name})*")
+            thinking = self.slack.chat_postMessage(
+                channel=channel, thread_ts=thread_ts,
+                text=f"💭 {backup.emoji} *[{backup.name}]* 생각 중..."
+            )
+            bstop, bcb = self._make_progress_handler(channel, thread_ts, thinking["ts"], backup)
+            backup_result = await backup.ask_with_progress(
+                f"다음 코드에 대한 테스트를 작성해 주세요.\n\n{claude_code}",
+                on_progress=bcb,
+                timeout=CLI_TIMEOUT_CODING,
+                attachments=attachments,
+            )
+            bstop.set()
+            try:
+                self.slack.chat_delete(channel=channel, ts=thinking["ts"])
+            except Exception as e:
+                print(f"[DELETE FAIL] backup: {e}")
+            if getattr(backup, 'needs_replacement', False):
+                # 이중 장애: 백업 원문(세션 한도/타임아웃)도 게시/전달하지 않는다.
+                self._post(channel, thread_ts,
+                           f"⚠️ *{backup.name} 백업도 실패 → {label} 는 {agent.name} 없이 진행*")
+                continue
+            slot["result"] = backup_result
+            self._post(channel, thread_ts, backup.format_message(f"*[{label} 대체]*\n{backup_result}"))
+            self._replace_agent(agent, channel, thread_ts, reason)
+
+        codex_tests, claude_tests, gemini_tests = (s["result"] for s in slots)
 
         if self._check_cancel(channel, thread_ts):
             return
 
         # Issue-fix loop (max 3 rounds)
-        all_tests = f"{codex_tests}\n\n{claude_tests}\n\n{gemini_tests}"
+        succeeded_tests = [s["result"] for s in slots if s["result"]]
+        all_tests = "\n\n".join(succeeded_tests)
         current_code = claude_code
 
+        if not succeeded_tests:
+            # 테스트 결과가 0건이면 이슈를 판단할 근거 자체가 없다. 이 상태로 물으면
+            # Codex 는 "테스트가 완료되지 않아 판단 불가" 를 이슈로 돌려주고, 그 가짜
+            # 이슈가 수정 루프를 헛돌린다. 아예 진입하지 않는다.
+            self._post(channel, thread_ts,
+                       "⚠️ *테스트 결과를 하나도 확보하지 못해 이슈 수정 루프를 건너뜁니다.* "
+                       "(코드는 Phase 1 상태 유지)")
+
         for fix_round in range(1, MAX_FIX_ROUNDS + 1):
+            if not succeeded_tests:
+                break
             if self._check_cancel(channel, thread_ts):
                 return
             issues_found = await self.codex.ask(
@@ -860,9 +901,14 @@ class CodingMode:
                 f"코드:\n{current_code}\n\n테스트:\n{all_tests}",
                 timeout=CLI_TIMEOUT_CODING,
             )
+            if getattr(self.codex, 'needs_replacement', False):
+                # 판단 실패. 원문을 이슈로 게시하거나 수정 프롬프트에 넣으면 가짜 이슈가 된다.
+                self._post(channel, thread_ts,
+                           f"⚠️ *{self.codex.name} 이슈 판단 실패 → 수정 루프 중단 (코드는 직전 상태 유지)*")
+                break
 
             if "이슈 없음" in issues_found:
-                self._post(channel, thread_ts, "✅ 이슈 없음 — 수정 불필요")
+                self._post(channel, thread_ts, "✅ 이슈 없음 - 수정 불필요")
                 break
 
             self._post(channel, thread_ts,
@@ -870,11 +916,19 @@ class CodingMode:
                 f"{self.codex.format_message(issues_found)}"
             )
 
-            current_code = await self.claude.ask(
+            fixed_code = await self.claude.ask(
                 f"다음 이슈를 반영하여 코드를 수정해 주세요.\n\n"
                 f"이슈:\n{issues_found}\n\n기존 코드:\n{current_code}",
                 timeout=CLI_TIMEOUT_CODING,
             )
+            if getattr(self.claude, 'needs_replacement', False):
+                # 실패 원문을 current_code 에 대입하면 "[수정된 코드]" 로 게시되고
+                # 다음 라운드와 최종 보고서까지 오염된다. 직전 코드를 유지한다.
+                self._post(channel, thread_ts,
+                           f"⚠️ *{self.claude.name} 코드 수정 실패 → 수정 루프 중단 (코드는 직전 상태 유지)*")
+                break
+
+            current_code = fixed_code
             self._post(channel, thread_ts, self.claude.format_message(f"*[수정된 코드]*\n{current_code}"))
 
         # Final report — Codex가 전체 결과 취합 보고
@@ -885,7 +939,10 @@ class CodingMode:
             f"[요청] {request}\n\n"
             f"[Claude 코드]\n{claude_code[:2000]}\n\n"
             f"[Codex 리뷰]\n{review[:2000]}\n\n"
-            f"[테스트 결과]\nCodex: {codex_tests[:1000]}\nClaude: {claude_tests[:1000]}\nGemini: {gemini_tests[:1000]}\n\n"
+            f"[테스트 결과]\n"
+            f"Codex: {(codex_tests or '(응답 실패 - 결과 없음)')[:1000]}\n"
+            f"Claude: {(claude_tests or '(응답 실패 - 결과 없음)')[:1000]}\n"
+            f"Gemini: {(gemini_tests or '(응답 실패 - 결과 없음)')[:1000]}\n\n"
             f"[이슈 수정] 최종 코드:\n{current_code[:2000]}"
         )
         report_thinking = self.slack.chat_postMessage(

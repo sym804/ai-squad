@@ -53,6 +53,67 @@
 | v0.8.16 | 2026-07-08 | Codex exec 실행 로그(`exited -1073741502`=0xC0000142 등) Slack 누출 필터 보강(음수 exit·소수 duration·MCP failed/error·`Output:` 단독). 근본원인 규명: 봇이 S4U 세션0(무데스크톱)에서 뜨면 Codex 셸/스킬 자식이 STATUS_DLL_INIT_FAILED 로 전멸→무근거 답변(아키텍처 수정은 별도 이슈 추적) |
 | v0.8.17 | 2026-07-08 | issue #131 대응(Option 1): 봇 S4U 세션0 에서 Codex 로컬 셸 도구가 0xC0000142 로 죽는 문제를, 토론/리서치 Codex 에 "로컬 셸 말고 MCP/지식으로 답하라" 지시(`avoid_shell`) 주입으로 doomed 셸 시도 억제. 무깜빡임 S4U 유지 + openaiDeveloperDocs MCP 그라운딩 존치 |
 | v0.8.18 | 2026-07-08 | 재기동 후 Codex 오류: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이 rmcp tracing 로그로 답변 누출 + fatal 오탐(→Codex 백업 교체). `_CODEX_TRACING_LOG` 필터 + `ask_with_progress` 가 정제된 답변으로 has_error 재판정(진짜 API fatal 은 유지) |
+| v0.8.19 | 2026-07-13 | Slack 최근 대화 실측 분석에서 나온 6대 결함 수정: 실패 응답 원문 게시 차단(P1) + 폴백 경고 중복 제거 + 동일 엔진 2인 구성 고지(P2) + 스레드 단위 교체 유지(P3) + 합의 종료 게이트 재설계(P4, 어휘 유사도는 수렴 확인에만) + Codex 툴콜 preamble 제거(P6, `codex exec -o`) + dead config 제거 |
+
+## v0.8.19 (2026-07-13)
+
+Slack 최근 대화 12건(토론 5 / 코딩 1 / 리서치 6)과 `bot_output.log` 10,643줄을 대조 분석해 나온 결함을 한 번에 수정. 개별 답변 품질이 아니라 **폴백 처리**와 **합의 판정** 두 축의 설계 결함이었다.
+
+### 원인과 수정
+
+- **[Major / backend] 실패 응답 원문이 정상 답변으로 게시됨** (`modes/debate.py`, `modes/coding.py`)
+  - 증상: `You've hit your session limit · resets 1:20am` 이 🟠 *[Claude]* 말풍선 + `출력 0 | $0.000` 으로 게시된 뒤에야 폴백 경고가 붙었다(최근 대화 6회). 코딩 모드도 `[Claude] 응답 대기 시간 초과 (574초)` 를 같은 방식으로 게시.
+  - 원인: `_ask_and_post()` 가 응답을 **먼저 post** 하고, 오류 판정 루프는 `asyncio.gather()` 완료 **후에** 따로 돌았다. `agent.has_error` 는 post 시점에 이미 True 인데 post 경로가 그 플래그를 안 봤다.
+  - 수정: post 전에 `needs_replacement` 를 확인해 실패 응답은 게시하지 않는다. 실패 응답은 `history`/`round_consensuses` 에서도 제외해 다음 라운드 프롬프트 오염을 막는다. 백업이 없으면 침묵 대신 "대체 에이전트 없음" 을 고지.
+
+- **[Minor / backend] 같은 사건에 폴백 경고 2개 중복 게시** (`modes/debate.py`, `modes/coding.py`)
+  - `⚠️ 대체 투입` (폴백 루프) 과 `⚠️ 이후 라운드부터 교체` (`_replace_agent`) 가 항상 쌍으로 나왔다. 한 줄로 병합.
+
+- **[Major / backend] 동일 엔진 2인 구성인데 "전원 합의" 로 선언** (`modes/debate.py`)
+  - Claude 장애 시 폴백이 Codex-B(= Codex 와 같은 CLI/모델)라 3자 중 2인이 같은 엔진이 된다. 3계열을 3에이전트가 점유한 상태에서 하나가 죽으면 구조상 피할 수 없다(같은 계열 백업은 세션 한도를 공유하므로 더 나쁨).
+  - 수정: 백업 선택 로직은 유지하되, 결론 브로드캐스트에 `동일 엔진 2인 구성(...)` 고지를 붙여 합의가 실제보다 강해 보이지 않게 한다.
+
+- **[Major / backend] 후속 질문마다 죽은 에이전트를 다시 호출** (`modes/debate.py`)
+  - 증상: 콜드브루 스레드에서 22:39 / 22:50 / 22:56 세 번, 매 추가 토론 첫 라운드마다 같은 세션 한도 에러가 다시 노출되고 폴백 절차를 처음부터 다시 밟았다.
+  - 원인: 봇이 메시지마다 `DebateMode` 를 새로 만들어(`slack_bot.py:194,205`) 교체 상태(`self._replaced`)가 스레드 안에서 유지되지 않았다.
+  - 수정: 모듈 전역 `_THREAD_REPLACED[thread_ts]` 에 교체를 기억하고 `_bind_thread` 에서 복원해 첫 라운드부터 백업으로 시작한다. 상한 200스레드(오래된 것부터 폐기). 프로세스 재기동 시 초기화 = 원본 재시도.
+
+- **[Major / backend] 합의 조기 종료가 사실상 불가능** (`modes/debate.py`)
+  - 증상: 로그의 라운드 판정 639건 중 `diverged=True` 가 606건(94.8%). 3/3 만장일치인 354건조차 발산으로 찍혀 교전 라운드(에이전트 3회 호출)를 매번 낭비했다.
+  - 원인: `_summaries_diverge()` 가 한국어를 어절 단위로 자르는 토크나이저로 Jaccard 유사도를 재고 **최소** 페어값을 썼다. 실측 보정 결과 **어휘 유사도로는 합의와 불합의를 구분할 수 없다**: 같은 결론을 다른 표현으로 쓴 진짜 합의가 bigram 0.027 인데, 서로 배타적인 결론(라멘/파스타/초밥)이 0.045 로 오히려 더 높았다. 토크나이저나 임계값을 바꿔도 해결되지 않는다.
+  - 수정: 유사도는 **수렴 확인**에만 쓴다. 요약이 확실히 수렴하면 라운드 1 즉시 종료를 허용하고, 그 외에는 **상호 검토 1회(라운드 2)** 를 채운 뒤 종료한다(라운드 1은 서로의 발언을 보기 전이라 `agree=true` 가 근거 없는 자기신고다). 교전 라운드는 `CONSENSUS.disagreements` 에 구조적 쟁점이 실제로 기록됐을 때만 1회 강제. 실측 기준 축구/AI비교 스레드가 3라운드 → 2라운드로 줄어든다.
+
+- **[Minor / backend] Codex 툴콜 preamble 이 답변에 노출** (`agents/codex.py`)
+  - 증상: "현재 판매처와 가격을 먼저 확인하겠습니다" 같은 준비 문장이 답변 앞머리에 붙었다(에이전트 발언 121건 중 32건, 26%).
+  - 원인: Codex 는 최종 메시지 추출 로직 없이 `codex exec` 의 stdout 전량을 누적한 뒤 라인 단위 노이즈 필터만 태웠다. 툴 호출 직전 모델이 뱉은 preamble 은 산문이라 필터를 통과한다. (Claude 는 stream-json 의 `result` 이벤트만 채택한다.)
+  - 수정: `codex exec -o FILE` 로 **마지막 에이전트 메시지만** 받아 답변으로 채택한다. stdout 은 진행 표시용으로 계속 읽는다. 파일이 없으면 기존 stdout 정제 경로로 폴백하고, 타임아웃이면 이전 호출의 잔여 파일을 쓰지 않는다. 실제 CLI 로 검증 완료.
+
+- **[Trivial / etc] dead config 제거** (`config.py`, `.env.example`, `README.md`)
+  - `CONSENSUS_EARLY_ROUNDS` 는 `debate.py` 가 import 만 하고 한 번도 쓰지 않았다. `.env` 의 값 5는 아무 효과가 없었다.
+
+### Codex 교차검증에서 추가로 잡은 결함 (커밋 전 수정)
+
+- **[Major / backend] 백업까지 실패하면 백업의 에러 원문이 게시됨** (`modes/debate.py`, `modes/coding.py`)
+  - 1차 실패는 막았는데 이중 장애 경로가 그대로였다. 백업 응답도 `needs_replacement` 를 확인해 원문 대신 "백업도 실패" 만 알리고, 그 슬롯 없이 라운드를 진행한다.
+- **[Major / backend] 코딩 Phase 3(테스트 작성)에는 실패 응답 게시 가드가 없었음** (`modes/coding.py`)
+  - Phase 3 는 세 에이전트 결과를 먼저 게시한 뒤 교체를 검사했다. 실측 5월 스레드에서 Gemini 의 node-pty 경로 에러와 Claude 의 574초 타임아웃이 답변 말풍선으로 올라온 지점.
+- **[Major / backend] 백업 풀 소진 시 이미 투입된 백업 인스턴스를 중복 삽입** (`modes/debate.py`)
+  - `_get_backup()` 이 후보가 없으면 풀 전체로 되돌아가, 같은 객체가 `self.agents` 에 두 번 들어가고 한 인스턴스가 동시에 호출될 수 있었다(기존 코드부터 있던 잠재 결함). 이제 `None` 을 반환하고 호출부가 "대체 에이전트 없음" 을 고지한다.
+- **[Major / backend] codex `-o` 파일 경로를 인스턴스 필드에 두어 동시 호출이 충돌** (`agents/base.py`, `agents/codex.py`)
+  - 리서치 분담 조사는 같은 에이전트 인스턴스에 소주제 2건을 동시에 배정할 수 있다. 이때 두 호출이 같은 필드를 덮어써 서로의 출력 파일을 읽거나 지운다. 경로를 호출별 prompt tmp 에서 파생(`<tmp>.last.md`)하고, base 에 `_finalize_output`/`_cleanup_artifact` 훅을 추가해 타임아웃/취소/예외 경로에서도 `finally` 로 반드시 삭제한다.
+- **[Major / backend] 스레드 교체 기록 eviction 이 자기 자신을 지움** (`modes/debate.py`)
+  - 용량(200) 초과 시 무조건 가장 오래된 키를 버렸는데, 그 키가 지금 기록 중인 스레드면 앞선 교체가 날아가 죽은 에이전트가 다시 투입된다. 새 스레드를 넣을 때만 폐기하도록 고치고, 스레드별 OS 스레드에서 접근하므로 `threading.Lock` 으로 read-modify-write 를 직렬화했다.
+- Codex 가 지적한 `MAX_DEBATE_ROUNDS` 경계(1 또는 `COMPLEX_MIN_ROUNDS` 미만)는 기존 "최대 라운드 도달" 분기가 결론을 내므로 회귀가 아님을 회귀 테스트로 확인하고 코드는 두었다.
+
+### 테스트
+- 신규 30건: `tests/test_debate_failure_flow.py`(10), `tests/test_codex_last_message.py`(8), `tests/test_coding_failure_post.py`(3), `tests/test_codex_review_v0819.py`(9). 전체 474건 통과.
+- `tests/conftest.py` 에 `_THREAD_REPLACED` 초기화 fixture 추가(전역 상태가 테스트 간 누수돼 다른 파일의 `ts1` 케이스를 오염시켰다).
+- 실제 Codex CLI 로 최종 메시지 추출·임시 파일 정리를 실측 확인(응답에 preamble 없음, `*.last.md` 잔존 0건).
+
+### 알려진 한계 (후속)
+- **합의 선언 시점의 수치 불일치**: 붓코미메시 스레드가 최저가 16,580원 vs 19,110원으로 갈린 채 "전원 합의"로 끝났다. 합의 판정이 자기신고 `agree` 플래그에 의존할 뿐 숫자/사실 충돌을 검증하지 않기 때문. 별도 설계 변경 필요.
+- **리서치 소주제 드롭**: 조사 실패 시 재시도 없이 해당 소주제가 리포트에서 통째로 빠진다(`modes/research.py:575-594`).
+- 인프라 잡음: 소켓 SSL 에러 197회, socket-mode JSONDecodeError, 워치독 CRASH 감지 13회.
 
 ## v0.8.18 (2026-07-08)
 

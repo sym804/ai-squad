@@ -135,6 +135,19 @@ class AgentBase:
         """서브프로세스 실행 명령어를 리스트로 반환. 서브클래스에서 구현."""
         raise NotImplementedError
 
+    def _finalize_output(self, output: str, tmp: str) -> str:
+        """CLI 부산물에서 최종 답변을 뽑는 훅. 기본은 stdout 그대로.
+
+        Codex 는 `codex exec -o <tmp>.last.md` 로 마지막 에이전트 메시지만 따로 받는다.
+        경로는 호출마다 유일한 tmp 에서 파생돼야 한다(같은 인스턴스가 동시에 두 번
+        호출되는 리서치 분담 조사에서 서로의 출력 파일을 삼키지 않도록).
+        """
+        return output
+
+    def _cleanup_artifact(self, tmp: str) -> None:
+        """타임아웃/취소/예외로 빠져나갈 때 남은 CLI 부산물 정리 훅. 기본 no-op."""
+        return None
+
     async def ask_with_progress(self, prompt: str, on_progress=None, timeout: int = None, attachments: list[dict] | None = None) -> str:
         """stdout+stderr를 동시에 읽으며 on_progress 콜백 호출."""
         t = timeout or CLI_TIMEOUT
@@ -201,12 +214,14 @@ class AgentBase:
 
             self.timed_out = False
             self.has_error = self._is_fatal_error(output) if output else False
-            return output
+            return self._finalize_output(output, tmp)
         except Exception as e:
             self.timed_out = False
             self.has_error = True
             return f"[{self.name}] 오류: {str(e)}"
         finally:
+            # 타임아웃/취소(CancelledError)/예외 경로에서도 CLI 부산물이 남지 않게 한다.
+            self._cleanup_artifact(tmp)
             os.unlink(tmp)
 
     def format_message(self, response: str) -> str:
