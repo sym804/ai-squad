@@ -227,6 +227,57 @@ def _agy_home() -> Path:
     return Path.home() / ".gemini" / "antigravity-cli"
 
 
+def _suppress_agy_updater() -> None:
+    """agy 호출 직전에 `last_check.timestamp` 를 현재 시각으로 갱신해
+    백그라운드 업데이터(콘솔 창 깜빡임)를 억제한다. best-effort.
+
+    실측(2026-07-14, agy 1.1.2):
+      agy 는 이 파일을 보고 **15분 쿨다운**으로 업데이트를 체크한다
+        cli.log: "auto_updater.go:207] Last check was less than 15 minutes ago, skipping update"
+      쿨다운이 지났으면 detached 손자 `agy --bg-updater` -> `agy --version` 을 spawn 하는데,
+      그 `agy --version` 이 소유한 PseudoConsoleWindow 가 대화형 데스크톱에 잠깐 표시된다.
+      이게 깜빡임의 정체다(창 소유 프로세스까지 실측 확인).
+
+      호출 직전에 타임스탬프를 현재 시각으로 써두면 agy 는 항상 "방금 체크했다"고 판정해
+      bg-updater 를 **아예 spawn 하지 않는다** (3회 반복 실측: 손자 0개 / 창 0개).
+
+    이슈 #112(v0.8.2) 는 타임스탬프 **미래화**를 시도했다가 "agy 가 즉시 리셋" 으로 실패했다.
+    미래 시각은 이상값이라 되돌려진 것으로 보이며, **현재 시각은 정상값**이라 쿨다운 판정에
+    그대로 걸린다. 이 차이로 억제가 성립한다.
+
+    부작용: agy 자동 업데이트가 영구 스킵된다. 봇은 이미 AGY_CLI_DISABLE_AUTO_UPDATE 로
+    자동 업데이트를 끄고 안정 버전을 고정 운용하므로 의도와 부합한다. 업데이트는 사람이
+    `agy update` 로 수행한다.
+
+    쓰기에 실패해도 절대 예외를 던지지 않는다. 이 함수는 부가 기능이고, 실패해도
+    "깜빡임이 남을 뿐" 봇 호출 경로를 죽여서는 안 된다.
+
+    쓰기는 **원자적**이어야 한다. agy 도 같은 파일을 읽고 갱신하므로, truncate 후 write 하는
+    일반 쓰기(`write_text`)는 그 찰나에 agy 가 **빈 파일**을 읽을 수 있다. 타임스탬프 파싱에
+    실패한 agy 는 "체크한 적 없음" 으로 보고 오히려 업데이터를 띄운다. temp 에 쓰고
+    `os.replace` 로 교체하면(Windows/POSIX 모두 원자적) agy 는 항상 완전한 값만 본다.
+    """
+    try:
+        home = _agy_home()
+        home.mkdir(parents=True, exist_ok=True)
+        target = home / "last_check.timestamp"
+        # Slack Bolt 는 토론마다 **다른 이벤트 루프/스레드**에서 호출한다(_get_gemini_concurrency
+        # 주석 참조). 세마포어는 루프별이라 교차 스레드 동시 호출을 막지 못하므로, PID 만으로
+        # temp 이름을 지으면 두 스레드가 같은 경로를 잡아 서로의 temp 를 덮어쓰거나
+        # os.replace 가 FileNotFoundError 로 실패한다. 호출마다 고유 이름을 쓴다.
+        tmp = home / f".last_check.{os.getpid()}.{uuid.uuid4().hex[:8]}.tmp"
+        try:
+            tmp.write_text(str(int(time.time())), encoding="utf-8")
+            os.replace(tmp, target)  # 원자적 교체: agy 가 partial read 를 볼 수 없다
+        finally:
+            # replace 가 실패하면 temp 가 남는다. 봇은 agy 를 수천 번 호출하므로 누수가 쌓인다.
+            # (성공 시엔 이미 target 으로 옮겨져 존재하지 않는다.)
+            if tmp.exists():
+                tmp.unlink(missing_ok=True)
+    except OSError:
+        pass  # best-effort: 실패해도 깜빡임만 남고 호출은 정상 진행
+
+
 def _valid_cid(cid) -> bool:
     """cid 가 안전한 경로 컴포넌트(UUID 형식)인지 검증. path traversal 방어."""
     return isinstance(cid, str) and bool(_AGY_CID_RE.match(cid))
@@ -485,6 +536,10 @@ class GeminiAgent(AgentBase):
                 for attempt in range(_MAX_RETRIES):
                     # 전역 직렬화: 병렬 debate에서 Gemini 호출이 동시에 터지지 않도록.
                     async with _get_gemini_concurrency():
+                        if GEMINI_CLI_BINARY == "agy":
+                            # spawn 직전에 갱신해야 한다. agy 는 기동 시점에 쿨다운을 판정하므로
+                            # 여기서 미리 써두면 bg-updater(콘솔 창 깜빡임)를 아예 안 띄운다.
+                            _suppress_agy_updater()
                         proc = await asyncio.create_subprocess_exec(
                             *cmd,
                             stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
@@ -558,6 +613,10 @@ class GeminiAgent(AgentBase):
         # 전역 직렬화: 병렬 debate에서 Gemini 호출 동시 폭주 방지.
         # 전체 subprocess 수명(spawn → read loop → wait)을 감싸야 실효성 있음.
         async with _get_gemini_concurrency():
+            if GEMINI_CLI_BINARY == "agy":
+                # 토론/코딩/리서치 모드는 ask_with_progress → 이 함수를 탄다. 즉 사용자가 실제로
+                # 보는 깜빡임은 여기서 난다. _run_cli 에만 걸면 아무 효과가 없다.
+                _suppress_agy_updater()
             proc = await asyncio.create_subprocess_exec(
                 *cmd,
                 stdin=asyncio.subprocess.PIPE if effective_stdin is not None else asyncio.subprocess.DEVNULL,

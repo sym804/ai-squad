@@ -62,9 +62,14 @@ def make_filtered_env() -> dict:
     # agy(Antigravity CLI) 사용 시 자동 업데이트 비활성화.
     # agy 는 호출 시 백그라운드 업데이터(`agy --bg-updater`)를 띄워 자기 자신을
     # 갱신하는데, 봇 가동 중 실행 파일이 교체되면 진행 중 호출이 깨질 수 있다(안정성).
-    # 주의: 이 변수는 업데이터가 매 호출 잠깐 띄우는 `agy --version` 콘솔 창
-    # 깜빡임은 막지 못한다(별개 문제). 깜빡임은 env/설정/세션/데스크톱 격리 모두
-    # 실측상 무효였고, 알려진 agy 한계로 수용. 이 설정은 안정성만 위함.
+    #
+    # 콘솔 창 깜빡임(`agy --version` 이 띄우는 PseudoConsoleWindow)은 이 변수로는 못 막는다.
+    # 대신 `agents/gemini.py` 의 `_suppress_agy_updater()` 가 억제한다 - agy 는
+    # `last_check.timestamp` 기준 **15분 쿨다운**으로 업데이트를 체크하므로(실측 2026-07-14,
+    # agy 1.1.2), 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다.
+    # (이슈 #112 는 이를 "agy 한계" 로 wontfix 했으나, v0.8.22 에서 재조사해 뒤집었다.
+    #  당시 실패한 "타임스탬프 미래화" 와 달리 **현재 시각**은 정상값이라 쿨다운에 그대로 걸린다.)
+    # 이 변수는 그와 별개로 "실행 파일 교체" 로 인한 안정성 문제만 막는다.
     if GEMINI_CLI_BINARY == "agy":  # 위에서 "gemini"/"agy" 로 정규화된 값
         env["AGY_CLI_DISABLE_AUTO_UPDATE"] = "1"
     return env

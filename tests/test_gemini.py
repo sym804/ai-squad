@@ -2,6 +2,7 @@
 
 import asyncio
 import importlib
+import time
 
 import pytest
 
@@ -586,3 +587,239 @@ class TestAgyDiskRecovery:
         ])
         # 예외 없이 파싱 + 토큰 매칭으로 응답 회수
         assert gemini_mod._extract_traced_response(text, tok) == "RESP-OBJ"
+
+
+class TestAgyUpdaterSuppression:
+    """agy 백그라운드 업데이터(콘솔 창 깜빡임) 억제.
+
+    실측(2026-07-14, agy 1.1.2):
+      - agy 는 호출 시 `last_check.timestamp` 를 보고 **15분 쿨다운**으로 업데이트를 체크한다
+        (cli.log: "auto_updater.go:207] Last check was less than 15 minutes ago, skipping update")
+      - 쿨다운이 지났으면 detached 손자 `agy --bg-updater` -> `agy --version` 을 spawn 하고,
+        그 `agy --version` 이 소유한 PseudoConsoleWindow 가 대화형 데스크톱에 잠깐 표시된다
+        (창 소유 프로세스까지 확인 = 깜빡임의 정체)
+      - 호출 직전에 타임스탬프를 **현재 시각**으로 갱신하면 agy 가 항상 쿨다운으로 판정해
+        bg-updater 를 아예 spawn 하지 않는다 (3회 반복 실측: 창 0개)
+
+    이슈 #112 는 타임스탬프 **미래화**를 시도했다가 "agy 가 즉시 리셋" 으로 실패했는데,
+    미래 시각은 이상값이라 되돌려진 것으로 보인다. 현재 시각은 정상값이라 쿨다운에 그대로 걸린다.
+    """
+
+    def test_touch_writes_current_epoch(self, tmp_path, monkeypatch):
+        """호출하면 last_check.timestamp 에 현재 epoch 를 쓴다."""
+        home = tmp_path / "antigravity-cli"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+
+        before = int(time.time())
+        gemini_mod._suppress_agy_updater()
+        after = int(time.time())
+
+        ts = home / "last_check.timestamp"
+        assert ts.exists()
+        written = int(ts.read_text(encoding="utf-8").strip())
+        assert before <= written <= after
+
+    def test_touch_overwrites_stale_timestamp(self, tmp_path, monkeypatch):
+        """쿨다운이 지난(오래된) 타임스탬프를 현재 시각으로 덮어써야 억제가 성립한다."""
+        home = tmp_path / "antigravity-cli"
+        home.mkdir(parents=True)
+        ts = home / "last_check.timestamp"
+        stale = int(time.time()) - 3600
+        ts.write_text(str(stale), encoding="utf-8")
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+
+        gemini_mod._suppress_agy_updater()
+
+        written = int(ts.read_text(encoding="utf-8").strip())
+        assert written > stale
+        assert int(time.time()) - written < 5
+
+    def test_touch_creates_missing_home(self, tmp_path, monkeypatch):
+        """agy 홈이 아직 없어도(첫 실행 등) 만들어서 쓴다."""
+        home = tmp_path / "not-yet"
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+
+        gemini_mod._suppress_agy_updater()
+
+        assert (home / "last_check.timestamp").exists()
+
+    def test_touch_never_raises_on_failure(self, tmp_path, monkeypatch):
+        """best-effort: 쓰기가 실패해도 봇 호출 경로를 죽이면 안 된다."""
+        home = tmp_path / "antigravity-cli"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+
+        def boom(*_a, **_k):
+            raise OSError("disk on fire")
+
+        monkeypatch.setattr(gemini_mod.Path, "write_text", boom)
+        gemini_mod._suppress_agy_updater()  # 예외가 새어나오면 실패
+
+    @pytest.mark.asyncio
+    async def test_run_cli_suppresses_updater_before_spawning_agy(self, monkeypatch, tmp_path):
+        """agy 경로에서 실제로 subprocess 를 띄우기 **전에** 억제가 호출돼야 한다.
+
+        함수만 있고 호출하지 않으면 깜빡임은 그대로다. 순서(억제 -> spawn)까지 검증한다.
+        """
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "agy")
+
+        calls: list[str] = []
+        monkeypatch.setattr(gemini_mod, "_suppress_agy_updater",
+                            lambda: calls.append("suppress"))
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, input=None):
+                return (b"OK", b"")
+
+        async def _fake_exec(*_a, **_k):
+            calls.append("spawn")  # 진짜 spawn 시점을 기록해야 순서 검증이 유효하다
+            return _FakeProc()
+
+        monkeypatch.setattr(gemini_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        def _fake_write_temp(prompt: str) -> str:
+            f = tmp_path / "p.txt"
+            f.write_text(prompt, encoding="utf-8")  # finally 의 os.unlink 대상
+            return str(f)
+
+        agent = GeminiAgent()
+        monkeypatch.setattr(agent, "_write_temp", _fake_write_temp)
+        monkeypatch.setattr(agent, "_register_proc", lambda p: None)
+
+        await agent._run_cli("hello")
+
+        assert "suppress" in calls, "agy 를 띄우기 전에 업데이터 억제가 호출되지 않았다"
+        assert calls.index("suppress") < calls.index("spawn"), \
+            "억제가 subprocess spawn 이후에 호출됐다 (그 사이에 업데이터가 뜬다)"
+
+    @pytest.mark.asyncio
+    async def test_run_cli_does_not_touch_timestamp_for_gemini(self, monkeypatch, tmp_path):
+        """gemini(비-agy) 경로에서는 agy 상태 파일을 건드리지 않는다."""
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "gemini")
+
+        calls: list[str] = []
+        monkeypatch.setattr(gemini_mod, "_suppress_agy_updater",
+                            lambda: calls.append("suppress"))
+
+        class _FakeProc:
+            returncode = 0
+
+            async def communicate(self, input=None):
+                return (b"OK", b"")
+
+        async def _fake_exec(*_a, **_k):
+            return _FakeProc()
+
+        monkeypatch.setattr(gemini_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        def _fake_write_temp(prompt: str) -> str:
+            f = tmp_path / "p.txt"
+            f.write_text(prompt, encoding="utf-8")  # finally 의 os.unlink 대상
+            return str(f)
+
+        agent = GeminiAgent()
+        monkeypatch.setattr(agent, "_write_temp", _fake_write_temp)
+        monkeypatch.setattr(agent, "_register_proc", lambda p: None)
+
+        await agent._run_cli("hello")
+
+        assert calls == [], "gemini 경로인데 agy 업데이터 억제가 호출됐다"
+
+    def test_touch_leaves_no_temp_file_on_replace_failure(self, tmp_path, monkeypatch):
+        """원자적 교체(os.replace)가 실패해도 temp 파일이 남으면 안 된다.
+
+        봇은 agy 를 수천 번 호출하므로 호출당 하나씩 쌓이면 홈 디렉토리가 오염된다.
+        """
+        home = tmp_path / "antigravity-cli"
+        home.mkdir(parents=True)
+        monkeypatch.setattr(gemini_mod, "_agy_home", lambda: home)
+
+        def boom(*_a, **_k):
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(gemini_mod.os, "replace", boom)
+        gemini_mod._suppress_agy_updater()  # 예외는 삼켜야 하고
+
+        leftovers = list(home.glob(".last_check.*.tmp"))
+        assert leftovers == [], f"temp 파일이 남았다: {leftovers}"
+
+    @pytest.mark.asyncio
+    async def test_progress_path_also_suppresses_updater(self, monkeypatch):
+        """`_run_progress_once` 도 억제해야 한다.
+
+        토론/코딩 모드는 `ask_with_progress()` -> `_run_progress_once()` 를 타며, 이 함수는
+        **자체적으로** create_subprocess_exec 한다. `_run_cli` 에만 억제를 걸면 사용자가 실제로
+        보는 경로(토론/리서치)는 그대로 깜빡인다. (Codex 교차검증 발견)
+        """
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "agy")
+
+        calls: list[str] = []
+        monkeypatch.setattr(gemini_mod, "_suppress_agy_updater",
+                            lambda: calls.append("suppress"))
+
+        class _FakeStdout:
+            async def readline(self):
+                return b""  # 즉시 EOF -> read loop 종료
+
+        class _FakeProc:
+            returncode = 0
+            stdout = _FakeStdout()
+            stdin = None
+
+            async def wait(self):
+                return 0
+
+        async def _fake_exec(*_a, **_k):
+            calls.append("spawn")
+            return _FakeProc()
+
+        monkeypatch.setattr(gemini_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        agent = GeminiAgent()
+        monkeypatch.setattr(agent, "_register_proc", lambda p: None)
+
+        await agent._run_progress_once(None, None, 10, model="gemini-2.5-pro", prompt="hi")
+
+        assert "suppress" in calls, "progress 경로에서 업데이터 억제가 호출되지 않았다"
+        assert calls.index("suppress") < calls.index("spawn"), "억제가 spawn 이후에 호출됐다"
+
+    @pytest.mark.asyncio
+    async def test_progress_path_skips_suppression_for_gemini(self, monkeypatch):
+        """progress 경로도 gemini(비-agy) 에서는 agy 상태 파일을 건드리지 않는다."""
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "gemini")
+
+        calls: list[str] = []
+        monkeypatch.setattr(gemini_mod, "_suppress_agy_updater",
+                            lambda: calls.append("suppress"))
+
+        class _FakeStdout:
+            async def readline(self):
+                return b""
+
+        class _FakeStdin:
+            def write(self, _b): pass
+            async def drain(self): pass
+            def close(self): pass
+
+        class _FakeProc:
+            returncode = 0
+            stdout = _FakeStdout()
+            stdin = _FakeStdin()
+
+            async def wait(self):
+                return 0
+
+        async def _fake_exec(*_a, **_k):
+            return _FakeProc()
+
+        monkeypatch.setattr(gemini_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        agent = GeminiAgent()
+        monkeypatch.setattr(agent, "_register_proc", lambda p: None)
+
+        await agent._run_progress_once(b"prompt", None, 10, model="gemini-2.5-pro", prompt="hi")
+
+        assert calls == [], "gemini 경로인데 agy 업데이터 억제가 호출됐다"

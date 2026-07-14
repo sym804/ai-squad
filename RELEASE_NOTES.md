@@ -55,6 +55,65 @@
 | v0.8.18 | 2026-07-08 | 재기동 후 Codex 오류: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이 rmcp tracing 로그로 답변 누출 + fatal 오탐(→Codex 백업 교체). `_CODEX_TRACING_LOG` 필터 + `ask_with_progress` 가 정제된 답변으로 has_error 재판정(진짜 API fatal 은 유지) |
 | v0.8.19 | 2026-07-13 | Slack 최근 대화 실측 분석에서 나온 6대 결함 수정: 실패 응답 원문 게시 차단(P1) + 폴백 경고 중복 제거 + 동일 엔진 2인 구성 고지(P2) + 스레드 단위 교체 유지(P3) + 합의 종료 게이트 재설계(P4, 어휘 유사도는 수렴 확인에만) + Codex 툴콜 preamble 제거(P6, `codex exec -o`) + dead config 제거 |
 | v0.8.20 | 2026-07-13 | 타임아웃 정책/kill 사정거리 수정(이슈 #143~#149): 형제 에이전트 동반 사망 차단 + 에이전트별 숨은 타임아웃 배수 제거 + Claude 외부 가드 + 낡은 elapsed 보고 수정 + 코딩 백업 예산 동일화 + 리서치 자기-동시호출 제거 |
+| v0.8.22 | 2026-07-14 | **agy 콘솔 창 깜빡임 해결 (이슈 #112 wontfix 뒤집음)**: agy 는 `last_check.timestamp` 기준 15분 쿨다운으로 업데이트를 체크한다는 것을 실측 -> 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다. `_run_cli` + `_run_progress_once` 양쪽 커버(토론/코딩이 후자를 탄다) |
+
+## v0.8.22 (2026-07-14)
+
+**이슈 #112(wontfix, "agy 한계로 수용")를 재조사해 뒤집었다.** agy 를 호출할 때마다 터미널 창이
+잠깐 떴다 사라지던 문제를 실제로 없앴다.
+
+### 무엇이 틀렸었나
+
+이슈 #112 는 원인을 "agy 가 **호출마다** 백그라운드 업데이터를 띄우고, 그 콘솔 창을 봇이 막을 수
+없다" 로 규정하고 env/설정/세션격리/데스크톱격리/CLI플래그를 모두 시도한 뒤 wontfix 했다.
+
+이번에 agy 자신의 로그에서 결정적 단서를 찾았다.
+
+```
+auto_updater.go:207] Last check was less than 15 minutes ago, skipping update
+```
+
+**쿨다운이 15분이다.** 즉 "호출마다" 가 아니라 "15분에 한 번" 이었고, 리서치 모드가 agy 를 6개
+병렬 호출해도 첫 호출만 체크하고 나머지는 스킵한다. 이 사실이 회피할 틈을 만든다.
+
+### 원인 확정 (실측)
+
+- 쿨다운이 지나면 agy 가 detached 손자 `agy --bg-updater` -> `agy --version` 을 spawn 한다
+- 그 **`agy --version` 이 소유한** `PseudoConsoleWindow` 가 대화형 데스크톱에 표시된다
+  (Win32 `GetWindowThreadProcessId` 로 창의 소유 프로세스 pid 까지 확인 = 깜빡임의 정체)
+- agy 1.1.2 에서도 그대로다. 1.0.16 -> 1.1.2 체인지로그에 관련 수정이 전혀 없다
+
+### 수정
+
+`agents/gemini.py` 에 `_suppress_agy_updater()` 추가. agy 를 띄우기 **직전**에
+`last_check.timestamp` 를 **현재 시각**으로 갱신한다. agy 는 항상 "방금 체크했다" 로 판정해
+업데이터를 아예 spawn 하지 않는다.
+
+이슈 #112 는 타임스탬프 **미래화**를 시도했다가 "agy 가 즉시 리셋" 으로 실패했는데, 미래 시각은
+이상값이라 되돌려진 것으로 보인다. **현재 시각은 정상값**이라 쿨다운 판정에 그대로 걸린다.
+이 한 글자 차이가 wontfix 와 해결을 갈랐다.
+
+- **`_run_cli` 와 `_run_progress_once` 양쪽**에 걸었다. 토론/코딩 모드는 `ask_with_progress()`
+  -> `_run_progress_once()` 를 타고 이 함수는 **자체적으로** subprocess 를 띄운다. `_run_cli` 에만
+  걸면 사용자가 실제로 보는 경로는 그대로 깜빡인다. (Codex 교차검증 발견)
+- **원자적 쓰기**: temp 에 쓰고 `os.replace` 로 교체한다. `write_text` 는 truncate 후 write 라,
+  그 찰나에 agy 가 **빈 파일**을 읽으면 파싱 실패로 오히려 업데이터가 뜬다.
+- **temp 이름에 uuid**: Slack Bolt 는 토론마다 다른 이벤트 루프/스레드에서 호출하고 세마포어는
+  루프별이라 교차 스레드 동시 호출을 막지 못한다. PID 만 쓰면 두 스레드가 같은 temp 경로를 잡는다.
+- **best-effort**: 쓰기/교체 실패는 삼키고 temp 를 정리한다. 실패해도 "깜빡임이 남을 뿐"
+  봇 호출 경로를 죽이지 않는다.
+
+부작용으로 agy 자동 업데이트가 영구 스킵되지만, 봇은 이미 `AGY_CLI_DISABLE_AUTO_UPDATE` 로
+자동 업데이트를 끄고 안정 버전을 고정 운용하므로 의도와 부합한다. 업데이트는 사람이
+`agy update` 로 한다. (`config.py` 의 "깜빡임은 못 고친다" 주석도 갱신했다.)
+
+### 검증
+
+- 단위 테스트 9건 신규 (타임스탬프 기록/덮어쓰기/홈 생성/예외 무해화/temp 누수 방지/
+  두 경로 각각의 호출 순서(억제 -> spawn)/gemini 경로 미호출). 전체 487 통과
+- **E2E 실측**: 봇의 `_suppress_agy_updater()` 를 실제로 호출한 뒤 agy 를 띄워 창을 관찰.
+  대조군(억제 없음)은 `PseudoConsoleWindow` 1개, 억제 적용 3회는 모두 **창 0개 / bg-updater 0개**
+- QA 2인 교차검증 (Codex read-only + 자체 리뷰 에이전트)
 
 ## v0.8.20 (2026-07-13)
 
