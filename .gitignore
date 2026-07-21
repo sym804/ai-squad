@@ -19,3 +19,17 @@ memory/
 toss_interview/
 toss_qa_enhanced.html
 toss_qa_interview_prep.html
+
+# 임시 스크립트/워치독 스크래치 (커밋 금지)
+_tmp_*.py
+.watchdog.single
+
+# 스크래치 이미지 (프로젝트 자산 아님)
+ai_stage_temp.png
+analysis_image.png
+temp_image.jpg
+
+# 다른 프로젝트(stockradar) 파일이 잘못 생성된 것
+check_ganji.py
+search_variations.py
+kospi_data.csv
