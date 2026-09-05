@@ -1,0 +1,167 @@
+name: "버그"
+description: "의도대로 동작하지 않는 것을 등록합니다. 원인을 몰라도 등록할 수 있습니다."
+title: "bug: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        아래 **발견 블록**은 버그를 본 시점에 채웁니다.
+        원인과 수정은 이슈를 닫을 때 채우므로 지금 비워 두어도 됩니다.
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: "심각도"
+      description: "blocker=우회 경로 없이 전면 사용 불가 / critical=핵심 기능 마비 또는 데이터 손실 위험 / major=주요 기능 오류 / minor=사소한 오류 / trivial=기능 영향 없는 외관. 보안은 minor 이상, 데이터(DB)는 major 이상."
+      options:
+        - blocker
+        - critical
+        - major
+        - minor
+        - trivial
+    validations:
+      required: true
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: "영역"
+      options:
+        - db
+        - backend
+        - frontend
+        - security
+        - etc
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: "발생 버전"
+      placeholder: "BE 3.16.1.1"
+    validations:
+      required: true
+
+  - type: input
+    id: symptom
+    attributes:
+      label: "증상"
+      description: "무엇이 잘못됐는지 한 줄로."
+      placeholder: "배당 캘린더 수집이 readonly database 오류로 중단된다"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected-actual
+    attributes:
+      label: "기대 / 실제"
+      description: "이 두 줄이 버그의 정의다. 실제만 적으면 읽는 사람이 무엇을 잘못이라 부르는지 알 수 없다."
+      value: |
+        - 기대:
+        - 실제:
+    validations:
+      required: true
+
+  - type: textarea
+    id: precondition
+    attributes:
+      label: "사전 조건"
+      description: "재현 전에 갖춰져 있어야 하는 상태, 데이터, 권한. 행위가 아니라 상태를 적는다. 해당 없으면 비워 둔다(없음이라고 쓰지 않는다)."
+      placeholder: "종목 000660 의 2024Q3 재무 행이 이미 적재되어 있음"
+    validations:
+      required: false
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: "재현 절차"
+      description: "사전 조건이 갖춰진 상태에서 하는 행위를 번호로. 산문으로 쓰지 않는다."
+      value: |
+        1.
+        2.
+        3.
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: "재현 빈도"
+      description: "항상이 아니면 아래 증거를 반드시 남긴다. 다음에 재현이 안 되면 그 증거가 유일한 기록이 된다."
+      options:
+        - 항상
+        - 간헐
+        - 1회만 관측
+        - 미확인
+    validations:
+      required: true
+
+  - type: textarea
+    id: evidence
+    attributes:
+      label: "증거"
+      description: "로그, 스택트레이스, 쿼리 결과, 스크린샷 중 최소 하나. 재현 빈도가 항상이 아니면 필수다. 로그는 코드 블록으로, 화면은 이미지로 붙인다."
+    validations:
+      required: false
+
+  - type: dropdown
+    id: found-by
+    attributes:
+      label: "발견 경로"
+      description: "사용자가 먼저 발견했다면 그 앞단의 탐지가 비어 있다는 뜻이다."
+      options:
+        - 배치 로그
+        - 모니터링/알림
+        - QA
+        - 사용자
+        - 코드 리뷰
+        - 기타
+    validations:
+      required: true
+
+  - type: markdown
+    attributes:
+      value: |
+        ---
+        아래 **종결 블록**은 이슈를 닫을 때 채웁니다. 등록 시점에는 비워 둡니다.
+
+  - type: textarea
+    id: cause
+    attributes:
+      label: "원인"
+      description: "증상이 아니라 원인. 어디의 무엇이 왜 그렇게 됐는지."
+    validations:
+      required: false
+
+  - type: textarea
+    id: fix
+    attributes:
+      label: "수정 내용"
+    validations:
+      required: false
+
+  - type: input
+    id: fix-version
+    attributes:
+      label: "수정 버전"
+      placeholder: "BE 3.16.2.0 (커밋: abc1234)"
+    validations:
+      required: false
+
+  - type: textarea
+    id: prevention
+    attributes:
+      label: "재발 방지"
+      description: "테스트, 가드, 모니터링 중 무엇을 붙였나. 안 붙였으면 그 이유를 적는다. 이 칸이 비면 같은 버그가 다시 온다."
+    validations:
+      required: false
+
+  - type: textarea
+    id: impact
+    attributes:
+      label: "영향 범위"
+      description: "영향 받은 기능, 페이지, 데이터 범위."
+    validations:
+      required: false
