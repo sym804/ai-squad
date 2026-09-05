@@ -9,6 +9,9 @@ body:
         아래 **발견 블록**은 버그를 본 시점에 채웁니다.
         원인과 수정은 이슈를 닫을 때 채우므로 지금 비워 두어도 됩니다.
 
+        각 칸은 **불릿으로 씁니다.** 순서대로 진행해야 하는 것만 번호를 씁니다.
+        지금 번호를 쓰는 칸은 재현 절차 하나뿐입니다.
+
   - type: dropdown
     id: severity
     attributes:
@@ -44,23 +47,33 @@ body:
     validations:
       required: true
 
-  - type: input
+  - type: textarea
     id: symptom
     attributes:
       label: "증상"
-      description: "무엇이 잘못됐는지 한 줄로."
-      placeholder: "배당 캘린더 수집이 readonly database 오류로 중단된다"
+      description: "무엇이 잘못됐는지. 불릿 한 줄이면 충분하다."
+      value: |
+        -
     validations:
       required: true
 
   - type: textarea
-    id: expected-actual
+    id: expected
     attributes:
-      label: "기대 / 실제"
-      description: "이 두 줄이 버그의 정의다. 실제만 적으면 읽는 사람이 무엇을 잘못이라 부르는지 알 수 없다."
+      label: "기대"
+      description: "어떻게 동작해야 하는가. 다음 칸의 실제와 짝을 이룬다."
       value: |
-        - 기대:
-        - 실제:
+        -
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: "실제"
+      description: "실제로 무엇이 일어났는가. 기대와 이 칸의 차이가 버그의 정의다."
+      value: |
+        -
     validations:
       required: true
 
@@ -69,7 +82,7 @@ body:
     attributes:
       label: "사전 조건"
       description: "재현 전에 갖춰져 있어야 하는 상태, 데이터, 권한. 행위가 아니라 상태를 적는다. 해당 없으면 비워 둔다(없음이라고 쓰지 않는다)."
-      placeholder: "종목 000660 의 2024Q3 재무 행이 이미 적재되어 있음"
+      placeholder: "- 종목 000660 의 2024Q3 재무 행이 이미 적재되어 있음"
     validations:
       required: false
 
@@ -77,7 +90,7 @@ body:
     id: reproduction
     attributes:
       label: "재현 절차"
-      description: "사전 조건이 갖춰진 상태에서 하는 행위를 번호로. 산문으로 쓰지 않는다."
+      description: "사전 조건이 갖춰진 상태에서 하는 행위. 순서대로 진행해야 하므로 번호를 쓴다. 산문으로 쓰지 않는다."
       value: |
         1.
         2.
@@ -103,6 +116,7 @@ body:
     attributes:
       label: "증거"
       description: "로그, 스택트레이스, 쿼리 결과, 스크린샷 중 최소 하나. 재현 빈도가 항상이 아니면 필수다. 로그는 코드 블록으로, 화면은 이미지로 붙인다."
+      placeholder: "- console: TypeError ..."
     validations:
       required: false
 
@@ -132,6 +146,7 @@ body:
     attributes:
       label: "원인"
       description: "증상이 아니라 원인. 어디의 무엇이 왜 그렇게 됐는지."
+      placeholder: "- "
     validations:
       required: false
 
@@ -139,6 +154,7 @@ body:
     id: fix
     attributes:
       label: "수정 내용"
+      placeholder: "- "
     validations:
       required: false
 
@@ -155,6 +171,7 @@ body:
     attributes:
       label: "재발 방지"
       description: "테스트, 가드, 모니터링 중 무엇을 붙였나. 안 붙였으면 그 이유를 적는다. 이 칸이 비면 같은 버그가 다시 온다."
+      placeholder: "- "
     validations:
       required: false
 
@@ -163,5 +180,6 @@ body:
     attributes:
       label: "영향 범위"
       description: "영향 받은 기능, 페이지, 데이터 범위."
+      placeholder: "- "
     validations:
       required: false
