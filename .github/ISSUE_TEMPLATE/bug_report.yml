@@ -60,8 +60,8 @@ body:
   - type: textarea
     id: expected
     attributes:
-      label: "기대"
-      description: "어떻게 동작해야 하는가. 다음 칸의 실제와 짝을 이룬다."
+      label: "기대 결과"
+      description: "어떻게 동작해야 하는가. 다음 칸의 실제 결과와 짝을 이룬다."
       value: |
         -
     validations:
@@ -70,8 +70,8 @@ body:
   - type: textarea
     id: actual
     attributes:
-      label: "실제"
-      description: "실제로 무엇이 일어났는가. 기대와 이 칸의 차이가 버그의 정의다."
+      label: "실제 결과"
+      description: "실제로 무엇이 일어났는가. 기대 결과와 이 칸의 차이가 버그의 정의다."
       value: |
         -
     validations:
