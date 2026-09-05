@@ -33,3 +33,7 @@ temp_image.jpg
 check_ganji.py
 search_variations.py
 kospi_data.csv
+
+# issuelog 가 엑셀 로그를 쓰기 전에 남기는 백업
+.issuelog_backup/
+*.xlsx.lock
