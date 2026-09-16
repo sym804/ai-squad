@@ -657,7 +657,7 @@ Slack App에서 발급받은 토큰과 채널 ID를 `.env`에 입력.
 - [ ] **Step 3: 봇 실행**
 
 ```bash
-cd C:\Users\ymseo\Documents\slack-multi-agent
+cd <레포 경로>
 python slack_bot.py
 ```
 

@@ -69,7 +69,7 @@ def test_bind_thread_no_cwd_for_non_allowlisted_path(tmp_path, monkeypatch):
 
 
 def test_bind_thread_no_path_in_text(monkeypatch):
-    monkeypatch.setattr(config, "ALLOWED_WORK_DIRS", [r"C:\Users\ymseo\Documents\sym-ui"])
+    monkeypatch.setattr(config, "ALLOWED_WORK_DIRS", [r"C:\work\sym-ui"])
     mode = _make_mode()
     mode._bind_thread("t1", "경로 없는 일반 토론 주제입니다")
     assert all(c is None for c in _all_cwds(mode))

@@ -9,18 +9,18 @@ def test_validate_path_allowed():
     """whitelist에 포함된 경로는 통과."""
     from security import validate_work_dir
     with patch("os.path.realpath", side_effect=lambda p: p):
-        result = validate_work_dir(r"C:\Users\ymseo\Documents\stockradar",
-                                   [r"C:\Users\ymseo\Documents\stockradar"])
-    assert result == r"C:\Users\ymseo\Documents\stockradar"
+        result = validate_work_dir(r"C:\work\stockradar",
+                                   [r"C:\work\stockradar"])
+    assert result == r"C:\work\stockradar"
 
 
 def test_validate_path_subdirectory_allowed():
     """whitelist 하위 디렉토리도 통과."""
     from security import validate_work_dir
     with patch("os.path.realpath", side_effect=lambda p: p):
-        result = validate_work_dir(r"C:\Users\ymseo\Documents\stockradar\src",
-                                   [r"C:\Users\ymseo\Documents\stockradar"])
-    assert result == r"C:\Users\ymseo\Documents\stockradar\src"
+        result = validate_work_dir(r"C:\work\stockradar\src",
+                                   [r"C:\work\stockradar"])
+    assert result == r"C:\work\stockradar\src"
 
 
 def test_validate_path_rejected():
@@ -28,7 +28,7 @@ def test_validate_path_rejected():
     from security import validate_work_dir
     with patch("os.path.realpath", side_effect=lambda p: p):
         result = validate_work_dir(r"C:\Windows\System32",
-                                   [r"C:\Users\ymseo\Documents\stockradar"])
+                                   [r"C:\work\stockradar"])
     assert result is None
 
 
@@ -37,15 +37,15 @@ def test_validate_path_traversal_rejected():
     from security import validate_work_dir
     # realpath resolves .. so the path ends up outside whitelist
     with patch("os.path.realpath", side_effect=lambda p: os.path.normpath(p)):
-        result = validate_work_dir(r"C:\Users\ymseo\Documents\stockradar\..\..\Windows",
-                                   [r"C:\Users\ymseo\Documents\stockradar"])
+        result = validate_work_dir(r"C:\work\stockradar\..\..\Windows",
+                                   [r"C:\work\stockradar"])
     assert result is None
 
 
 def test_validate_path_empty_whitelist():
     """빈 whitelist면 모든 경로 거부."""
     from security import validate_work_dir
-    result = validate_work_dir(r"C:\Users\ymseo\Documents\stockradar", [])
+    result = validate_work_dir(r"C:\work\stockradar", [])
     assert result is None
 
 

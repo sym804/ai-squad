@@ -110,9 +110,9 @@ class TestCleanOutput:
     """
 
     @pytest.mark.parametrize("noise_line", [
-        "Warning: Skipping extension in C:\\Users\\ymseo\\.gemini\\extensions\\task-monitor: Configuration file not found at C:\\Users\\ymseo\\.gemini\\extensions\\task-monitor\\gemini-extension.json",
+        "Warning: Skipping extension in C:\\work\\.gemini\\extensions\\task-monitor: Configuration file not found at C:\\work\\.gemini\\extensions\\task-monitor\\gemini-extension.json",
         "Created execution plan for SessionEnd: 1 hook(s) to execute in parallel",
-        "Expanding hook command: node C:\\Users\\ymseo\\.gemini\\extensions\\maestro/hooks/hook-runner.js gemini session-end (cwd: C:\\Users\\ymseo\\Documents\\slack-multi-agent)",
+        "Expanding hook command: node C:\\work\\.gemini\\extensions\\maestro/hooks/hook-runner.js gemini session-end (cwd: C:\\work\\slack-multi-agent)",
         "Hook execution for SessionEnd: 1 hooks executed successfully, total duration: 283ms",
         # 2026-04-26 발견: non-TTY 환경에서 Gemini CLI가 매 호출마다 stdout 머리에 찍는 색상 경고
         "Warning: 256-color support not detected. Using a terminal with at least 256-color support is recommended for a better visual experience.",

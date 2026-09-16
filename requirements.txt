@@ -1,4 +1,4 @@
 slack-bolt>=1.18.0
 python-dotenv>=1.0.0
-requests>=2.31.0
-pypdf>=4.0
+requests>=2.34.2  # 2.33.0 미만은 extract_zipped_paths 임시파일 재사용(GHSA-gc5v-m9x4-r6x2)
+pypdf>=6.18.1  # 6.x 초기 버전은 조작된 PDF 로 장시간 실행/메모리 고갈 다수

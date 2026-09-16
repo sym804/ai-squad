@@ -190,7 +190,7 @@ def _clean_codex_output(text: str, prompt: str = "") -> str:
         # Codex 파일 탐색 출력 (경로만 있는 라인: foo\bar.ext 또는 foo/bar.ext)
         if re.match(r'^[\w.\-]+[\\\/][\w.\-\\\/\s]+\.\w{1,10}$', stripped) and not stripped.startswith(('#', '-', '*', '`')):
             continue
-        # Windows 절대경로 덤프 (C:\Users\ymseo\...)
+        # Windows 절대경로 덤프 (C:\Users\<user>\...)
         if _WIN_ABS_PATH_LINE.match(stripped) and not stripped.startswith(('#', '-', '*', '`', '>')):
             continue
         # 파일:라인 참조 (payment.py:188, app.js:429, routers/foo.py:12:code)

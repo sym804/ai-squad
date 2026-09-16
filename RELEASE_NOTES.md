@@ -55,7 +55,33 @@
 | v0.8.18 | 2026-07-08 | 재기동 후 Codex 오류: 원격 MCP openaiDeveloperDocs 의 일시적 HTTP 503 이 rmcp tracing 로그로 답변 누출 + fatal 오탐(→Codex 백업 교체). `_CODEX_TRACING_LOG` 필터 + `ask_with_progress` 가 정제된 답변으로 has_error 재판정(진짜 API fatal 은 유지) |
 | v0.8.19 | 2026-07-13 | Slack 최근 대화 실측 분석에서 나온 6대 결함 수정: 실패 응답 원문 게시 차단(P1) + 폴백 경고 중복 제거 + 동일 엔진 2인 구성 고지(P2) + 스레드 단위 교체 유지(P3) + 합의 종료 게이트 재설계(P4, 어휘 유사도는 수렴 확인에만) + Codex 툴콜 preamble 제거(P6, `codex exec -o`) + dead config 제거 |
 | v0.8.20 | 2026-07-13 | 타임아웃 정책/kill 사정거리 수정(이슈 #143~#149): 형제 에이전트 동반 사망 차단 + 에이전트별 숨은 타임아웃 배수 제거 + Claude 외부 가드 + 낡은 elapsed 보고 수정 + 코딩 백업 예산 동일화 + 리서치 자기-동시호출 제거 |
+| v0.8.23 | 2026-09-16 | 의존성 취약점 해소 + 공개 레포 개인 경로 제거 |
 | v0.8.22 | 2026-07-14 | **agy 콘솔 창 깜빡임 해결 (이슈 #112 wontfix 뒤집음)**: agy 는 `last_check.timestamp` 기준 15분 쿨다운으로 업데이트를 체크한다는 것을 실측 -> 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다. `_run_cli` + `_run_progress_once` 양쪽 커버(토론/코딩이 후자를 탄다) |
+
+## v0.8.23 (2026-09-16)
+
+### 이슈
+
+- SYM-97 requirements 하한이 낮아 pypdf 가 조작된 PDF 에 DoS 되는 버전으로 설치된다 (bug/major/security)
+- SYM-98 공개 레포에 로컬 절대경로가 남아 Windows 사용자명과 홈 구조가 노출된다 (bug/minor/security)
+
+### 변경
+
+- `requirements.txt` 하한 상향: `requests>=2.34.2`, `pypdf>=6.18.1`. 각 사유를 주석으로 남김
+- 추적 파일의 `C:\Users\<user>\...` 를 전부 제거. 문서와 테스트는 `C:\work\...` 또는 플레이스홀더로 치환
+- `migrate_session0.ps1` 은 `$dir` 폴백을 `Get-Location` 으로 바꾸고, 실행 예시에 레포로 이동하는 전제를 명시
+- `start_watchdog.vbs` 는 `WScript.ScriptFullName` 기준으로 cwd 를 잡음. WSH 가 UTF-8 을 읽지 못하므로 주석은 ASCII 유지
+- `issue_log.xlsx` 의 K122 셀 1건도 치환
+
+### 영향
+
+- 봇 동작 변화 없음
+- pypdf OSV 47건 -> 0건, requests 2건 -> 0건. Slack 첨부 PDF 파싱 경로가 이 파서를 탐
+- 두 스크립트가 설치 위치에 의존하지 않게 되어 다른 경로에 클론해도 동작
+- git 히스토리에는 경로가 남으므로 효과는 앞으로의 노출 축소에 한정
+- 검증: pytest 487건 통과, xlsx 는 전 셀 2,537개 대조로 무손실 확인
+
+---
 
 ## v0.8.22 (2026-07-14)
 
@@ -380,7 +406,7 @@ v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 �
 ### 검증
 - 신규 테스트 7건(`test_debate_cwd`): 화이트리스트 경로/하위경로/자연어 suffix/비허용/무경로/스레드 reset/followup 원주제 바인딩. 광범위 회귀 **123건 통과**(coding_gate·config·debate integration/improvements/gates·consensus·bridge·process 포함).
 - **Codex 교차검증 2라운드**: 1차에서 Major 1건(다단어 suffix 추출 실패) + Minor 3건 지적 → 전부 반영. 2차에서 잔여 이슈 없음 확인.
-- **운영자 조치 필요**: 토론으로 평가할 프로젝트는 `.env` 의 `CODING_ALLOWED_DIRS` 에 등록해야 한다. sym-ui 평가용으로 `C:\Users\ymseo\Documents\sym-ui` 추가. 이 화이트리스트는 coding 모드 쓰기 범위도 겸하므로, 등록 경로는 coding 쓰기 신뢰 대상이기도 하다(읽기 전용 분리는 추후 옵션).
+- **운영자 조치 필요**: 토론으로 평가할 프로젝트는 `.env` 의 `CODING_ALLOWED_DIRS` 에 등록해야 한다. sym-ui 평가용으로 `<sym-ui 로컬 경로>` 추가. 이 화이트리스트는 coding 모드 쓰기 범위도 겸하므로, 등록 경로는 coding 쓰기 신뢰 대상이기도 하다(읽기 전용 분리는 추후 옵션).
 
 ## v0.8.7 (2026-06-16)
 
@@ -607,7 +633,7 @@ v0.7.5 에서 `tmp_dir` 을 `<project>/.tmp/` 내부로 옮길 때 `_runner` 안
 v0.7.4 출시 직후 실전 PDF 첨부에서 발견된 회귀 2건 핫픽스. 실제 슬랙 스레드(`1779791375.628899`) 에서 Claude 만 정상 동작했고 Gemini/Codex 는 PDF 분석 실패.
 
 ### 회귀 진단
-- **Gemini (실패)**: `read_file` 도구가 workspace 외부 경로를 거부. 임시 디렉토리가 `C:\Users\ymseo\AppData\Local\Temp\slack_attachments_*` 라 "Path not in workspace" 에러로 PDF 자체 못 읽음.
+- **Gemini (실패)**: `read_file` 도구가 workspace 외부 경로를 거부. 임시 디렉토리가 `%LOCALAPPDATA%\Temp\slack_attachments_*` 라 "Path not in workspace" 에러로 PDF 자체 못 읽음.
 - **Codex (부분 성공)**: `read` 도구가 PDF native 미지원. `pdftotext` (poppler) 시도 → 미설치 실패 → `pypdf` import 시도 → 일부 페이지만 추출 후 끝까지 가지 못함.
 - **Claude (정상)**: Read 도구가 PDF native 지원이라 무관하게 동작.
 

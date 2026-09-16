@@ -1,7 +1,8 @@
 ﻿# 봇을 S4U 비대화형 예약작업으로 전환 (cmd 창 깜빡임 근본 제거)
 # ── 반드시 "관리자 권한 PowerShell"에서 실행 ──
 #   예: 시작 → PowerShell 우클릭 → 관리자 권한으로 실행 → 아래 한 줄
-#       powershell -ExecutionPolicy Bypass -File "C:\Users\ymseo\Documents\slack-multi-agent\migrate_session0.ps1"
+#       cd <레포 폴더>; powershell -ExecutionPolicy Bypass -File ".\migrate_session0.ps1"
+#       (관리자 PowerShell 새 창은 System32 에서 열리므로 먼저 레포로 이동한다)
 #
 # 하는 일: (1) 예약작업을 S4U 비대화형으로 재등록 → (2) 대화형 watchdog/bot 종료
 #          (respawn 레이스 방지: watchdog 먼저) → (3) 예약작업 즉시 실행으로
@@ -9,7 +10,7 @@
 
 $ErrorActionPreference = "Continue"
 $dir = $PSScriptRoot
-if (-not $dir) { $dir = "C:\Users\ymseo\Documents\slack-multi-agent" }
+if (-not $dir) { $dir = (Get-Location).Path }
 $python = "C:\Python311\python.exe"
 $task = "SlackBotWatchdogGuard"
 

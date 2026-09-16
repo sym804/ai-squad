@@ -19,7 +19,7 @@ from agents.codex import CodexAgent
 
 NOISY_STDOUT = """[2026-07-13T10:00:00] OpenAI Codex v0.129
 --------
-workdir: C:\\Users\\ymseo\\Documents
+workdir: C:\\work
 --------
 먼저 판매처와 가격을 최신 검색 결과로 확인하겠습니다.
 [2026-07-13T10:00:04] tool web_search(query="닛신 붓코미메시 최저가")
