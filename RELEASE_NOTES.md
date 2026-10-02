@@ -2,6 +2,15 @@
 
 슬랙 멀티 에이전트 봇 릴리즈 히스토리. 날짜별로 묶인 주요 변경사항과 대응 커밋을 기록합니다.
 
+## 작성 규칙
+
+- 제목: `## <컴포넌트> <버전> - [유형] <요약> (YYYY-MM-DD)`. 버전 축이 여럿이면 ` / <축> <버전>` 으로 잇는다
+- 유형: `feat` / `fix` / `perf` / `refactor` / `chore` / `docs`. 요약은 60자 이내 명사형("~ 추가", "~ 수정")
+- 본문: `### 이슈`, `### 변경`, `### 영향` 은 필수. 이슈는 한 줄에 하나, `GH#12 <이슈 제목> (<유형>/<심각도>/<영역>)`
+- `### 조치` 는 배포자가 손으로 할 일이 있을 때만 쓴다. 없으면 블록을 뺀다
+- 분량: D 5줄, C 900자, B 1,200자, A 1,600자 이내. 회고, 서술형 종결, 장식 기호 금지
+- 커밋할 때 pre-commit 훅이 새 절을 검사한다. 손으로는 `python ~/.claude/tools/release-lint/run.py check <이 파일>`
+
 ## 버전 테이블
 
 | 버전 | 날짜 | 요약 |
@@ -58,7 +67,7 @@
 | v0.8.23 | 2026-09-16 | 의존성 취약점 해소 + 공개 레포 개인 경로 제거 |
 | v0.8.22 | 2026-07-14 | **agy 콘솔 창 깜빡임 해결 (이슈 #112 wontfix 뒤집음)**: agy 는 `last_check.timestamp` 기준 15분 쿨다운으로 업데이트를 체크한다는 것을 실측 -> 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다. `_run_cli` + `_run_progress_once` 양쪽 커버(토론/코딩이 후자를 탄다) |
 
-## v0.8.23 (2026-09-16)
+## ai-squad 0.8.23 - [fix] 의존성 취약점 해소 및 공개 레포 개인 경로 제거 (2026-09-16)
 
 ### 이슈
 
@@ -83,7 +92,7 @@
 
 ---
 
-## v0.8.22 (2026-07-14)
+## ai-squad 0.8.22 - [fix] agy 업데이트 체크 쿨다운 활용한 콘솔 창 깜빡임 해결 (2026-07-14)
 
 **이슈 #112(wontfix, "agy 한계로 수용")를 재조사해 뒤집었다.** agy 를 호출할 때마다 터미널 창이
 잠깐 떴다 사라지던 문제를 실제로 없앴다.
@@ -141,7 +150,7 @@ auto_updater.go:207] Last check was less than 15 minutes ago, skipping update
   대조군(억제 없음)은 `PseudoConsoleWindow` 1개, 억제 적용 3회는 모두 **창 0개 / bg-updater 0개**
 - QA 2인 교차검증 (Codex read-only + 자체 리뷰 에이전트)
 
-## v0.8.20 (2026-07-13)
+## ai-squad 0.8.20 - [fix] 타임아웃 정책 및 kill 범위 결함 6건 수정 (2026-07-13)
 
 Codex 교차검증이 지적하고 **Claude 가 코드로 재확인**한 타임아웃 계열 결함 6건. (Codex 가 자율적으로 커밋한 v0.8.21 은 리뷰 없이 들어가 되돌렸고(`0ced80b`), 여기서 직접 TDD 로 다시 구현했다.)
 
@@ -177,7 +186,7 @@ Codex 교차검증이 지적하고 **Claude 가 코드로 재확인**한 타임�
 - 신규 7건(`tests/test_timeout_and_kill_scope.py`): 형제 프로세스 보호 / `/cancel` 은 전체 kill 유지 / timeout 인자 = 실제 예산 / 낡은 elapsed 금지 / 루프 밖 hang 가드 / 코딩 백업 예산 동일 / 리서치 자기-동시호출 0. 전체 478건 통과.
 - 실제 CLI 3개(Claude·Codex·Gemini) 병렬 호출로 회귀 확인: 3개 모두 정상 응답, 형제 kill 없음.
 
-## v0.8.19 (2026-07-13)
+## ai-squad 0.8.19 - [fix] 실패 응답 게시 차단 및 합의 판정 등 토론 결함 6건 수정 (2026-07-13)
 
 Slack 최근 대화 12건(토론 5 / 코딩 1 / 리서치 6)과 `bot_output.log` 10,643줄을 대조 분석해 나온 결함을 한 번에 수정. 개별 답변 품질이 아니라 **폴백 처리**와 **합의 판정** 두 축의 설계 결함이었다.
 
@@ -237,7 +246,7 @@ Slack 최근 대화 12건(토론 5 / 코딩 1 / 리서치 6)과 `bot_output.log`
 - **리서치 소주제 드롭**: 조사 실패 시 재시도 없이 해당 소주제가 리포트에서 통째로 빠진다(`modes/research.py:575-594`).
 - 인프라 잡음: 소켓 SSL 에러 197회, socket-mode JSONDecodeError, 워치독 CRASH 감지 13회.
 
-## v0.8.18 (2026-07-08)
+## ai-squad 0.8.18 - [fix] Codex MCP tracing 로그 누출 및 fatal 오탐 수정 (2026-07-08)
 
 v0.8.16/17 적용 후 봇 재기동(`!bot restart`, 세션0 유지)에서 셸 크래시(`exited -1073741502`)는 사라졌으나, 재기동 직후 토론에서 Codex 가 원격 MCP `openaiDeveloperDocs` 초기화 중 **일시적 HTTP 503**을 만나 그 rmcp 로그가 답변에 누출되고 봇이 Codex 를 백업(Gemini-B)으로 교체하는 새 증상이 나타났다. Slack thread `1783481931`.
 
@@ -256,7 +265,7 @@ v0.8.16/17 적용 후 봇 재기동(`!bot restart`, 세션0 유지)에서 셸 �
 ### 참고
 - MCP 엔드포인트가 지속적으로 죽으면 별개 문제. `openaiDeveloperDocs` 는 OpenAI 문서 검색용이라 일반 토론엔 무관하나(정상 시 OpenAI-docs 질문엔 유용), 이번 수정으로 그 일시적 실패를 답변 누출·fatal 오탐 없이 견딘다.
 
-## v0.8.17 (2026-07-08)
+## ai-squad 0.8.17 - [fix] 세션0 Codex 셸 크래시 대응 토론/리서치 셸 억제 지시 주입 (2026-07-08)
 
 v0.8.16 에서 규명한 근본 원인(봇이 S4U 세션0=무데스크톱에서 뜨면 Codex 로컬 `shell` 도구가 콘솔 자식 생성 실패 `0xC0000142` 로 즉사)에 대해 **Option 1(S4U 무깜빡임 유지 + Codex 셸 억제)** 을 적용한다. 봇 소유자 결정: Slack 은 주로 토론/리서치 용도라 로컬 셸이 거의 불필요하고, cmd 창 깜빡임(v0.8.1~v0.8.2 에서 제거/수용)을 되살리지 않는 쪽을 택함.
 
@@ -275,7 +284,7 @@ v0.8.16 에서 규명한 근본 원인(봇이 S4U 세션0=무데스크톱에서 
 ### 남은 것
 - 코딩 모드 Codex 의 셸은 세션0 에서 여전히 못 씀(드문 용도라 수용). 완전 복구가 필요하면 Option 2(대화형 세션 상주 = 깜빡임 부활)를 별도 선택. issue #131 은 Option 1 적용으로 종료.
 
-## v0.8.16 (2026-07-08)
+## ai-squad 0.8.16 - [fix] Codex 실행 로그 Slack 누출 필터 보강 (2026-07-08)
 
 Slack `#ai-토론` 스레드(`1783475712`)에서 Codex 답변에 `Output:` 빈 블록과 `exited -1073741502 in 31ms:`, `mcp: openaiDeveloperDocs/search_openai_docs (completed)` 같은 실행 로그 조각이 누출되고, Codex 가 실제 도구 없이 무근거로 답하던 문제를 조사했다. 표면 누출은 노이즈 필터로 봉합하고, 근본 원인(세션/데스크톱)을 규명했다.
 
@@ -293,7 +302,7 @@ Slack `#ai-토론` 스레드(`1783475712`)에서 Codex 답변에 `Output:` 빈 �
 ### 참고
 - danger-full-access 로 샌드박스를 여는 방향도 검토했으나, 활성 세션 A/B 에서 workspace-write 든 danger-full-access 든 크래시가 재현되지 않아 **크래시의 원인이 샌드박스가 아님**을 확인 -> 채택하지 않음(보안 유지, workspace-write 존치).
 
-## v0.8.15 (2026-07-04)
+## ai-squad 0.8.15 - [docs] agy #76 해소 확인 및 winpty 우회 부적합 판정 (2026-07-04)
 
 `agy -p` stdout 미출력 버그(upstream #76, v0.7.10 에서 디스크 transcript 복구로 우회)에 대해, "winpty 를 앞에 붙여 가상 TTY 를 강제하면 agy 가 stdout 을 뱉는다"는 대안 우회를 실호출로 비교 검증했다. 결론: **winpty 방식은 봇 환경에서 원천적으로 실행 불가**이며, 부수적으로 **agy 1.0.16(7/3 갱신)에서 #76 자체가 해소**됐음을 확인했다. 코드/테스트 변경 없음(현행 유지).
 
@@ -310,7 +319,7 @@ Slack `#ai-토론` 스레드(`1783475712`)에서 Codex 답변에 `Output:` 빈 �
 - agy 1.0.16 로 `& agy -p` 직접 호출 hang(#76 부작용, v0.7.10 참고)도 재현되지 않음(봇은 `stdin=DEVNULL` 이라 원래도 영향권 밖).
 - 코드/테스트 무변경이라 커밋 대상은 문서(RELEASE_NOTES.md)/이슈로그뿐.
 
-## v0.8.14 (2026-07-03)
+## ai-squad 0.8.14 - [fix] 워치독 크로스세션 단일 인스턴스 커널 파일락 적용 (2026-07-03)
 
 v0.8.13 의 lockfile PID alive-check 는 서로 다른 세션의 두 워치독이 stale lockfile 상태로 동시에 cold-start 하면 둘 다 통과할 수 있는 잔여 레이스가 있었다(Codex Major). 이를 커널 바이트영역 파일락으로 **원자적으로** 봉합한다.
 
@@ -331,7 +340,7 @@ v0.8.13 의 lockfile PID alive-check 는 서로 다른 세션의 두 워치독�
 - **로컬 파일시스템 전용**: OneDrive/네트워크 공유처럼 서로 다른 머신의 동기화 복사본은 동일 커널 파일 객체가 아니라 cross-machine 배제는 제공하지 않는다(단일 머신 단일 인스턴스가 목표라 무관). 현 배포 경로는 로컬 NTFS(OneDrive 밖) 확인.
 - 가동 중 `.watchdog.single` 을 수동 삭제/이동하지 말 것(핸들 보유 중 삭제는 로컬 NTFS 에서 기본 거부됨).
 
-## v0.8.13 (2026-07-03)
+## ai-squad 0.8.13 - [fix] !bot restart 시 크로스세션 워치독 중복 spawn 완화 (2026-07-03)
 
 사용자가 `!bot restart` 를 한 번 눌렀는데 "재시작 완료, Bot 시작됨" 메시지가 서로 다른 PID 로 **4번** 떴다. 실측(Win32 프로세스 트리): watchdog.py 프로세스가 **5개**(S4U 세션 0 에 4개 + 대화형 세션에 1개) 동시 가동 중이었고, 각 워치독이 `!bot restart` 를 독립 처리해 봇을 하나씩 spawn 했다. 근본 원인은 watchdog.py 의 단일 인스턴스 mutex 이름이 `Local\slack_multi_agent_watchdog` 로 **세션별(per-logon-session) 네임스페이스**라, 예약작업 2개(`SlackBotWatchdog`=Interactive, `SlackBotWatchdogGuard`=S4U 세션 0)가 서로 다른 세션에서 띄운 워치독끼리 mutex 로 배제되지 않고 무기한 공존한 것(+ mutex 도입 전 기동된 6월 스테일 워치독 누적).
 
@@ -347,7 +356,7 @@ v0.8.13 의 lockfile PID alive-check 는 서로 다른 세션의 두 워치독�
 - **Codex 교차검증**: pre-check 로직 정합성·정상 재시작 무영향·기존 mutex 경로 보존·Global 회피 정당성 전부 PASS. Major(잔여 동시 cold-start 레이스)는 mitigation 의 알려진 한계로 위 '알려진 한계'에 명시 + 후속 이슈로 추적. Minor(PID 재사용)는 기존 공유 한계로 문서화.
 - **스테일 프로세스 정리**: 이미 떠 있는 세션 0 스테일 워치독/봇은 코드로 못 죽인다(대화형 세션에서 Access denied, 관리자 권한 필요). 운영자가 elevated 로 정리.
 
-## v0.8.12 (2026-07-03)
+## ai-squad 0.8.12 - [fix] TestBinarySelection 테스트의 .env 누수 차단 (2026-07-03)
 
 `tests/test_gemini.py::TestBinarySelection` 4건(default/empty/explicit-gemini/invalid)이 봇을 agy 로 가동 중인 개발 머신에서 실패했다. 원인은 `config.py` 가 import 시 `load_dotenv(override=True)` 로 .env 를 읽는데, 이 테스트들이 `GEMINI_CLI_BINARY` 를 monkeypatch 한 뒤 `importlib.reload(config)` 를 하면 reload 가 `load_dotenv(override=True)` 를 재실행하면서 dev `.env` 의 `GEMINI_CLI_BINARY=agy` 가 monkeypatch 값을 덮어써 config 가 항상 agy 로 잡힌 것(테스트 격리 결함). v0.8.11 작업 중 발견.
 
@@ -358,7 +367,7 @@ v0.8.13 의 lockfile PID alive-check 는 서로 다른 세션의 두 워치독�
 - `test_gemini.py::TestBinarySelection` 10건 전부 통과(이전 4 실패 → 0), 전체 스위트 421건 통과(회귀 없음).
 - **Codex 교차검증**: 병합 차단 사유 없음(통과). 패치 재바인딩 방식·fixture/monkeypatch teardown 순서·격리 범위·conftest 무충돌·override=True 유지 판단 전부 확인. 발견 이슈 전부 Minor/Trivial(제품 결함 아님).
 
-## v0.8.11 (2026-07-03)
+## ai-squad 0.8.11 - [fix] Claude 세션 한도 메시지 fatal 미탐지 및 합의 답변 방송 수정 (2026-07-03)
 
 Slack thread 1782980989 회귀. Claude Code CLI 가 5시간 세션 한도에 걸리면 예외가 아니라 평범한 stdout 텍스트 `You've hit your session limit · resets 7:50pm (Asia/Seoul)` 를 정상 반환하는데, 기존 fatal 에러 탐지(`agents/base.py` `_is_fatal_error`)의 `_FATAL_SUBSTRINGS`/`_FATAL_REGEX` 가 이 문자열을 커버하지 않았다. 그 결과 (1) `has_error=False` → `needs_replacement=False` → 백업 대체 투입이 트리거되지 않아 Claude 가 9라운드 내내 `출력 0` 죽은 참가자로 남고, (2) `_generate_final_answer` 가 교체 안 된 Claude 를 통합문 후보로 잡고 `_is_bad_final_answer` 도 이 메시지를 못 걸러서, 최종 "💡 합의된 답변" 이 세션 한도 메시지 그 자체로 방송됐다(사용자 질문에 대한 답이 "너 세션 한도 초과됨"). v0.7.7(API 500 방송 수정)과 동형 버그의 세션 한도 버전.
 
@@ -371,7 +380,7 @@ Slack thread 1782980989 회귀. Claude Code CLI 가 5시간 세션 한도에 걸
 - 전체 스위트: 기존 회귀 없음(무관한 `test_gemini.py::TestBinarySelection` 4건은 로컬 `.env` 의 `GEMINI_CLI_BINARY=agy` 로 인한 기존 실패, stash 대조로 이번 변경과 무관 확인).
 - **Codex 교차검증**: 병합 차단 사유 없음(통과). 탐지 경로(has_error→needs_replacement→백업 교체)·최종답변 guard 통합·import 정합성·보안 전부 통과. 발견 이슈 전부 Minor/Trivial: Trivial(guard `callable` 가드)만 반영, 나머지(변형 문구 추정 확장 자제·긴 로그 가운데 미검사·결정적 merge fatal 필터)는 기존 설계 트레이드오프이거나 별개 하드닝(scope)이라 이번 변경서 제외.
 
-## v0.8.10 (2026-06-25)
+## ai-squad 0.8.10 - [fix] mutex 전환 후 watchdog_guard 헛 재기동 방지 (lockfile heartbeat) (2026-06-25)
 
 v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 주기 예약작업)의 `is_watchdog_running()` 이 `.watchdog.lock` 의 PID 로 워치독 생존을 판정한다는 사실을 확인. 새 워치독이 mutex 만 쓰고 lockfile 을 안 써서 가드가 'dead' 로 오판 → 3분마다 워치독을 재기동(매번 mutex `ERROR_ALREADY_EXISTS` 로 즉시 종료)하는 churn/콘솔 깜빡임이 발생할 수 있었다(실제로 구버전 lock 의 중복 방지 실패로 워치독 2개가 동시 가동 중인 것도 확인).
 
@@ -382,7 +391,7 @@ v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 �
 - `test_watchdog` 17건(`test_acquire_lock_uses_mutex_on_win32` 이 tmp lockfile 에 PID heartbeat 기록을 단언, 실제 `.watchdog.lock` 미오염 확인) + 전체 405 통과.
 - **Codex 교차검증**: 핵심 4항목(heartbeat 가 mutex 단일성 불침해 / 가드 churn 해소 / 정상·크래시 시 stale→재기동 흐름 / 테스트 적절성) 전부 통과. 잔여 Minor/Trivial(lockfile 쓰기 실패 시 churn 잔존-단 중복은 mutex 가 차단, PID 재사용, 동시 가드 경합)은 모두 기존 가드 liveness 방식의 한계로 이번 변경과 무관.
 
-## v0.8.9 (2026-06-25)
+## ai-squad 0.8.9 - [fix] !bot restart 1회 봇 다중 spawn 수정 및 단일 인스턴스 mutex 전환 (2026-06-25)
 
 `!bot restart` 를 한 번 보냈는데 워치독이 봇을 5개(서로 다른 PID, 일부 6ms 간격 동시) spawn 한 사고. 워치독은 단일 인스턴스(`.watchdog.lock`)·단일 스레드인데도 `start_bot()` 의 재진입 가드(`bot_process.poll() is None`)가 비원자적(TOCTOU)이라 재시작이 짧게 겹치면 중복 spawn 됐다. 중복 봇들은 Slack 소켓 충돌로 곧 죽고 1개로 수렴했으나, 근본 원인을 제거했다.
 
@@ -396,7 +405,7 @@ v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 �
 - 신규/강화 테스트(`test_watchdog`) 총 **17건**: restart 디바운스/재진입/예외 시 상태복구, Windows mutex 디스패치·이미보유시종료·생성실패 fail-closed, `_acquire_win_mutex` 단위(신규생성/ALREADY_EXISTS/실패), 파일락 생성·기존존재 종료, `release_lock`(mutex CloseHandle/파일 unlink). 전체 회귀 **405건 통과**(사전이슈 `test_gemini` 4건은 `.env` `GEMINI_CLI_BINARY=agy` 환경누수로 무관).
 - **Codex 교차검증 5라운드**: Major 4건(자연어 경로추출, 파일락 race 2건, Windows 폴백 도달성, 비-Windows takeover race) + Minor 4건(monotonic, manual_stop/auto_restart 누수, 테스트 커버리지)을 라운드별로 전부 반영. 최종 6라운드(확인)는 Codex 컴패니언 작업이 멈춰 보류, 마지막 1줄(auto_restart) 수정은 직전 라운드에서 승인된 manual_stop 수정과 동일 패턴 + 테스트 커버.
 
-## v0.8.8 (2026-06-25)
+## ai-squad 0.8.8 - [fix] 토론 모드 cwd 미설정으로 인한 Codex 외부 경로 차단 수정 (2026-06-25)
 
 토론 모드에서 "경로 X 의 프로젝트를 평가해줘" 류 주제를 줄 때 Codex 만 해당 경로를 읽지 못하고 실패(Windows `exited -1073741502` = 0xC0000142 STATUS_DLL_INIT_FAILED)하던 문제. Codex 는 `codex exec -s workspace-write` 샌드박스라 cwd(워크스페이스) 밖 파일 접근이 막히는데, 토론 모드는 coding/bridge 모드와 달리 작업 디렉토리를 전혀 설정하지 않아 Codex 워크스페이스가 봇 폴더에 고정됐다. Gemini/Claude CLI 는 워크스페이스 스코프가 없어 영향받지 않아, 같은 토론에서 Codex 만 "권한 문제"처럼 보이며 평가를 보류했다(실제로는 권한이 아니라 샌드박스 자식 프로세스 시작 실패).
 
@@ -408,7 +417,7 @@ v0.8.9 의 named mutex 전환 후, 배포 점검 중 `watchdog_guard.py`(3분 �
 - **Codex 교차검증 2라운드**: 1차에서 Major 1건(다단어 suffix 추출 실패) + Minor 3건 지적 → 전부 반영. 2차에서 잔여 이슈 없음 확인.
 - **운영자 조치 필요**: 토론으로 평가할 프로젝트는 `.env` 의 `CODING_ALLOWED_DIRS` 에 등록해야 한다. sym-ui 평가용으로 `<sym-ui 로컬 경로>` 추가. 이 화이트리스트는 coding 모드 쓰기 범위도 겸하므로, 등록 경로는 coding 쓰기 신뢰 대상이기도 하다(읽기 전용 분리는 추후 옵션).
 
-## v0.8.7 (2026-06-16)
+## ai-squad 0.8.7 - [fix] 리서치 약점 3건 수정 (제약 누락, 종합 실패 방송, 타임아웃 finding) (2026-06-16)
 
 v0.8.6 배포 후 6개 주제 라이브 검증(리서치 vs 토론)에서 리서치 모드의 별개 약점 3건 확인. 특히 "87키 풀알루미늄 키보드 15만원 이하 추천"에서 리서치가 분해 과정에 예산·사양 제약을 흘려 75% 키보드(87키 위반)를 섞어 추천하고, Claude CLI 세션 한도 소진 시 "You've hit your session limit" 에러가 종합 답변으로 방송됐다.
 
@@ -423,7 +432,7 @@ v0.8.6 배포 후 6개 주제 라이브 검증(리서치 vs 토론)에서 리서
 - 라이브 재검증: v0.8.7 로 봇 재시작 후 키보드 토픽 재실행으로 F1(제약 유지) 확인 예정.
 - (참고) `test_gemini` 4건 실패는 `.env`의 `GEMINI_CLI_BINARY=agy` 환경 결합 사전 이슈로 무관.
 
-## v0.8.6 (2026-06-16)
+## ai-squad 0.8.6 - [feat] 리서치 모드 재설계 및 링크 안전 분할 (2026-06-16)
 
 실사용 비교(#ai-리서치 vs #ai-토론, 동일 질문 "중개형 ISA 이벤트 증권사 추천")에서 리서치가 토론보다 느린데도 더 나쁜 결과를 낸 문제. (1) 교차검증(Codex)이 한국투자증권의 6월 진행 이벤트를 찾아 "키움뿐" 결론과 충돌한다고 플래그까지 걸었는데 종합 단계가 이를 무시 → 틀린 결론, (2) 메시지 분할이 긴 Gemini 그라운딩 URL을 두 동강 내 출력 깨짐.
 
@@ -442,7 +451,7 @@ v0.8.6 배포 후 6개 주제 라이브 검증(리서치 vs 토론)에서 리서
 - 잔여: 1차 출처 정독은 외부 CLI 도구 사용에 의존(프롬프트 계약+검증 재fetch로 보강). 라이브 재실행(동일 ISA 질문으로 한투가 진행중으로 잡히는지 실측)은 봇 가동·실제 CLI 환경 필요로 미수행.
 - (참고) `test_gemini` 4건 실패는 `.env`의 `GEMINI_CLI_BINARY=agy`(agy 실가동) 환경 결합 사전 이슈로 본 변경과 무관.
 
-## v0.8.5 (2026-06-11)
+## ai-squad 0.8.5 - [perf] 리서치 하위 주제 6개에서 4개로 축소 및 진행 카운터 추가 (2026-06-11)
 
 리서치 1건 처리에 약 7분이 걸리고 그동안 진행 단계가 불투명해 "멈춘 건가?" 답답함이 있던 문제 개선(실사용 피드백).
 
@@ -455,7 +464,7 @@ v0.8.6 배포 후 6개 주제 라이브 검증(리서치 vs 토론)에서 리서
 - `RESEARCH_SUBQ_MAX = 4` 적용 확인.
 - Codex 교차검증.
 
-## v0.8.4 (2026-06-11)
+## ai-squad 0.8.4 - [feat] 리서치 종합 답변·finding 본문 인라인 URL 축약 (2026-06-11)
 
 v0.8.3 배포 후 라이브 확인 결과, 구조화된 `📚 출처:` 블록은 축약됐으나 **모델이 생성한 `💡 종합 답변:` 본문**에 여전히 긴 URL이 노출되는 문제 확인. 원인: LLM 이 출처를 `[매체명](<url>)` 마크다운으로 박는데 **Slack 은 마크다운 링크를 미지원**해 URL 원문이 그대로 풀림(특히 Gemini 그라운딩 redirect 200자+).
 
@@ -467,7 +476,7 @@ v0.8.3 배포 후 라이브 확인 결과, 구조화된 `📚 출처:` 블록은
 - 단위 테스트 13건 추가(마크다운 꺾쇠/bare·괄호 보존·문장부호 절단·멱등성·잉여 괄호 종료 등), 리서치 테스트 총 50건 통과.
 - **Codex 교차검증 4회**: 1차(방향) → 2차(raw 괄호/문장부호 Medium) → 3차(마크다운 괄호 Medium) → 4차(해소 확인, Low 성능만). 각 라운드 지적을 반영해 정규식 견고화.
 
-## v0.8.3 (2026-06-11)
+## ai-squad 0.8.3 - [feat] 리서치 리포트 출처 Slack 짧은 하이퍼링크로 축약 (2026-06-11)
 
 리서치 리포트 `📚 출처:` 블록이 `도메인: 전체URL` 형식이라 URL이 너무 길게 표시되던 문제 개선(실사용 #ai-리서치 스레드에서 확인).
 
@@ -479,7 +488,7 @@ v0.8.3 배포 후 라이브 확인 결과, 구조화된 `📚 출처:` 블록은
 - 단위 테스트 7건 추가(라벨 도메인+경로끝/동일도메인 구분/긴 토큰 fallback/경로없음/디코딩/특수문자 제거/리포트 하이퍼링크 렌더), 리서치 테스트 총 33건 통과.
 - Codex 교차검증.
 
-## v0.8.2 (2026-06-11)
+## ai-squad 0.8.2 - [fix] agy 자동 업데이트 비활성화 및 업데이터 콘솔 깜빡임 조사 (2026-06-11)
 
 리서치 모드 실사용 중 재발한 cmd 콘솔 깜빡임을 근본 원인까지 추적한 결과, agy 자체의 자동 업데이터(`agy --bg-updater` → `agy --version`)가 매 호출마다 잠깐 띄우는 콘솔 창이 원인임을 ground-truth(실행 중 봇 자손 프로세스 트리 + 보이는 창 실측)로 확정.
 
@@ -496,7 +505,7 @@ v0.8.3 배포 후 라이브 확인 결과, 구조화된 `📚 출처:` 블록은
 - 억제 시도 6종 전부 A/B·반복 실측으로 무효 확인(1회 표본의 위양성 배제).
 - config 변경: agy 일 때 env 주입 동작 단위 확인 + 기존 테스트 29건 통과 + Codex 교차검증(Medium 지적은 정규화 로직 미반영 위양성으로 기각).
 
-## v0.8.1 (2026-06-11)
+## ai-squad 0.8.1 - [fix] 리서치 종합 답변 브로드캐스트, 봇 S4U 전환, agy statusline 깜빡임 제거 (2026-06-11)
 
 v0.8.0 리서치 모드 실사용 중 발견된 2건 수정 + 봇 실행 방식 강화.
 
@@ -510,7 +519,7 @@ v0.8.0 리서치 모드 실사용 중 발견된 2건 수정 + 봇 실행 방식 
 - 깜빡임: 특정 agy PID 자식 트리 격리 실측 → statusline.bat/.py 0건.
 - S4U breakaway: 예약작업 종료 후에도 watchdog/bot 생존(20초 후 PID 유지) 확인.
 
-## v0.8.0 (2026-06-11)
+## ai-squad 0.8.0 - [feat] 리서치 모드 신설 (3 AI 분담형 팬아웃 조사) (2026-06-11)
 
 새 **리서치 모드** 추가. `#ai-리서치` 채널에 질문을 던지면 3 AI 가 분담형 팬아웃으로 웹 조사해 출처 달린 리포트를 스레드로 돌려준다. 토론 고도화(Phase 2)와 공유할 "근거 기반 협업 엔진"을 분리 가능한 함수 경계로 구현. (단위 25건 + 라이브 슬랙 3건 실증 + Codex 교차검증 통과)
 
@@ -527,7 +536,7 @@ v0.8.0 리서치 모드 실사용 중 발견된 2건 수정 + 봇 실행 방식 
 - **라이브 슬랙 실증 3건**(#ai-협업 스레드): 사실/실시간형(전기차 보조금), 비교/분석형(RAG vs 파인튜닝), 광범위 조사형(QA 채용 트렌드). 분해 6개 → 분담조사 → 교차검증 → 종합 → 출처 리포트 흐름이 스레드에 정상 표출, 실제 출처 URL(korea.kr/me.go.kr/zdnet/ev.or.kr 등) 첨부, disputed/unverified 가 검증자명과 함께 표기됨 확인. 3/3 exit 0.
 - Codex 교차검증 통과: Major 2건(gather return_exceptions 누락, _ask_named 예외 미처리) 발견 → 즉시 반영·재검증.
 
-## v0.7.11 (2026-06-10)
+## ai-squad 0.7.11 - [fix] claude 호출 --strict-mcp-config 추가로 콘솔 깜빡임 제거 (2026-06-10)
 
 슬랙 문의 시(에이전트 "생각 중" 진입 시점) Windows 콘솔 창이 잠깐 떴다 사라지는 깜빡임 제거. 라이브 프로세스 트리 추적으로 원인을 특정하고, 격리 비교 실측 + Codex 교차검증으로 검증.
 
@@ -542,7 +551,7 @@ v0.8.0 리서치 모드 실사용 중 발견된 2건 수정 + 봇 실행 방식 
 - 단위 테스트 `tests/test_agent_vision.py::test_strict_mcp_config_disables_global_mcp` 신규: 두 빌더 모두 `-p` 뒤·`--output-format` 앞 위치에 플래그가 들어가는지 순서까지 단언. vision/bridge/process 묶음 38건 통과.
 - Codex 교차검증 통과: 4개 항목(플래그 위치 정합성·누락 호출부·부작용·codex 경로) 전부 통과, 발견 이슈 2건 모두 Trivial(외부 CLI 파서 미확정→라이브로 해소, 테스트 순서 미검증→순서 단언 보강).
 
-## v0.7.10 (2026-06-09)
+## ai-squad 0.7.10 - [fix] agy -p stdout 미출력 버그 우회 (디스크 transcript 복구) (2026-06-09)
 
 agy(Antigravity CLI)를 봇 백엔드로 쓸 수 있도록 `-p` stdout 미출력 버그를 우회. Gemini CLI 개인 티어가 2026-06-18 종료 예정이라 그 전에 agy 경로를 실사용 가능 상태로 준비. (Codex 3차 교차검증 통과 + 라이브 실측 3회)
 
@@ -559,7 +568,7 @@ Antigravity CLI `agy --print`/`-p` 가 non-TTY(pipe/subprocess/redirect) 컨텍�
 - Codex 교차검증 3회 반영: 1차(prompt head 약점) → 2차(루프별 직렬화 한계·prefix 충돌·시간필터 부재) → 3차(토큰 방식으로 2차 Major 해소 확인 + 폴백 cid 검증/content 정규화 보강).
 - 주의: PowerShell `& agy -p` 직접 호출은 stdin 상속으로 무한 hang(이슈 #76 보고). 봇은 `stdin=DEVNULL` 이라 영향 없음(실측 hang 없이 완주).
 
-## v0.7.9 (2026-06-08)
+## ai-squad 0.7.9 - [fix] 토론 미해결 쟁점 중복 표시 수정 (disagreements 필드 사용) (2026-06-08)
 
 토론 결론 메시지의 `⚠️ *미해결 쟁점:*` 이 각 에이전트의 `summary` 를 그대로 나열해, 같은 메시지의 `📋 각 에이전트 요약` 및 `💡 합의된 답변` 과 내용이 중복되던 문제 수정. (사용자 지적 + 자체 슬랙 E2E 3종 검증)
 
@@ -576,7 +585,7 @@ CONSENSUS JSON 스키마에는 실제 대립점을 담는 전용 `disagreements`
 - 실제 슬랙 봇 E2E 3종(부먹/찍먹, 탭/스페이스, 비밀번호 해시): 모두 "미해결 쟁점" 이 disagreements 의 point/why 만 표시하고 각 에이전트 요약·합의된 답변과 중복 0건 확인. 발산 케이스에서 LLM 들이 잔여 이견을 disagreements 에 안정적으로 기록함을 실측(그래서 summary 폴백은 애초에 불필요).
 - Codex 교차검증: 정적 분석으로 호출부 정합성(반환값 unpack 2곳 한정, issue_note 양용도 `if issue_note:` 가드) 확인.
 
-## v0.7.8 (2026-05-29)
+## ai-squad 0.7.8 - [fix] Gemini True color 터미널 경고 누출 수정 (2026-05-29)
 
 Gemini 의 매 발언 첫 줄에 터미널 경고 `Warning: True color (24-bit) support not detected. Using a terminal with true color enabled will result in a better visual experience.` 가 누출되어 Slack 답변에 그대로 노출되던 문제 수정. (자체 테스트 thread 1780059304 에서 사용자가 발견)
 
@@ -591,7 +600,7 @@ Gemini 의 매 발언 첫 줄에 터미널 경고 `Warning: True color (24-bit) 
 - 단위 테스트 269 passed. 실제 Gemini CLI 호출로 응답에 경고 미포함 확인. Codex 교차검증 통과(false positive 위험 낮음). 슬랙 전수 스캔 자체 테스트로 모든 에이전트 발언에 노이즈/에러 누출 0건 확인.
 - 자체 테스트 방법론 개선: 합의문만 보던 기존 방식 → 스레드 전 메시지를 `_NOISE_KEYWORDS` + 에러 마커로 전수 스캔.
 
-## v0.7.7 (2026-05-29)
+## ai-squad 0.7.7 - [fix] 합의 답변 API Error 500 방송 회귀 수정 (2026-05-29)
 
 토론 종료 시 `💡 *합의된 답변:*` 자리에 모델 답변 대신 `API Error: 500 Internal server error. ...` 라는 에러 문구가 그대로 방송되는 회귀 수정. (Slack thread 1780056574)
 
@@ -608,7 +617,7 @@ Gemini 의 매 발언 첫 줄에 터미널 경고 `Warning: True color (24-bit) 
 - 회귀 테스트 추가: `tests/test_agent_base.py` (5xx/overloaded 감지 + 5xx-유사 숫자 오탐 방지), `tests/test_consensus.py::TestGenerateFinalAnswerErrorGuard` (500 → 폴백 머지 / 재시도 성공 / 다음 후보 폴백 / 정상 통과).
 - Codex 교차검증: 5xx 정규식 false negative(`APIError: 500`, `HTTP/1.1 503`, `statusCode: 500`) 지적 반영 후 재통과. 전체 268 passed.
 
-## v0.7.6 (2026-05-26)
+## ai-squad 0.7.6 - [fix] slack_bot.py os import 누락으로 인한 첨부 무응답 수정 (2026-05-26)
 
 v0.7.5 자체 핫픽스. v0.7.5 commit (a37ae5f) 직후 실전 PDF 첨부 테스트에서 봇이 완전 무응답. bot_output.log 에 `NameError: name 'os' is not defined` 가 `_runner` 라인 173 에서 던져지고 thread 전체가 죽음.
 
@@ -628,7 +637,7 @@ v0.7.5 에서 `tmp_dir` 을 `<project>/.tmp/` 내부로 옮길 때 `_runner` 안
 - `python -c "import slack_bot"` 로 모듈 로드 sanity check 통과
 - 봇 재시작 + 실전 PDF 첨부 테스트 예정
 
-## v0.7.5 (2026-05-26)
+## ai-squad 0.7.5 - [fix] PDF 첨부 회귀 수정 (Gemini workspace 격리, Codex PDF 미지원) (2026-05-26)
 
 v0.7.4 출시 직후 실전 PDF 첨부에서 발견된 회귀 2건 핫픽스. 실제 슬랙 스레드(`1779791375.628899`) 에서 Claude 만 정상 동작했고 Gemini/Codex 는 PDF 분석 실패.
 
@@ -662,7 +671,7 @@ v0.7.4 출시 직후 실전 PDF 첨부에서 발견된 회귀 2건 핫픽스. �
   - **Minor**: `extract_pdf_text` 의 truncation 이 페이지 단위 break 라 단일 큰 페이지 PDF 에서 `max_chars` 를 크게 초과 가능 → 페이지 안에서도 잘라내도록 수정 + 회귀 테스트 (`test_extract_pdf_text_truncates_inside_large_page`) 추가
 - 수정 후 `slack_files` 단위 17/17 PASS, 전체 268 PASS
 
-## v0.7.4 (2026-05-26)
+## ai-squad 0.7.4 - [feat] PDF 첨부 지원 및 images -> attachments 리네이밍 (2026-05-26)
 
 PDF 첨부 지원 확장. 기존에는 Slack 에 PDF 던지면 봇이 무시했지만, 이제 image/* 와 동일 흐름으로 다운로드되어 각 CLI 의 read 도구(Claude Code Read native PDF 지원, Gemini `@<path>`, Codex read 텍스트 추출)가 직접 처리한다. Python 단 PDF 파싱 의존성 추가 없음 (글로벌 CPU 과열 룰의 "PDF 파싱은 실시간 API 에서 제거" 정책과 부합).
 
@@ -697,7 +706,7 @@ PDF 첨부 지원 확장. 기존에는 Slack 에 PDF 던지면 봇이 무시했�
     - Trivial: `modes/coding.py:357` + `modes/debate.py:639` 의 docstring 에 "이미지" 표현 잔재 → "첨부 파일" 로 일반화
 - 수정 후 전체 비-라이브 테스트 **259 passed** 재확인
 
-## v0.7.3.3 (2026-05-20)
+## ai-squad 0.7.3.3 - [fix] _run_progress_once 세마포어 교체 누락 및 cancel cleanup 수정 (2026-05-20)
 
 v0.7.3.2 직후 Codex 교차검증에서 Block 1건 + Major 1건 발견, 즉시 교정.
 
@@ -714,7 +723,7 @@ v0.7.3.2 직후 Codex 교차검증에서 Block 1건 + Major 1건 발견, 즉시 
 - `_get_gemini_concurrency()` 의 thread-safety: 현재 async-only 호출이지만, Slack 핸들러가 worker thread 띄울 가능성 고려해 `threading.Lock` 추가 검토 (별도 이슈)
 - `_run_progress_once` 단위 테스트 부재(subprocess mocking 필요): Block 버그를 잡지 못한 원인. 후속 작업으로 분리
 
-## v0.7.3.2 (2026-05-20)
+## ai-squad 0.7.3.2 - [fix] Gemini 세마포어 이벤트 루프 바인딩 회귀 및 토론 hang 수정 (2026-05-20)
 
 v0.7.3 라이브 검증(2차 5개 토론)에서 발견된 Major 2건 즉시 교정.
 
@@ -735,7 +744,7 @@ v0.7.3 라이브 검증(2차 5개 토론)에서 발견된 Major 2건 즉시 교�
 - 봇 재시작 후 라이브 재검증 권장(현재 코드는 main 반영, watchdog 가 자동 재시작)
 - Codex 교차검증: 본 변경의 WeakKeyDictionary 사용 안전성·outer timeout cancel 경로·thread-safety 를 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록)
 
-## v0.7.3 (2026-05-20)
+## ai-squad 0.7.3 - [fix] 토론 2대1 교착 조기 종료 수정 (agree 의미 완화, 페어 outlier 감지) (2026-05-20)
 
 토론 모드에서 2명이 합의하고 1명이 출처 없이 이견을 고집하는 deadlock 케이스가 MAX_ROUNDS 까지 끌리던 결함 수정. Slack thread 1779271920 (런던고라니 정치-경제 분리 발언 추적) 에서 Claude·Codex 가 "출처 URL 없는 인용에 동의 불가" 입장 유지, Gemini 가 5R 동안 매번 약간 다른 인용 변형 시도. 기존 `_is_stalemate` 분기는 `agrees>=2` 필요한데 Claude/Codex 가 Gemini 와 일치 안 하니 agree=false 마킹해서 발동 불가. 결국 `no_progress` 가 R5 에서 가까스로 발동.
 
@@ -757,7 +766,7 @@ v0.7.3 라이브 검증(2차 5개 토론)에서 발견된 Major 2건 즉시 교�
 - 효과 예측: Slack thread 1779271920 패턴이 v0.7.3 환경에서 R3 에 종료(기존 R5+ → 라운드 비용 40%+ 절감).
 - Codex 교차검증: 본 변경의 분기 순서·임계값·SYSTEM_PROMPT 완화 영향을 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록).
 
-## v0.7.2.1 (2026-05-20)
+## ai-squad 0.7.2.1 - [fix] agy cmd /c 셸 파싱 우회 및 argv 길이 가드 추가 (2026-05-20)
 
 v0.7.2 직후 Codex 교차검증에서 발견된 Major 2건 + Minor 2건 + Trivial 1건을 즉시 교정한 핫픽스.
 
@@ -777,7 +786,7 @@ v0.7.2 직후 Codex 교차검증에서 발견된 Major 2건 + Minor 2건 + Trivi
 - 전체 비-라이브 테스트 231 passed (+8 신규, 회귀 없음).
 - 라이브 검증은 여전히 인터랙티브 OAuth 필요로 v0.7.2 와 동일하게 GitHub Issue #96 에서 추적.
 
-## v0.7.2 (2026-05-20)
+## ai-squad 0.7.2 - [feat] Antigravity CLI(agy) 전환 준비용 GEMINI_CLI_BINARY 토글 추가 (2026-05-20)
 
 Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 사용자 대상 Gemini CLI 서비스가 종료되고 Antigravity CLI(`agy`)로 통합된다. 사전에 코드 경로를 분기 가능하도록 준비. 안전 기본값 `gemini` 유지로 즉시 배포해도 기존 동작은 그대로.
 
@@ -803,7 +812,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - agy CLI 실제 호출 dry-run: 첫 호출에 인터랙티브 OAuth 가 필요해 비대화식 자동화 환경에서 검증 불가. 사용자가 인터랙티브 OAuth 1회 마친 뒤 `GEMINI_CLI_BINARY=agy` 토글 + 실제 슬랙 토론 1회 라이브 확인 필요(이 라이브 확인은 후속 작업으로 분리).
 - Codex 교차검증: 본 변경의 분기 안전성/회귀 위험을 별도 디스패치로 의뢰(결과는 PR 코멘트로 기록).
 
-## v0.7.1 (2026-05-19)
+## ai-squad 0.7.1 - [fix] 토론 자기 반복(no-progress) 조기 종료로 토큰 낭비 차단 (2026-05-19)
 
 ### 버그 수정
 - **[Major]** 실시간/사실 주제(예: "오늘 코스피 매수?")에서 라운드 3부터 핵심 권고가 3사 동일한데도 MAX 라운드까지 진행해 토큰을 낭비하던 결함 수정(실측 1건 7라운드 ~$4). 근본 원인: `_summaries_diverge`가 summary 전체(인용 수치·출처 포함) 어휘 Jaccard를 비교해, 권고가 수렴해도 인용부 차이로 `diverged=True`가 영구 고착. 동시에 에이전트들이 곁가지 쟁점으로 `agree=false`를 유지하면 `agrees<2`라 challenge-once(>=3)/`_is_stalemate`(>=2+비증가) 출구가 모두 미발동. 수정: agree 플래그·cross-agent 발산에 무관한 자기-반복 신호 `_no_progress(prev, curr)` 도입(양 라운드 공통 에이전트의 자기 summary 토큰 Jaccard 최소값 >= `NO_PROGRESS_THRESHOLD` 0.6, 공통 2명 미만이면 False). `start()`/`followup()` 양 루프에 `prev_summaries` 추적 + `_is_stalemate` elif 다음에 `elif can_conclude and no_progress:` 추가. agree>=2면 "다수 합의 (수렴)", 아니면 "합의 불발 (추가 진전 없음)"으로 조기 종료. `min_rounds`(난이도 게이트) 이후에만 작동하고 정상 합의/교착 경로보다 후순위라 조기 가로채기 없음.
@@ -812,7 +821,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - 신규 단위 테스트 `TestNoProgress`(5) + KOSPI 낭비 재현 통합 테스트 `TestConvergenceEarlyExit`(RED: 라운드 10 완주 → GREEN: 라운드 ≤4 종료). `TestMaxRoundsExhaustion`을 정정된 조기 종료 동작에 맞춰 갱신. 비라이브 전체 160 passed.
 - Codex 교차검증: 플러그인 공유 런타임이 23시간 좀비화로 디스패치 불가(좀비 프로세스 6종 회수 조치). 메모리 원칙(인프라 실패 시 테스트 근거로 진행)에 따라 RED→GREEN 재현 테스트로 갈음.
 
-## v0.7.0 (2026-05-19)
+## ai-squad 0.7.0 - [fix] 토론 시스템 6개 항목 개선 (교착 재설계, 백업 풀 분산 등) (2026-05-19)
 
 토론(debate) 시스템 품질/안정성 6개 항목 개선. AI 멀티에이전트 토론 결과 검토에서 도출된 결함을 코드 대조로 확인 후 일괄 수정.
 
@@ -830,7 +839,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - 신규 단위 테스트: `tests/test_debate_improvements.py`, `tests/test_debate_gates.py`, `tests/test_agent_family.py` + `test_consensus.py`/`test_replacement.py` 갱신. 비라이브 전체 154 passed.
 - Codex 교차 검증: 1차에서 5개 이슈 지적(백업 인스턴스 중복, 평균 Jaccard로 2:1 발산 미감지, 정상 합의 false-positive 차단, followup 난이도 원주제 무시, disagreements 구조 검증). 전부 교정 + 해당 버그 회귀 테스트 추가(`triple_failure_no_duplicate_instance`, `two_vs_one_outlier_diverged`, `divergence_forces_one_challenge_round_then_concludes`).
 
-## v0.6.4 (2026-05-12)
+## ai-squad 0.6.4 - [fix] 코딩 모드 Phase 1 게이트 추가 (질문 응답 시 리뷰 자동 진입 차단) (2026-05-12)
 
 ### 버그 수정
 - **[Major]** 코딩 모드에서 Phase 1 Claude 가 요구사항을 되묻는 질문 응답을 줬을 때, 봇이 그것을 그대로 "코드"로 간주하여 Phase 2 Codex 리뷰가 곧장 시작되고 Codex 가 엉뚱한 stockradar stacktrace 같은 컨텍스트를 끌어와 응답하던 회귀 수정. Phase 2 가 묶여 있는 동안 Phase 3 Gemini 는 도달조차 못 해 응답이 없던 사용자 보고가 원인. `modes/coding.py` 에 Phase 1 게이트 도입:
@@ -860,27 +869,27 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - 단위 테스트 9건 추가 (Claude limit / Codex sandbox / Codex deprecation 정규식 / Gemini ripgrep 노이즈), 전체 159 passed
 - Codex 교차 검증 → generic deprecation substring 부작용 지적 받아 정규식으로 좁힘
 
-## v0.6.2 (2026-05-08)
+## ai-squad 0.6.2 - [fix] file_share/thread_broadcast subtype 차단 회귀 수정 (2026-05-08)
 
 ### 버그 수정
 - **[Critical]** 텍스트+이미지를 한 번에 보내면 봇이 반응 못 하던 회귀 수정. Slack 이 첨부 동반 메시지에 `subtype: "file_share"` 를 붙이는데 `slack_bot.handle_message` 가 모든 subtype 을 무조건 차단하고 있어 v0.6.0 이후 멀티모달 입력 라우팅이 전부 막혀 있었음. `_PROCESS_SUBTYPES` 화이트리스트(`{None, "file_share", "thread_broadcast"}`) + `should_process_event` 헬퍼 도입, 단위 테스트 10건 추가 (총 150 passed).
 
-## v0.6.1 (2026-05-08)
+## ai-squad 0.6.1 - [fix] 이미지 첨부를 CLI prompt 첨부 방식으로 정정 (API 키 의존 제거) (2026-05-08)
 
 ### 버그 수정
 - **[Major]** 이미지 첨부 분석을 SDK 직호출에서 CLI prompt 첨부 방식으로 정정. v0.6.0 이 Anthropic/google-genai SDK 직호출로 구현되어 사용자 운영 모델(Claude Code / Codex / Gemini CLI 의 OAuth 구독)과 불일치, API 키가 새로 필요해진 회귀를 해결. 이제 Slack 첨부 이미지를 임시 파일로 저장하고 절대경로를 각 CLI 의 첨부 syntax 로 prompt 에 끼워 넣어 호출한다 (Claude: 절대경로 + Read 도구, Gemini: `@<path>`, Codex: 절대경로 + read 도구). 의존성에서 anthropic, google-genai 제거.
 
-## v0.6.0 (2026-05-08)
+## ai-squad 0.6.0 - [feat] Slack 첨부 이미지 분석 지원 추가 (2026-05-08)
 
 ### 개선
 - **[Major]** Slack 첨부 이미지 분석 지원 (Debate / Coding / Bridge 3개 모드). v0.6.1 에서 호출 방식 정정.
 
-## v0.5.1 (2026-04-21)
+## ai-squad 0.5.1 - [fix] 부팅 크래시 루프 수정 (stdout/stderr UTF-8 재설정) (2026-04-21)
 
 ### 버그 수정
 - **[Block]** 부팅 크래시 루프 해결 — stdout/stderr UTF-8 재설정 (`1d8b683`)
 
-## v0.5.0 (2026-04-13)
+## ai-squad 0.5.0 - [fix] 에이전트 실행 안정화 및 부팅 CLI 헬스체크 추가 (2026-04-13)
 
 ### 개선
 - **[Minor]** 부팅 시 CLI 헬스체크 (claude/codex/gemini --version) (`e6c2195`)
@@ -892,12 +901,12 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - **[Minor]** 코딩 모드 히스토리에서 백업 에이전트 메시지도 인식 (`28005ea`)
 - **[Major]** watchdog 리소스 누수·동시성 수정 + 단위 테스트 추가 (`41acfbc`)
 
-## v0.4.2 (2026-04-12)
+## ai-squad 0.4.2 - [fix] 토론 모드 에이전트 응답 완료 즉시 포스트 처리 (2026-04-12)
 
 ### 버그 수정
 - **[Minor]** 토론 모드 에이전트 응답을 완료 즉시 포스트 (`0dffe59`)
 
-## v0.4.1 (2026-04-11)
+## ai-squad 0.4.1 - [fix] Gemini 모델 교체, readline 타임아웃 이중화, 토론 환각 방지 (2026-04-11)
 
 ### 개선
 - **[Minor]** Gemini primary를 gemini-2.5-flash-lite로 교체 + semaphore 완화 (`149a1a8`)
@@ -909,7 +918,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - **[Major]** Gemini CLI 내부 재시도를 실패로 오판 — exit code 기반 판정 (`c6764d2`)
 - **[Major]** 토론 모드 라운드 1에서 상대 의견 환각 방지 (`8b01197`)
 
-## v0.4.0 (2026-04-10)
+## ai-squad 0.4.0 - [feat] 토론 통합 답변 생성, watchdog_guard 추가, Gemini 안정화 (2026-04-10)
 
 ### 개선
 - **[Major]** 토론 합의 후 통합 답변 생성 (`4bc1602`)
@@ -920,7 +929,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - **[Minor]** Codex 오탐 감지 수정 — fatal error 패턴 맥락화 + head/tail 스캔 (`6045e6c`)
 - **[Minor]** Windows에서 에이전트 CLI 호출 시 cmd 창 깜빡임 제거 (`db55108`)
 
-## v0.3.0 (2026-04-05)
+## ai-squad 0.3.0 - [fix] Windows 호환성, 경로 화이트리스트, shell=True 제거 (2026-04-05)
 
 ### 개선
 - **[Minor]** kill_process_tree를 process.py로 통합 (`df4631e`)
@@ -941,7 +950,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - **[Minor]** Codex 출력 정리 강화 — 파일 경로 노이즈 필터 + 중복 제거 threshold (`852ea4b`)
 - **[Minor]** Codex PowerShell dir 출력 노이즈 필터 추가 (`743dba1`)
 
-## v0.2.0 (2026-04-04)
+## ai-squad 0.2.0 - [feat] Bridge 모드, 코딩 모드 개선, 스트리밍 진행 표시 추가 (2026-04-04)
 
 ### 개선
 - **[Major]** Bridge 모드 + 오류 감지 대체 투입 + load_dotenv override (`52c08d9`)
@@ -989,7 +998,7 @@ Google 발표(2026-05-19, I/O 2026)에 따라 2026-06-18부터 Pro/Ultra/무료 
 - **[Minor]** Codex progress 메시지에서 헤더/프롬프트 노이즈 제거 (`661205c`)
 - **[Minor]** Codex 응답 중복 제거 강화 (`2ccb09d`)
 
-## v0.1.0 (2026-04-02)
+## ai-squad 0.1.0 - [feat] 초기 릴리즈 및 watchdog 자동 재시작 추가 (2026-04-02)
 
 ### 개선
 - **[Major]** watchdog 자동 재시작 + Slack 원격 제어 추가 (`47f15ab`)
