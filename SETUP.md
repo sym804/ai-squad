@@ -63,7 +63,10 @@ SLACK_BOT_TOKEN=xoxb-xxxxxxxxxxxx-xxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxx
 SLACK_APP_TOKEN=xapp-1-xxxxxxxxxxxx-xxxxxxxxxxxxx-xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 DEBATE_CHANNEL_ID=C07XXXXXXXX
 CODING_CHANNEL_ID=C07YYYYYYYY
+ALLOWED_USER_IDS=U07ZZZZZZZZ
 ```
+
+`ALLOWED_USER_IDS` 는 봇을 부를 수 있는 사람의 Slack 멤버 ID 입니다(쉼표로 여러 명). 봇은 메시지를 AI CLI 에 넘겨 이 PC 에서 도구를 실행시키므로, 목록에 없는 사람의 메시지와 `!stop`, `!bot` 명령은 무시합니다. 비워 두면 아무 메시지도 처리하지 않습니다. 멤버 ID 는 Slack 프로필의 "더보기 > 멤버 ID 복사" 로 얻습니다.
 
 ## 9. 실행
 

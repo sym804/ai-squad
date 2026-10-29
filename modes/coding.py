@@ -207,9 +207,11 @@ class CodingMode:
         for agent in self.agents:
             agent._current_thread_ts = thread_ts
             agent._cwd = work_dir
+            agent._allow_shell = True  # 코딩 모드는 테스트·빌드를 돌려야 한다
         for backup in self._backup_map.values():
             backup._current_thread_ts = thread_ts
             backup._cwd = work_dir
+            backup._allow_shell = True
 
     def _get_backup(self, agent):
         return self._backup_map.get(agent.name)
@@ -413,7 +415,7 @@ class CodingMode:
                     "attachments": merged_attachments,
                 })
                 self._post(channel, thread_ts, (
-                    "⏸️ *Phase 1 보류 유지* — Claude 가 추가 정보를 더 요청했습니다. "
+                    "⏸️ *Phase 1 보류 유지* - Claude 가 추가 정보를 더 요청했습니다. "
                     "답변해 주시면 다시 시도합니다."
                 ))
                 _release_pending(thread_ts, clear=False)
@@ -438,14 +440,22 @@ class CodingMode:
         except Exception as e:
             print(f"[SLACK ERROR] {e}")
 
+    def _history_role(self, msg):
+        """기록 메시지 판정. security.history_role 참고(SYM-201)."""
+        import config
+        from security import history_role
+        return history_role(msg, self._bot_user_id, config.ALLOWED_USER_IDS)
+
     def _fetch_original_topic(self, channel, thread_ts):
-        """스레드의 첫 번째 메시지(원래 요청)를 가져온다."""
+        """스레드의 첫 번째 메시지(원래 요청)를 가져온다. 허용 목록 밖 사람이 연 스레드면 빈 문자열."""
         try:
+            if self._bot_user_id is None:
+                self._bot_user_id = self.slack.auth_test()["user_id"]
             result = self.slack.conversations_replies(
                 channel=channel, ts=thread_ts, limit=1
             )
             messages = result.get("messages", [])
-            if messages:
+            if messages and self._history_role(messages[0]):
                 return messages[0].get("text", "").strip()
         except Exception as e:
             print(f"[SLACK ERROR] fetch original topic: {e}")
@@ -467,7 +477,10 @@ class CodingMode:
                 text = msg.get("text", "").strip()
                 if not text:
                     continue
-                if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
+                role = self._history_role(msg)
+                if role is None:
+                    continue
+                if role == "bot":
                     all_agents = list(self.agents) + list(self._backup_map.values())
                     for agent in all_agents:
                         if text.startswith(f"{agent.emoji} *[{agent.name}]*"):
@@ -579,8 +592,10 @@ class CodingMode:
         return response, agent
 
     def _fetch_today_conclusions(self, channel, current_thread_ts):
-        """당일 채널의 합의/완료 결론 메시지만 가져온다."""
+        """당일 채널의 합의/완료 결론 메시지만 가져온다. 이 봇이 쓴 것만 받는다(문구 위조 차단)."""
         try:
+            if self._bot_user_id is None:
+                self._bot_user_id = self.slack.auth_test()["user_id"]
             today_start = datetime.datetime.now().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -591,6 +606,8 @@ class CodingMode:
             conclusions = []
             for msg in result.get("messages", []):
                 text = msg.get("text", "")
+                if self._history_role(msg) != "bot":
+                    continue
                 if ("🏛️" in text or "✅" in text) and ("합의" in text or "완료" in text):
                     if msg.get("thread_ts") == current_thread_ts:
                         continue
@@ -734,12 +751,12 @@ class CodingMode:
 
         self._post(channel, thread_ts, (
             "*코딩 모드 시작* :computer:\n"
-            "• *Claude* — 기획 + 설계 + 코드 작성\n"
-            "• *Codex* — 코드 리뷰 (Claude 코드 완성 후 자동 진입)\n"
-            "• *Codex (리더) / Claude / Gemini* — 테스트 작성 (Phase 2 이후)"
+            "• *Claude* - 기획 + 설계 + 코드 작성\n"
+            "• *Codex* - 코드 리뷰 (Claude 코드 완성 후 자동 진입)\n"
+            "• *Codex (리더) / Claude / Gemini* - 테스트 작성 (Phase 2 이후)"
         ))
 
-        # Phase 1 — Claude: 기획 + 설계 + 코드 작성
+        # Phase 1 - Claude: 기획 + 설계 + 코드 작성
         self._post(channel, thread_ts, "━━━ Phase 1: 기획 + 설계 + 코드 작성 (Claude) ━━━")
 
         phase1_prompt = (
@@ -767,7 +784,7 @@ class CodingMode:
                 "attachments": attachments,
             })
             self._post(channel, thread_ts, (
-                "⏸️ *Phase 1 보류* — Claude 가 추가 정보를 요청했습니다. "
+                "⏸️ *Phase 1 보류* - Claude 가 추가 정보를 요청했습니다. "
                 "답변해 주시면 코드 완성 후 Codex 리뷰와 테스트가 자동으로 이어집니다."
             ))
             return
@@ -782,7 +799,7 @@ class CodingMode:
 
         Phase 1 에서 Claude 가 코드를 완성했을 때만 호출된다.
         """
-        # Phase 2 — Codex: 코드 리뷰
+        # Phase 2 - Codex: 코드 리뷰
         self._post(channel, thread_ts, "━━━ Phase 2: 코드 리뷰 (Codex) ━━━")
 
         review, used_agent = await self._ask_with_backup(
@@ -796,7 +813,7 @@ class CodingMode:
         if self._check_cancel(channel, thread_ts):
             return
 
-        # Phase 3 — 테스트 (Codex 리더, Claude/Gemini 참여) — 3개 동시
+        # Phase 3 - 테스트 (Codex 리더, Claude/Gemini 참여) - 3개 동시
         self._post(channel, thread_ts, "━━━ Phase 3: 테스트 작성 (Codex 리더 / Claude / Gemini) ━━━")
 
         thinking_msgs = {}
@@ -937,7 +954,7 @@ class CodingMode:
             current_code = fixed_code
             self._post(channel, thread_ts, self.claude.format_message(f"*[수정된 코드]*\n{current_code}"))
 
-        # Final report — Codex가 전체 결과 취합 보고
+        # Final report - Codex가 전체 결과 취합 보고
         self._post(channel, thread_ts, "━━━ *최종 보고서 작성 중 (Codex)* ━━━")
         report_prompt = (
             "아래는 코딩 파이프라인의 전체 작업 결과입니다. "

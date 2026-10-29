@@ -1,6 +1,8 @@
 import os
 from dotenv import load_dotenv
 
+from security import parse_allowed_user_ids
+
 load_dotenv(override=True)
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
@@ -10,6 +12,8 @@ CODING_CHANNEL_ID = os.environ["CODING_CHANNEL_ID"]
 # 리서치 모드 채널 (선택). 미설정 시 리서치 라우팅 비활성.
 RESEARCH_CHANNEL_ID = os.environ.get("RESEARCH_CHANNEL_ID", "")
 RESEARCH_SUBQ_MAX = int(os.environ.get("RESEARCH_SUBQ_MAX", "4"))
+# 봇을 부를 수 있는 Slack user ID (쉼표 구분). 비어 있으면 모든 메시지를 무시한다.
+ALLOWED_USER_IDS = parse_allowed_user_ids(os.environ.get("ALLOWED_USER_IDS", ""))
 SR_AGENT_CHANNEL_ID = os.environ.get("SR_AGENT_CHANNEL_ID", "")
 TC_AGENT_CHANNEL_ID = os.environ.get("TC_AGENT_CHANNEL_ID", "")
 MAX_DEBATE_ROUNDS = int(os.environ.get("MAX_DEBATE_ROUNDS", "10"))

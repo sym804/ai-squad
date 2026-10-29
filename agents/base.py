@@ -75,6 +75,8 @@ class AgentBase:
     emoji: str = "🤖"
     _current_thread_ts: str = None  # 현재 작업 중인 스레드
     _cwd: str = None  # 작업 디렉토리 (None이면 프로세스 기본값)
+    # 셸 명령 실행 허용 여부. 코딩 모드만 True 로 켠다. 지금은 agy 만 이 값을 본다(SYM-201)
+    _allow_shell: bool = False
 
     @contextlib.contextmanager
     def _call_scope(self):

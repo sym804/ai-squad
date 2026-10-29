@@ -183,11 +183,12 @@ def _agy_trace_suffix(token: str) -> str:
 
 
 def _build_subprocess_args(model: str, prompt: str,
-                           trace_token: str | None = None) -> tuple[list[str], bytes | None]:
+                           trace_token: str | None = None,
+                           sandbox: bool = True) -> tuple[list[str], bytes | None]:
     """현재 GEMINI_CLI_BINARY 에 맞춘 (raw_cmd_list, stdin_bytes_or_None).
 
     gemini: ``["gemini","-m",model,"-y","-p",""]`` + prompt 는 stdin 으로 전달
-    agy:    ``["agy","--dangerously-skip-permissions","-p",prompt]`` + stdin 없음
+    agy:    ``["agy","--dangerously-skip-permissions",("--sandbox"),"-p",prompt]`` + stdin 없음
             (agy 는 -m 미지원, -p 인자 필수, 첫 호출 시 인터랙티브 OAuth 1회 필요,
             argv 한계 초과 시 머리만 사용)
 
@@ -199,7 +200,16 @@ def _build_subprocess_args(model: str, prompt: str,
         safe_prompt = _truncate_for_agy_argv(prompt)
         if trace_token:
             safe_prompt = safe_prompt + _agy_trace_suffix(trace_token)
-        return ["agy", "--dangerously-skip-permissions", "-p", safe_prompt], None
+        cmd = ["agy", "--dangerously-skip-permissions"]
+        # sandbox: 터미널 명령을 막는 보조 장치다. 보안 경계가 아니다(SYM-201).
+        # 권한 자동 승인은 비대화형 -p 가 멈추지 않으려면 필요하다.
+        # 실측(2026-10-29, 대화형 세션): 터미널 명령은 exebox 샌드박스 생성 오류로 실패했다.
+        # 정책 거부가 아니라 생성 실패라 agy 가 바뀌면 동작이 달라질 수 있다.
+        # 파일 읽기·쓰기 도구는 워크스페이스 밖에서도 통과했고, 웹 검색 응답은 정상이었다.
+        # 실제 방어선은 보낸 사람 허용 목록과 기록 필터다. 코딩 모드만 sandbox=False.
+        if sandbox:
+            cmd.append("--sandbox")
+        return cmd + ["-p", safe_prompt], None
     return ["gemini", "-m", model, "-y", "-p", ""], prompt.encode("utf-8")
 
 
@@ -461,7 +471,8 @@ class GeminiAgent(AgentBase):
             prompt = fh.read()
         if GEMINI_CLI_BINARY == "agy" and not prompt:
             raise ValueError("agy 경로는 빈 prompt 를 거부합니다 (-p 인자 필수)")
-        cmd_raw, _ = _build_subprocess_args(_available_models()[0], prompt)
+        cmd_raw, _ = _build_subprocess_args(_available_models()[0], prompt,
+                                            sandbox=not self._allow_shell)
         return cmd_raw
 
     @staticmethod
@@ -531,7 +542,8 @@ class GeminiAgent(AgentBase):
             cli_start_ts = time.time()  # agy transcript 복구 시 since_ts 기준
             for model in _available_models():
                 trace_token = _make_trace_token()  # agy 응답 식별용 (gemini 는 무시)
-                cmd_raw, stdin_data = _build_subprocess_args(model, prompt, trace_token)
+                cmd_raw, stdin_data = _build_subprocess_args(model, prompt, trace_token,
+                                                             sandbox=not self._allow_shell)
                 cmd = platform_cmd(cmd_raw)
                 for attempt in range(_MAX_RETRIES):
                     # 전역 직렬화: 병렬 debate에서 Gemini 호출이 동시에 터지지 않도록.
@@ -604,7 +616,8 @@ class GeminiAgent(AgentBase):
         가 ``_build_subprocess_args`` 를 통해 명령어 인자로 들어간다.
         """
         trace_token = _make_trace_token()  # agy 응답 식별용 (gemini 는 무시)
-        cmd_raw, _ = _build_subprocess_args(model or _GEMINI_MODELS[0], prompt, trace_token)
+        cmd_raw, _ = _build_subprocess_args(model or _GEMINI_MODELS[0], prompt, trace_token,
+                                            sandbox=not self._allow_shell)
         cmd = platform_cmd(cmd_raw)
         # gemini: stdin_data 그대로, agy: stdin 없음
         effective_stdin = stdin_data if GEMINI_CLI_BINARY != "agy" else None

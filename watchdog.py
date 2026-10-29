@@ -28,9 +28,14 @@ if sys.platform == "win32":
 from dotenv import load_dotenv
 from slack_sdk import WebClient
 
+from security import parse_allowed_user_ids, is_allowed_sender
+
 load_dotenv(override=True)
 
 SLACK_BOT_TOKEN = os.environ["SLACK_BOT_TOKEN"]
+ALLOWED_USER_IDS = parse_allowed_user_ids(os.environ.get("ALLOWED_USER_IDS", ""))
+if not ALLOWED_USER_IDS:
+    print("[WATCHDOG] ⚠️ ALLOWED_USER_IDS 미설정: !bot 명령을 모두 무시합니다")
 WATCHDOG_CHANNEL_ID = os.environ.get(
     "WATCHDOG_CHANNEL_ID",
     os.environ.get("DEBATE_CHANNEL_ID", ""),
@@ -103,7 +108,7 @@ def notify_active_threads():
     active = load_and_clear_active()
     if not active:
         return
-    msg = "⚠️ *봇이 재시작됩니다* — 이 스레드의 작업이 중단되었습니다."
+    msg = "⚠️ *봇이 재시작됩니다* - 이 스레드의 작업이 중단되었습니다."
     for thread_ts, channel_id in active.items():
         try:
             client.chat_postMessage(
@@ -298,10 +303,15 @@ def poll_commands():
 
         handled_ts.add(msg["ts"])
 
-        # 오래된 ts 정리 — 가장 오래된 것부터 제거 (FIFO)
+        # 오래된 ts 정리: 가장 오래된 것부터 제거 (FIFO)
         if len(handled_ts) > _HANDLED_MAX:
             oldest = sorted(handled_ts)[:len(handled_ts) - _HANDLED_MAX]
             handled_ts.difference_update(oldest)
+
+        # 허용 목록 밖의 사람은 봇을 멈추거나 재시작할 수 없다(SYM-201)
+        if not is_allowed_sender(msg.get("user"), ALLOWED_USER_IDS):
+            print(f"[WATCHDOG] 허용되지 않은 사용자의 명령 무시: user={msg.get('user')}")
+            continue
 
         parts = text.split()
         cmd = parts[1] if len(parts) > 1 else "help"
@@ -310,7 +320,7 @@ def poll_commands():
             notify(bot_status())
         elif cmd == "restart":
             result = restart_bot()
-            notify(f"🔄 재시작 완료 — {result}")
+            notify(f"🔄 재시작 완료 - {result}")
         elif cmd == "stop":
             notify(stop_bot())
         elif cmd == "start":

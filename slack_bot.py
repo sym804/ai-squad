@@ -14,7 +14,8 @@ from concurrent.futures import ThreadPoolExecutor
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY, RESEARCH_CHANNEL_ID
+from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY, RESEARCH_CHANNEL_ID, ALLOWED_USER_IDS
+from security import is_allowed_sender
 from modes.debate import DebateMode
 from modes.coding import CodingMode
 from modes.bridge import BridgeMode
@@ -131,6 +132,11 @@ def handle_message(event, say, client):
     if not should_process_event(event, _OWN_BOT_ID):
         return
 
+    # 허용 목록 밖의 사람은 !stop 을 포함해 어떤 명령도 못 쓴다(SYM-201)
+    if not is_allowed_sender(event.get("user"), ALLOWED_USER_IDS):
+        print(f"[EVENT] 허용되지 않은 사용자 무시: user={event.get('user')}")
+        return
+
     channel = event.get("channel")
     text = event.get("text", "")
     ts = event.get("ts")
@@ -147,14 +153,14 @@ def handle_message(event, say, client):
             cancel.cancel(thread_ts)
             client.chat_postMessage(
                 channel=channel, thread_ts=thread_ts,
-                text="🛑 *작업 취소 요청됨* — 현재 단계 완료 후 중단됩니다."
+                text="🛑 *작업 취소 요청됨* - 현재 단계 완료 후 중단됩니다."
             )
         else:
             # 채널 최상위에서 !stop → 해당 채널의 작업만 취소
             count = cancel.cancel_channel(channel)
             client.chat_postMessage(
                 channel=channel,
-                text=f"🛑 *채널 작업 취소 요청됨* — {count}개 작업 중단 중..."
+                text=f"🛑 *채널 작업 취소 요청됨* - {count}개 작업 중단 중..."
             )
         return
 
@@ -231,6 +237,16 @@ if __name__ == "__main__":
         print(f"  Research Channel : {RESEARCH_CHANNEL_ID}")
     for ch_id, work_dir in BRIDGE_CHANNELS.items():
         print(f"  Bridge Channel : {ch_id} → {work_dir}")
+    print(f"  Allowed Users  : {len(ALLOWED_USER_IDS)}명")
+    if not ALLOWED_USER_IDS:
+        print("  ⚠️ ALLOWED_USER_IDS 미설정: 모든 메시지를 무시합니다")
+        # 봇은 세션 0 에서 돌아 콘솔이 안 보인다. 조용히 먹통이 되지 않게 채널에 알린다.
+        try:
+            WebClient(token=SLACK_BOT_TOKEN).chat_postMessage(
+                channel=DEBATE_CHANNEL_ID,
+                text="⚠️ *ALLOWED_USER_IDS 미설정* - 봇이 모든 메시지를 무시합니다. .env 를 확인하세요.")
+        except Exception as e:
+            print(f"[INIT] 허용 목록 경고 전송 실패: {e}")
     print("=" * 50)
 
     # CLI 헬스체크
@@ -244,7 +260,7 @@ if __name__ == "__main__":
             failures.append((name, detail))
     if failures and _OWN_BOT_ID:
         try:
-            lines = ["⚠️ *CLI 헬스체크 실패* — 일부 에이전트 사용 불가:"]
+            lines = ["⚠️ *CLI 헬스체크 실패* - 일부 에이전트 사용 불가:"]
             for name, detail in failures:
                 lines.append(f"  • `{name}`: {detail}")
             WebClient(token=SLACK_BOT_TOKEN).chat_postMessage(

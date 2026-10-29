@@ -1,7 +1,43 @@
-"""보안 유틸리티 - 경로 whitelist 검증."""
+"""보안 유틸리티 - 경로 whitelist 검증, 메시지 보낸 사람 검증."""
 
 import os
 import re
+
+
+def parse_allowed_user_ids(raw: str | None) -> frozenset[str]:
+    """ALLOWED_USER_IDS 환경변수(쉼표 구분 Slack user ID)를 집합으로 바꾼다."""
+    if not raw:
+        return frozenset()
+    return frozenset(p.strip() for p in raw.split(",") if p.strip())
+
+
+def is_allowed_sender(user_id: str | None, allowed: frozenset[str]) -> bool:
+    """메시지를 보낸 사람이 봇을 부를 수 있는지.
+
+    봇은 메시지를 AI CLI 프롬프트로 넘기고, CLI 는 이 PC 에서 도구를 실행한다.
+    예전엔 채널 ID 만 봐서 채널에 글을 쓸 수 있는 사람이면 누구나 이 PC 에서
+    명령을 실행시킬 수 있었다(SYM-201). 허용 목록이 비어 있으면 아무도 허용하지
+    않는다(설정 누락이 전면 개방이 되지 않게).
+    """
+    if not allowed or not user_id:
+        return False
+    return user_id in allowed
+
+
+def history_role(msg: dict, bot_user_id: str | None, allowed: frozenset[str]) -> str | None:
+    """Slack 기록에서 읽은 메시지를 프롬프트에 넣어도 되는지 판정한다.
+
+    "bot": 이 봇이 쓴 메시지, "user": 허용된 사람, None: 버린다(다른 봇, 목록 밖 사람).
+    이벤트만 막으면 목록 밖 사람이 스레드에 쓴 글이 다음 라운드 기록 재수집으로
+    프롬프트에 다시 들어온다(SYM-201 QA). 다른 봇은 에이전트 머리말을 흉내 낼 수 있어
+    bot_id 가 아니라 이 봇의 user ID 로만 봇 메시지를 인정한다.
+    """
+    user = msg.get("user")
+    if bot_user_id and user == bot_user_id:
+        return "bot"
+    if msg.get("bot_id"):
+        return None
+    return "user" if is_allowed_sender(user, allowed) else None
 
 
 def validate_work_dir(path: str | None, whitelist: list[str]) -> str | None:

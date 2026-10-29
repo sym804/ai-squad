@@ -331,3 +331,33 @@ def test_restart_bot_restores_manual_stop_on_stop_bot_exception(monkeypatch):
     assert watchdog.auto_restart is True
     assert watchdog.manual_stop is False
     assert watchdog._restart_in_progress is False
+
+
+# --- 보낸 사람 허용 목록 (SYM-201) ---
+
+def _poll_with(watchdog, monkeypatch, user):
+    watchdog.WATCHDOG_CHANNEL_ID = "C_DEBATE"
+    watchdog.handled_ts.clear()
+    watchdog.bot_user_id = "U_BOT"
+    watchdog.client = MagicMock()
+    watchdog.client.conversations_history.return_value = {
+        "messages": [{"text": "!bot stop", "ts": "9.1", "user": user}]}
+    stop_bot = MagicMock(return_value="stopped")
+    monkeypatch.setattr(watchdog, "stop_bot", stop_bot)
+    monkeypatch.setattr(watchdog, "notify", MagicMock())
+    watchdog.poll_commands()
+    return stop_bot
+
+
+def test_poll_commands_ignores_disallowed_user(monkeypatch):
+    monkeypatch.setenv("ALLOWED_USER_IDS", "U_OK")
+    watchdog = load_watchdog_module(monkeypatch)
+    stop_bot = _poll_with(watchdog, monkeypatch, "U_BAD")
+    stop_bot.assert_not_called()
+
+
+def test_poll_commands_runs_for_allowed_user(monkeypatch):
+    monkeypatch.setenv("ALLOWED_USER_IDS", "U_OK")
+    watchdog = load_watchdog_module(monkeypatch)
+    stop_bot = _poll_with(watchdog, monkeypatch, "U_OK")
+    stop_bot.assert_called_once()

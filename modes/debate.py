@@ -707,14 +707,22 @@ class DebateMode:
                 )
         return "\n".join(parts)
 
+    def _history_role(self, msg: dict) -> str | None:
+        """기록 메시지 판정. security.history_role 참고(SYM-201)."""
+        import config
+        from security import history_role
+        return history_role(msg, self._bot_user_id, config.ALLOWED_USER_IDS)
+
     def _fetch_original_topic(self, channel: str, thread_ts: str) -> str:
-        """스레드의 첫 번째 메시지(원래 주제)를 가져온다."""
+        """스레드의 첫 번째 메시지(원래 주제)를 가져온다. 허용 목록 밖 사람이 연 스레드면 빈 문자열."""
         try:
+            if self._bot_user_id is None:
+                self._bot_user_id = self.slack.auth_test()["user_id"]
             result = self.slack.conversations_replies(
                 channel=channel, ts=thread_ts, limit=1
             )
             messages = result.get("messages", [])
-            if messages:
+            if messages and self._history_role(messages[0]):
                 return messages[0].get("text", "").strip()
         except Exception as e:
             print(f"[SLACK ERROR] fetch original topic: {e}")
@@ -749,7 +757,10 @@ class DebateMode:
                 if not text:
                     continue
 
-                if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
+                role = self._history_role(msg)
+                if role is None:
+                    continue
+                if role == "bot":
                     all_agents = list(self.agents) + list(self._backup_map.values())
                     name = None
                     for agent in all_agents:
@@ -776,8 +787,10 @@ class DebateMode:
             return []
 
     def _fetch_today_conclusions(self, channel: str, current_thread_ts: str) -> list[str]:
-        """당일 채널의 합의 결론 메시지만 가져온다."""
+        """당일 채널의 합의 결론 메시지만 가져온다. 이 봇이 쓴 것만 받는다(문구 위조 차단)."""
         try:
+            if self._bot_user_id is None:
+                self._bot_user_id = self.slack.auth_test()["user_id"]
             today_start = datetime.datetime.now().replace(
                 hour=0, minute=0, second=0, microsecond=0
             )
@@ -789,6 +802,8 @@ class DebateMode:
             conclusions = []
             for msg in result.get("messages", []):
                 text = msg.get("text", "")
+                if self._history_role(msg) != "bot":
+                    continue
                 # 합의 결론 메시지만 필터
                 if "🏛️" in text and ("합의" in text or "라운드 도달" in text):
                     # 현재 스레드의 결론은 제외
@@ -1212,8 +1227,8 @@ class DebateMode:
             messages = result.get("messages", [])
             user_texts = []
             for msg in messages:
-                # 봇 메시지 제외, 사용자 메시지만
-                if msg.get("bot_id") or msg.get("user") == self._bot_user_id:
+                # 허용된 사람의 메시지만(이 봇, 다른 봇, 목록 밖 사람 제외)
+                if self._history_role(msg) != "user":
                     continue
                 # 원본 메시지(토론 주제) 제외
                 if msg.get("ts") == thread_ts:

@@ -170,3 +170,67 @@ def test_os_module_imported(slack_bot):
     assert hasattr(slack_bot, "os"), "slack_bot 모듈에 os import 누락"
     import os as _real_os
     assert slack_bot.os is _real_os
+
+
+# --- 보낸 사람 허용 목록 (SYM-201) ---
+
+class _RecordingClient:
+    def __init__(self):
+        self.posts = []
+
+    def chat_postMessage(self, **kw):
+        self.posts.append(kw)
+        return {}
+
+
+@pytest.fixture
+def slack_bot_allow(monkeypatch):
+    monkeypatch.setenv("ALLOWED_USER_IDS", "U_OK")
+    monkeypatch.setattr("dotenv.load_dotenv", lambda **kw: None)
+    monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+    monkeypatch.setenv("SLACK_APP_TOKEN", "xapp-test")
+    monkeypatch.setenv("DEBATE_CHANNEL_ID", "C_DEBATE")
+    monkeypatch.setenv("CODING_CHANNEL_ID", "C_CODING")
+    monkeypatch.delenv("SR_AGENT_CHANNEL_ID", raising=False)
+    monkeypatch.delenv("TC_AGENT_CHANNEL_ID", raising=False)
+    _install_slack_stubs(monkeypatch)
+    sys.modules.pop("slack_bot", None)
+    import config
+    importlib.reload(config)
+    mod = importlib.import_module("slack_bot")
+    spawned = []
+    monkeypatch.setattr(mod.threading, "Thread",
+                        lambda target, daemon=None: types.SimpleNamespace(start=lambda: spawned.append(target)))
+    cancelled = []
+    monkeypatch.setattr(mod.cancel, "cancel_channel", lambda ch: cancelled.append(ch) or 0)
+    return mod, spawned, cancelled
+
+
+def test_disallowed_user_message_does_not_spawn_work(slack_bot_allow):
+    mod, spawned, _ = slack_bot_allow
+    client = _RecordingClient()
+    mod.handle_message({"channel": "C_DEBATE", "text": "rm -rf 해줘", "ts": "1.1", "user": "U_BAD"}, None, client)
+    assert spawned == []
+    assert client.posts == []
+
+
+def test_disallowed_user_cannot_stop_channel(slack_bot_allow):
+    mod, _, cancelled = slack_bot_allow
+    client = _RecordingClient()
+    mod.handle_message({"channel": "C_DEBATE", "text": "!stop", "ts": "1.2", "user": "U_BAD"}, None, client)
+    assert cancelled == []
+    assert client.posts == []
+
+
+def test_allowed_user_message_spawns_work(slack_bot_allow):
+    mod, spawned, _ = slack_bot_allow
+    client = _RecordingClient()
+    mod.handle_message({"channel": "C_DEBATE", "text": "안녕", "ts": "1.3", "user": "U_OK"}, None, client)
+    assert len(spawned) == 1
+
+
+def test_missing_allowlist_ignores_everyone(slack_bot_allow, monkeypatch):
+    mod, spawned, _ = slack_bot_allow
+    monkeypatch.setattr(mod, "ALLOWED_USER_IDS", frozenset())
+    mod.handle_message({"channel": "C_DEBATE", "text": "안녕", "ts": "1.4", "user": "U_OK"}, None, _RecordingClient())
+    assert spawned == []

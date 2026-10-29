@@ -113,3 +113,27 @@ async def test_followup_binds_cwd_from_original_topic(tmp_path, monkeypatch):
 
     expected = os.path.realpath(p)
     assert all(c == expected for c in _all_cwds(mode))
+
+
+# --- 셸 허용은 코딩 모드만 (SYM-201) ---
+
+def test_debate_bind_keeps_shell_blocked(tmp_path, monkeypatch):
+    """경로를 지정한 토론도 _allow_shell 은 꺼져 있어야 한다(지금은 agy 의 --sandbox 만 이 값을 따른다)."""
+    p = str(tmp_path)
+    monkeypatch.setattr(config, "ALLOWED_WORK_DIRS", [p])
+    mode = _make_mode()
+    mode._bind_thread("t1", f"평가해줘: {p}")
+    assert not any(a._allow_shell for a in mode.agents)
+    assert not any(b._allow_shell for b in mode._backup_pool)
+
+
+def test_coding_bind_allows_shell(tmp_path, monkeypatch):
+    from modes.coding import CodingMode
+    p = str(tmp_path)
+    monkeypatch.setattr(config, "ALLOWED_WORK_DIRS", [p])
+    slack = MagicMock()
+    slack.chat_postMessage.return_value = {"ts": "fake_ts"}
+    mode = CodingMode(slack)
+    mode._bind_thread("t1", f"고쳐줘: {p}")
+    assert all(a._allow_shell for a in mode.agents)
+    assert all(b._allow_shell for b in mode._backup_map.values())

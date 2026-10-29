@@ -223,6 +223,28 @@ class TestBinarySelection:
         gemini_mod._mark_failed("__agy_default__")
         assert "__agy_default__" not in gemini_mod._model_cooldown
 
+    def test_agy_sandbox_on_by_default(self, monkeypatch):
+        """비코딩 호출은 터미널을 막는 --sandbox 가 붙어야 한다(SYM-201)."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        cmd, _ = gemini_mod._build_subprocess_args("__agy_default__", "q")
+        assert "--sandbox" in cmd
+        assert cmd.index("--sandbox") < cmd.index("-p")
+
+    def test_agy_sandbox_off_when_shell_allowed(self, monkeypatch):
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        cmd, _ = gemini_mod._build_subprocess_args("__agy_default__", "q", sandbox=False)
+        assert "--sandbox" not in cmd
+
+    def test_agent_allow_shell_controls_sandbox(self, monkeypatch, tmp_path):
+        """폴백 경로(_build_cmd)도 _allow_shell 을 따르는지. 실제 경로는 TestSandboxOnRealPaths."""
+        gemini_mod = self._reload_gemini_module(monkeypatch, "agy")
+        prompt_file = tmp_path / "p.txt"
+        prompt_file.write_text("q", encoding="utf-8")
+        agent = gemini_mod.GeminiAgent()
+        assert "--sandbox" in agent._build_cmd(str(prompt_file))
+        agent._allow_shell = True
+        assert "--sandbox" not in agent._build_cmd(str(prompt_file))
+
     def test_invalid_binary_falls_back_to_gemini(self, monkeypatch):
         """오타/미지원 값은 안전 기본값(gemini)로 폴백."""
         gemini_mod = self._reload_gemini_module(monkeypatch, "antigravity")  # 잘못된 별명
@@ -823,3 +845,73 @@ class TestAgyUpdaterSuppression:
         await agent._run_progress_once(b"prompt", None, 10, model="gemini-2.5-pro", prompt="hi")
 
         assert calls == [], "gemini 경로인데 agy 업데이터 억제가 호출됐다"
+
+
+class TestSandboxOnRealPaths:
+    """실제 호출 경로(_run_cli, _run_progress_once)가 넘긴 명령에 --sandbox 가 있는지(SYM-201).
+
+    `_build_cmd` 는 폴백이라 실제 호출에 쓰이지 않는다. 두 경로를 다 확인해야 한다
+    (v0.7.3.3, v0.8.22 에서 한쪽만 고쳐 회귀한 전례).
+    """
+
+    def _patch(self, monkeypatch, tmp_path, recorded):
+        monkeypatch.setattr(gemini_mod, "GEMINI_CLI_BINARY", "agy")
+        monkeypatch.setattr(gemini_mod, "_suppress_agy_updater", lambda: None)
+
+        async def _no_recover(*_a, **_k):
+            return "OK"
+
+        monkeypatch.setattr(gemini_mod, "_recover_agy_response_retry", _no_recover)
+
+        class _FakeStdout:
+            async def readline(self):
+                return b""
+
+        class _FakeProc:
+            returncode = 0
+            stdout = _FakeStdout()
+            stderr = _FakeStdout()
+            stdin = None
+
+            async def communicate(self, input=None):
+                return (b"OK", b"")
+
+            async def wait(self):
+                return 0
+
+        async def _fake_exec(*args, **_k):
+            recorded.append(list(args))
+            return _FakeProc()
+
+        monkeypatch.setattr(gemini_mod.asyncio, "create_subprocess_exec", _fake_exec)
+
+        agent = GeminiAgent()
+        monkeypatch.setattr(agent, "_register_proc", lambda p: None)
+
+        def _fake_write_temp(prompt: str) -> str:
+            f = tmp_path / "p.txt"
+            f.write_text(prompt, encoding="utf-8")
+            return str(f)
+
+        monkeypatch.setattr(agent, "_write_temp", _fake_write_temp)
+        return agent
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow_shell,expect", [(False, True), (True, False)])
+    async def test_run_cli_passes_sandbox(self, monkeypatch, tmp_path, allow_shell, expect):
+        recorded: list[list] = []
+        agent = self._patch(monkeypatch, tmp_path, recorded)
+        agent._allow_shell = allow_shell
+        await agent._run_cli("hello")
+        assert recorded, "subprocess 가 호출되지 않았다"
+        assert ("--sandbox" in recorded[0]) is expect
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("allow_shell,expect", [(False, True), (True, False)])
+    async def test_progress_path_passes_sandbox(self, monkeypatch, tmp_path, allow_shell, expect):
+        recorded: list[list] = []
+        agent = self._patch(monkeypatch, tmp_path, recorded)
+        agent._allow_shell = allow_shell
+        await agent._run_progress_once(None, None, 10, model="__agy_default__", prompt="hi")
+        assert recorded, "subprocess 가 호출되지 않았다"
+        assert ("--sandbox" in recorded[0]) is expect
