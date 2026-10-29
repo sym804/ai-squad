@@ -253,14 +253,17 @@ class TestCodexImageNote:
         assert "중요 본문 데이터" in out
         assert out.startswith("요약")  # user prompt 가 먼저
 
-    def test_uses_workspace_write_sandbox_not_full_auto(self):
-        """`--full-auto` deprecated. `-s workspace-write` 로 교체해서 stdout
-        deprecation 경고 누출을 차단해야 한다.
+    def test_uses_explicit_sandbox_not_full_auto(self):
+        """`--full-auto` deprecated. `-s <모드>` 를 명시해서 stdout deprecation 경고 누출을
+        차단해야 한다. 코딩 모드만 workspace-write, 나머지는 read-only(SYM-202).
         """
-        cmd = CodexAgent()._build_cmd("/tmp/x")
+        agent = CodexAgent()
+        cmd = agent._build_cmd("/tmp/x")
         assert "--full-auto" not in cmd, "deprecated 플래그가 다시 들어감"
-        assert "-s" in cmd or "--sandbox" in cmd
-        assert "workspace-write" in cmd
+        assert cmd[cmd.index("-s") + 1] == "read-only"
+        agent._allow_shell = True
+        cmd = agent._build_cmd("/tmp/x")
+        assert cmd[cmd.index("-s") + 1] == "workspace-write"
 
 
 class TestCodexAvoidShellDirective:

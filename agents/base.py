@@ -75,7 +75,9 @@ class AgentBase:
     emoji: str = "🤖"
     _current_thread_ts: str = None  # 현재 작업 중인 스레드
     _cwd: str = None  # 작업 디렉토리 (None이면 프로세스 기본값)
-    # 셸 명령 실행 허용 여부. 코딩 모드만 True 로 켠다. 지금은 agy 만 이 값을 본다(SYM-201)
+    # 셸 명령·파일 수정 허용 여부. 코딩 모드와 브릿지만 True 로 켠다(SYM-201, SYM-202).
+    # 막는 범위는 CLI 마다 다르다. Claude 는 --tools 로 셸과 파일 수정을 뺀다.
+    # Codex 는 -s read-only. agy 의 --sandbox 는 터미널만 막고 파일 도구는 못 막는다(실측).
     _allow_shell: bool = False
 
     @contextlib.contextmanager

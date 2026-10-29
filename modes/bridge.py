@@ -1,4 +1,4 @@
-"""Bridge Mode — Slack ↔ CLI 브릿지
+"""Bridge Mode - Slack ↔ CLI 브릿지
 
 채널 메시지를 특정 폴더의 Claude Code / Codex CLI에 전달하고 응답을 스레드로 반환.
 - 기본: Claude Code (claude --continue -p)
@@ -76,6 +76,7 @@ class BridgeMode:
         from agents.claude import ClaudeAgent
         agent = ClaudeAgent(continue_mode=False)
         agent._cwd = self.work_dir
+        agent._allow_shell = True  # 브릿지는 첨부가 있어도 같은 원격 제어 권한
         return await agent.ask(prompt, attachments=attachments, timeout=CLI_TIMEOUT * 2)
 
     async def _call_claude(self, prompt: str) -> str:
@@ -88,7 +89,10 @@ class BridgeMode:
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             return await self._run_cmd(
-                ["claude", "--continue", "-p", "--strict-mcp-config"],
+                # 브릿지는 소유자 전용 원격 제어라 전체 권한이 의도된 동작이다. 보낸 사람은
+                # ALLOWED_USER_IDS 로 거른다(SYM-201). 권한은 전역 설정에 기대지 않고 명시한다(SYM-202).
+                ["claude", "--continue", "-p", "--strict-mcp-config",
+                 "--permission-mode", "bypassPermissions"],
                 stdin_data,
             )
         finally:
@@ -103,7 +107,8 @@ class BridgeMode:
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             return await self._run_cmd(
-                ["codex", "exec", "--skip-git-repo-check"],
+                # 브릿지 권한 명시(SYM-202). 전역 config.toml 의 sandbox_mode 와 무관하게 같은 동작.
+                ["codex", "exec", "-s", "danger-full-access", "--skip-git-repo-check"],
                 stdin_data,
             )
         finally:

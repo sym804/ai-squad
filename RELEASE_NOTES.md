@@ -67,6 +67,30 @@
 | v0.8.23 | 2026-09-16 | 의존성 취약점 해소 + 공개 레포 개인 경로 제거 |
 | v0.8.22 | 2026-07-14 | **agy 콘솔 창 깜빡임 해결 (이슈 #112 wontfix 뒤집음)**: agy 는 `last_check.timestamp` 기준 15분 쿨다운으로 업데이트를 체크한다는 것을 실측 -> 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다. `_run_cli` + `_run_progress_once` 양쪽 커버(토론/코딩이 후자를 탄다) |
 | v0.8.24 | 2026-10-29 | 메시지 보낸 사람 허용 목록 + 기록 재수집 필터 + agy 샌드박스 (SYM-201) |
+| v0.8.25 | 2026-10-30 | CLI 권한을 호출 인자로 명시 (토론·리서치 읽기 전용, SYM-202) |
+
+## ai-squad 0.8.25 - [fix] CLI 권한을 호출 인자로 명시해 전역 우회 설정 의존 제거 (2026-10-30)
+
+### 이슈
+
+- SYM-202 브릿지 모드가 claude 와 codex 를 권한 옵션 없이 호출해 전역 우회 설정을 그대로 물려받는다 (bug/major/security)
+
+### 변경
+
+- 토론·리서치 Claude: `--tools WebSearch,WebFetch,Read,Glob,Grep` 허용 목록 + `--disallowedTools Bash PowerShell Write Edit NotebookEdit`
+- 토론·리서치 Codex: `-s read-only`. 코딩 모드만 `workspace-write`
+- 코딩 모드 Claude 와 브릿지: `--permission-mode bypassPermissions`, 브릿지 Codex `-s danger-full-access` 를 인자로 명시
+- 브릿지 첨부 경로도 브릿지와 같은 권한
+
+### 영향
+
+- 토론·리서치의 Claude 와 Codex 는 셸 실행과 파일 수정 불가. 읽기와 웹 검색은 정상(실측)
+- 코딩 모드와 브릿지는 동작 변화 없음. 전역 settings 가 바뀌어도 같은 권한
+- pytest 519건 통과, 가드별 변이 시 해당 테스트 실패 확인. QA 2인 통과
+
+### 조치
+
+- 봇 재시작 필요(0.8.24 조치와 함께)
 
 ## ai-squad 0.8.24 - [fix] 메시지 보낸 사람 허용 목록 및 agy 샌드박스 적용 (2026-10-29)
 

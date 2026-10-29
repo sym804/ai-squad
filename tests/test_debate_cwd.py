@@ -118,7 +118,7 @@ async def test_followup_binds_cwd_from_original_topic(tmp_path, monkeypatch):
 # --- 셸 허용은 코딩 모드만 (SYM-201) ---
 
 def test_debate_bind_keeps_shell_blocked(tmp_path, monkeypatch):
-    """경로를 지정한 토론도 _allow_shell 은 꺼져 있어야 한다(지금은 agy 의 --sandbox 만 이 값을 따른다)."""
+    """경로를 지정한 토론도 _allow_shell 은 꺼져 있어야 한다(Claude, Codex, agy 가 이 값을 따른다)."""
     p = str(tmp_path)
     monkeypatch.setattr(config, "ALLOWED_WORK_DIRS", [p])
     mode = _make_mode()

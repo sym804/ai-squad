@@ -257,7 +257,11 @@ class CodexAgent(AgentBase):
         # stdout 은 진행 상황 콜백용으로 계속 읽고, 최종 답변만 이 파일에서 가져온다.
         # 경로는 호출마다 유일한 tmp 에서 파생한다(인스턴스 필드로 두면 같은 에이전트가
         # 동시에 두 번 호출될 때 서로의 출력 파일을 읽거나 지운다: 리서치 분담 조사).
-        return ["codex", "exec", "-s", "workspace-write", "--skip-git-repo-check",
+        #
+        # 샌드박스는 모드별로 명시한다(SYM-202). 코딩 모드만 cwd 쓰기가 필요하고, 토론·리서치는
+        # 읽기 전용이면 된다. 실측(2026-10-29): read-only 에서도 -o 최종 메시지 파일은 써진다.
+        sandbox = "workspace-write" if self._allow_shell else "read-only"
+        return ["codex", "exec", "-s", sandbox, "--skip-git-repo-check",
                 "-o", self._artifact_path(tmp)]
 
     @staticmethod

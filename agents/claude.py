@@ -52,6 +52,23 @@ class ClaudeAgent(AgentBase):
         self.continue_mode = continue_mode
         self.last_usage = ""
 
+    def _permission_args(self) -> list[str]:
+        """권한을 호출 인자로 명시한다. 전역 settings 의 defaultMode 에 기대지 않는다(SYM-202).
+
+        전역이 bypassPermissions 면 --allowedTools 는 허용 범위를 좁히지 못한다.
+        실측(2026-10-29):
+        - --allowedTools WebSearch WebFetch Read 만으로는 Bash 가 실행됐다
+        - --disallowedTools Bash ... 는 막았지만, CLAUDE_CODE_USE_POWERSHELL_TOOL=1 이면
+          PowerShell 도구로 다시 실행됐다. 거부 목록은 새 도구에 약하다
+        - --tools 로 쓸 수 있는 도구 자체를 지정하면 같은 조건에서도 셸 도구가 없었다
+        그래서 --tools 허용 목록이 주 방어이고 --disallowedTools 는 보조다.
+        코딩 모드와 브릿지만 코드 수정과 실행이 필요하다.
+        """
+        if self._allow_shell:
+            return ["--permission-mode", "bypassPermissions"]
+        return ["--tools", "WebSearch,WebFetch,Read,Glob,Grep",
+                "--disallowedTools", "Bash", "PowerShell", "Write", "Edit", "NotebookEdit"]
+
     def _build_cmd(self, tmp: str) -> list[str]:
         cmd = ["claude"]
         if self.continue_mode:
@@ -63,6 +80,7 @@ class ClaudeAgent(AgentBase):
         #   새로 띄워 깜빡이는 문제(Windows)를 제거 + 에이전트 부팅도 빨라짐.
         cmd.extend(["-p", "--strict-mcp-config", "--output-format", "json",
                     "--allowedTools", "WebSearch", "WebFetch", "Read"])
+        cmd.extend(self._permission_args())
         return cmd
 
     def _build_stream_cmd(self) -> list[str]:
@@ -72,6 +90,7 @@ class ClaudeAgent(AgentBase):
         # --strict-mcp-config: 전역 MCP(context7 npx 등) 미로드 → cmd 창 깜빡임 제거.
         cmd.extend(["-p", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
                     "--allowedTools", "WebSearch", "WebFetch", "Read"])
+        cmd.extend(self._permission_args())
         return cmd
 
     @staticmethod

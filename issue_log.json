@@ -7,7 +7,7 @@
   "github": "https://github.com/sym804/ai-squad/issues/",
   "linear": "https://linear.app/sym804/issue/"
  },
- "updated_at": "2026-10-29T23:43:15+09:00",
+ "updated_at": "2026-10-30T00:07:35+09:00",
  "fields": [
   "이슈번호",
   "발견일",
@@ -2605,8 +2605,12 @@
    "재현 빈도": "- 항상(코드 경로)",
    "증거": "- 2026-10-28 보안 전수 점검(읽기 전용). 코드 경로와 설정을 본세션이 직접 대조했다. 실제 악용은 실행하지 않았다",
    "발견 경로 / 왜 지금인가": "- 코드 리뷰",
+   "원인 및 수정 / 결과": "원인: * 봇이 부르는 CLI 가 권한을 인자로 넘기지 않아 전역 설정(\\~/.claude/settings.json defaultMode=bypassPermissions, \\~/.codex/config.toml sandbox_mode=danger-full-access)을 물려받았다\n* 토론·리서치용 Claude 의 --allowedTools 는 bypass 모드에서 허용 범위를 좁히지 못했다. 실측: Bash 로 echo 실행됨\n* 토론·리서치용 Codex 는 -s workspace-write 로 cwd 쓰기가 열려 있었다\n\n수정 내용: * ClaudeAgent.\\_permission_args: \\_allow_shell=False 이면 --tools WebSearch,WebFetch,Read,Glob,Grep + --disallowedTools Bash PowerShell Write Edit NotebookEdit, True 이면 --permission-mode bypassPermissions\n* CodexAgent: \\_allow_shell=False 이면 -s read-only, True 이면 workspace-write\n* 브릿지: claude --permission-mode bypassPermissions, codex -s danger-full-access 명시. 첨부 경로도 같은 권한. 소유자 전용 원격 제어라 전체 권한은 의도된 동작이고 보낸 사람은 SYM-201 허용 목록으로 거른다",
+   "재발 방지 / 하지 않을 것": "* tests/test_permission_args.py: Claude 두 빌더 경로, 백업 에이전트, 브릿지 claude/codex 인자, 브릿지 첨부 경로, Codex 모드별 샌드박스\n* 가드별 변이에서 해당 테스트 실패 확인\n* 실측: --disallowedTools 만으로는 CLAUDE_CODE_USE_POWERSHELL_TOOL=1 일 때 PowerShell 로 실행됐고, --tools 허용 목록은 같은 조건에서 셸 도구가 없었다. 그래서 허용 목록을 주 방어로 둔다",
+   "영향 범위": "* 토론·리서치의 Claude 와 Codex 는 셸 실행과 파일 수정 불가. 읽기와 웹 검색은 정상(실측)\n* 코딩 모드와 브릿지는 동작 변화 없음\n* 남은 위험: 브릿지는 허용된 사용자가 올린 첨부·웹 내용의 숨은 지시로 셸까지 닿을 수 있다(설계상 전체 권한). agy --sandbox 는 파일 도구를 막지 못한다",
    "발생 버전": "0.8.23",
-   "상태": "진행중",
+   "수정 버전": "* ai-squad 0.8.25",
+   "상태": "완료",
    "트래커": "SYM-202"
   },
   {
