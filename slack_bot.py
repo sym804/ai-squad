@@ -14,7 +14,7 @@ from concurrent.futures import ThreadPoolExecutor
 from slack_bolt import App
 from slack_bolt.adapter.socket_mode import SocketModeHandler
 
-from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY, RESEARCH_CHANNEL_ID, ALLOWED_USER_IDS
+from config import SLACK_BOT_TOKEN, SLACK_APP_TOKEN, DEBATE_CHANNEL_ID, CODING_CHANNEL_ID, BRIDGE_CHANNELS, GEMINI_CLI_BINARY, RESEARCH_CHANNEL_ID, ALLOWED_USER_IDS, make_filtered_env, env_profile_for_command, filtered_env_summary
 from security import is_allowed_sender
 from modes.debate import DebateMode
 from modes.coding import CodingMode
@@ -42,6 +42,8 @@ def _check_one_cli(name: str, cmd: list[str]) -> tuple[str, bool, str]:
             platform_cmd(cmd),
             capture_output=True, text=True, timeout=10,
             encoding="utf-8", errors="replace",
+            # 버전 확인도 자식 프로세스다. 그 CLI 의 프로파일로 넘긴다(SYM-203).
+            env=make_filtered_env(env_profile_for_command(cmd[0])),
             **subprocess_kwargs(),
         )
         if p.returncode == 0:
@@ -247,6 +249,12 @@ if __name__ == "__main__":
                 text="⚠️ *ALLOWED_USER_IDS 미설정* - 봇이 모든 메시지를 무시합니다. .env 를 확인하세요.")
         except Exception as e:
             print(f"[INIT] 허용 목록 경고 전송 실패: {e}")
+    # 자식 CLI 에 넘기지 않는 비밀 변수 이름(값은 찍지 않는다). 빈 값으로 가린 것도 포함
+    try:
+        for prof, names in filtered_env_summary().items():
+            print(f"  Child env 제외({prof}) : {', '.join(names) or '(없음)'}")
+    except Exception as e:
+        print(f"[INIT] 자식 env 요약 실패: {e}")
     print("=" * 50)
 
     # CLI 헬스체크

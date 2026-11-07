@@ -97,13 +97,20 @@ class TestClaudeImageAugment:
         assert "hello" in decoded
         assert r"C:\\imgs\\chart.png" in decoded
 
-    def test_read_tool_in_allowed_tools(self):
-        """이미지 첨부 시 claude code 가 Read 도구를 호출해야 하므로 allowedTools 에 포함."""
+    def test_read_tool_available_only_with_attachment(self):
+        """이미지 첨부 시 Claude Code 가 Read 도구로 읽어야 하므로 그때만 --tools 에 Read 가 있다.
+
+        첨부가 없으면 Read 를 빼고, 있으면 --restricted 로 첨부 폴더에 가둔다(M2).
+        예전 테스트는 첨부와 무관하게 Read 가 있어야 한다고 못박아 경로 제한 없는 Read 를 지켰다.
+        """
         agent = ClaudeAgent()
-        cmd = agent._build_cmd("/tmp/x")
-        assert "Read" in cmd
-        stream_cmd = agent._build_stream_cmd()
-        assert "Read" in stream_cmd
+        att = [_img(path="C:/imgs/chart.png")]
+        for cmd in (agent._build_cmd("/tmp/x"), agent._build_stream_cmd()):
+            assert "Read" not in cmd[cmd.index("--tools") + 1].split(",")
+        for cmd in (agent._build_cmd("/tmp/x", attachments=att),
+                    agent._build_stream_cmd(attachments=att)):
+            assert "Read" in cmd[cmd.index("--tools") + 1].split(",")
+            assert "--restricted" in cmd
 
     def test_strict_mcp_config_disables_global_mcp(self):
         """전역 MCP(context7 npx 등) 로딩 차단 → Windows cmd 창 깜빡임 제거.

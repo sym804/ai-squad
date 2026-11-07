@@ -2,7 +2,6 @@ import asyncio
 import os
 import re
 from agents.base import AgentBase
-from config import make_filtered_env
 from process import platform_cmd, subprocess_kwargs
 
 # Codex CLI 헤더/노이즈 패턴
@@ -232,6 +231,7 @@ class CodexAgent(AgentBase):
     name = "Codex"
     emoji = "🟢"
     base_family = "codex"
+    env_profile = "codex"
     # 토론/리서치에서 True: 로컬 셸 도구 사용 억제(issue #131, S4U 세션0 대응).
     # 코딩 모드는 기본 False(셸이 필요하고, 대화형 세션으로 돌리면 정상 동작).
     avoid_shell = False
@@ -345,7 +345,7 @@ class CodexAgent(AgentBase):
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=make_filtered_env(),
+                env=self._child_env(),
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )

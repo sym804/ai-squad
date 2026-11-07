@@ -68,6 +68,32 @@
 | v0.8.22 | 2026-07-14 | **agy 콘솔 창 깜빡임 해결 (이슈 #112 wontfix 뒤집음)**: agy 는 `last_check.timestamp` 기준 15분 쿨다운으로 업데이트를 체크한다는 것을 실측 -> 호출 직전에 그 파일을 현재 시각으로 써두면 업데이터를 아예 spawn 하지 않는다. `_run_cli` + `_run_progress_once` 양쪽 커버(토론/코딩이 후자를 탄다) |
 | v0.8.24 | 2026-10-29 | 메시지 보낸 사람 허용 목록 + 기록 재수집 필터 + agy 샌드박스 (SYM-201) |
 | v0.8.25 | 2026-10-30 | CLI 권한을 호출 인자로 명시 (토론·리서치 읽기 전용, SYM-202) |
+| v0.8.26 | 2026-11-07 | 자식 프로세스 비밀 환경변수 제거, 토론 Read 범위 제한, 첨부 URL 호스트 검사 (SYM-203, SYM-222, SYM-223) |
+
+## ai-squad 0.8.26 - [fix] 자식 프로세스 비밀 환경변수 제거와 토론 Read 범위 제한 (2026-11-07)
+
+### 이슈
+
+- SYM-203 [154] ANTIGRAVITY_API_KEY 가 모든 AI CLI 자식 프로세스 환경변수로 넘어간다 (bug/minor/security)
+- SYM-222 [157] 토론·리서치 모드 Claude 가 경로 제한 없는 Read 와 임의 도메인 WebFetch 를 함께 받는다 (bug/major/security)
+- SYM-223 [158] 첨부 다운로드가 url_private 호스트를 확인하지 않고 봇 토큰을 실어 보낸다 (bug/minor/security)
+
+### 변경
+
+- 자식 env: 이름이 비밀 패턴(TOKEN, SECRET, PASSWORD, _KEY, DSN 등)인 변수 제거, agy 만 ANTIGRAVITY_API_KEY 재허용. Gemini/agy 는 .env 재로드를 빈 값으로 차단
+- 토론·리서치 Claude: 읽을 폴더가 없으면 Read·Glob·Grep 제외, 있으면 `--restricted --add-dir` 와 비밀 파일 Read 차단 설정(`agents/claude_restricted_settings.json`). 모델·effort 명시
+- 첨부 다운로드: `https://files.slack.com/` 이 아니면 건너뜀
+
+### 영향
+
+- GitHub 토큰, ADMIN_TOKEN, Slack 토큰·웹훅이 자식 CLI 로 넘어가지 않음. 코딩 모드와 브릿지 권한은 그대로
+- pytest 610건 통과, 변이 17종 실패 확인. QA 2인과 세션 3·4 검토 통과
+
+### 조치
+
+- 봇 재시작 필요(관리자 권한). 재시작 뒤 헬스체크, 첨부·작업 폴더 토론, 코딩·브릿지 확인
+
+---
 
 ## ai-squad 0.8.25 - [fix] CLI 권한을 호출 인자로 명시해 전역 우회 설정 의존 제거 (2026-10-30)
 

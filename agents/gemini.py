@@ -8,7 +8,7 @@ import weakref
 from pathlib import Path
 from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
-from config import CLI_TIMEOUT, GEMINI_CLI_BINARY, make_filtered_env
+from config import CLI_TIMEOUT, GEMINI_CLI_BINARY
 from cancel import register_process, is_cancelled
 
 # xterm.js 터미널 이스케이프 코드 및 노이즈 패턴
@@ -463,6 +463,11 @@ class GeminiAgent(AgentBase):
     emoji = "🔵"
     base_family = "gemini"
 
+    @property
+    def env_profile(self) -> str:
+        # 실제로 띄우는 바이너리 기준. agy 만 ANTIGRAVITY_API_KEY 를 받는다(SYM-203).
+        return GEMINI_CLI_BINARY
+
     def _build_cmd(self, tmp: str) -> list[str]:
         # AgentBase.ask_with_progress 의 폴백용. GeminiAgent 는 ask_with_progress 를
         # 오버라이드하므로 실제 호출 경로엔 영향 없음. agy 는 -p 빈 인자를 거부하므로
@@ -557,7 +562,7 @@ class GeminiAgent(AgentBase):
                             stdin=asyncio.subprocess.PIPE if stdin_data is not None else asyncio.subprocess.DEVNULL,
                             stdout=asyncio.subprocess.PIPE,
                             stderr=asyncio.subprocess.PIPE,
-                            env=make_filtered_env(),
+                            env=self._child_env(),
                             cwd=self._cwd,
                             **subprocess_kwargs(),
                         )
@@ -635,7 +640,7 @@ class GeminiAgent(AgentBase):
                 stdin=asyncio.subprocess.PIPE if effective_stdin is not None else asyncio.subprocess.DEVNULL,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,
-                env=make_filtered_env(),
+                env=self._child_env(),
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )

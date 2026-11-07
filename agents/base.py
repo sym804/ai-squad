@@ -79,6 +79,13 @@ class AgentBase:
     # 막는 범위는 CLI 마다 다르다. Claude 는 --tools 로 셸과 파일 수정을 뺀다.
     # Codex 는 -s read-only. agy 의 --sandbox 는 터미널만 막고 파일 도구는 못 막는다(실측).
     _allow_shell: bool = False
+    # 자식 env 프로파일(SYM-203). config.make_filtered_env 가 이 CLI 에 필요한 비밀만 넘긴다.
+    # None 이면 비밀을 하나도 넘기지 않는다.
+    env_profile: str | None = None
+
+    def _child_env(self) -> dict:
+        # cwd 를 넘겨 .env 를 스스로 읽는 CLI(gemini/agy)가 그 파일의 비밀을 되살리지 못하게 한다
+        return make_filtered_env(self.env_profile, cwd=self._cwd)
 
     @contextlib.contextmanager
     def _call_scope(self):
@@ -226,7 +233,7 @@ class AgentBase:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.STDOUT,  # stderr를 stdout으로 합침
-                env=make_filtered_env(),
+                env=self._child_env(),
                 cwd=self._cwd,
                 **subprocess_kwargs(),
             )

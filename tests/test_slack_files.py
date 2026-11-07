@@ -49,7 +49,7 @@ def test_no_files_returns_empty(slack_files, tmp_dir):
 def test_no_token_returns_empty(slack_files, tmp_dir):
     """토큰 비어있으면 다운로드 시도조차 하지 않는다."""
     event = _img_event({
-        "mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 100,
+        "mimetype": "image/png", "url_private": "https://files.slack.com/x", "name": "a.png", "size": 100,
     })
     out = slack_files.extract_attachments(event, "", tmp_dir)
     assert out == []
@@ -92,8 +92,8 @@ def test_unsupported_mime_skipped(slack_files, tmp_dir, monkeypatch):
 
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event(
-        {"mimetype": "text/plain", "url_private": "https://x", "name": "a.txt", "size": 10},
-        {"mimetype": "application/zip", "url_private": "https://y", "name": "b.zip", "size": 10},
+        {"mimetype": "text/plain", "url_private": "https://files.slack.com/x", "name": "a.txt", "size": 10},
+        {"mimetype": "application/zip", "url_private": "https://files.slack.com/y", "name": "b.zip", "size": 10},
     )
     out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert out == []
@@ -134,7 +134,7 @@ def test_pdf_size_limit_larger_than_image(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event({
         "mimetype": "application/pdf",
-        "url_private": "https://x",
+        "url_private": "https://files.slack.com/x",
         "name": "doc.pdf",
         "size": 6 * 1024 * 1024,
     })
@@ -154,7 +154,7 @@ def test_pdf_size_above_pdf_limit_skipped(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event({
         "mimetype": "application/pdf",
-        "url_private": "https://x",
+        "url_private": "https://files.slack.com/x",
         "name": "huge.pdf",
         "size": 50 * 1024 * 1024,
     })
@@ -168,8 +168,8 @@ def test_mixed_image_and_pdf(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get",
                         lambda *a, **kw: _make_resp(b"data"))
     event = _img_event(
-        {"mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 10},
-        {"mimetype": "application/pdf", "url_private": "https://y", "name": "b.pdf", "size": 10},
+        {"mimetype": "image/png", "url_private": "https://files.slack.com/x", "name": "a.png", "size": 10},
+        {"mimetype": "application/pdf", "url_private": "https://files.slack.com/y", "name": "b.pdf", "size": 10},
     )
     out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 2
@@ -184,8 +184,8 @@ def test_extracted_attachment_has_text_field(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files, "extract_pdf_text",
                         lambda path, **kw: "FAKE_PDF_TEXT")
     event = _img_event(
-        {"mimetype": "image/png", "url_private": "https://x", "name": "a.png", "size": 10},
-        {"mimetype": "application/pdf", "url_private": "https://y", "name": "b.pdf", "size": 10},
+        {"mimetype": "image/png", "url_private": "https://files.slack.com/x", "name": "a.png", "size": 10},
+        {"mimetype": "application/pdf", "url_private": "https://files.slack.com/y", "name": "b.pdf", "size": 10},
     )
     out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     by_kind = {a["kind"]: a for a in out}
@@ -278,7 +278,7 @@ def test_oversize_image_skipped(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event({
         "mimetype": "image/jpeg",
-        "url_private": "https://x",
+        "url_private": "https://files.slack.com/x",
         "name": "huge.jpg",
         "size": 50 * 1024 * 1024,
     })
@@ -296,8 +296,8 @@ def test_download_error_returns_partial(slack_files, tmp_dir, monkeypatch):
 
     monkeypatch.setattr(slack_files.requests, "get", fake_get)
     event = _img_event(
-        {"mimetype": "image/png", "url_private": "https://fail/a.png", "name": "a.png", "size": 100},
-        {"mimetype": "image/png", "url_private": "https://ok/b.png", "name": "b.png", "size": 100},
+        {"mimetype": "image/png", "url_private": "https://files.slack.com/fail/a.png", "name": "a.png", "size": 100},
+        {"mimetype": "image/png", "url_private": "https://files.slack.com/ok/b.png", "name": "b.png", "size": 100},
     )
     out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 1
@@ -309,8 +309,50 @@ def test_path_extension_matches_mime(slack_files, tmp_dir, monkeypatch):
     monkeypatch.setattr(slack_files.requests, "get",
                         lambda *a, **kw: _make_resp(b"data"))
     event = _img_event(
-        {"mimetype": "image/jpeg", "url_private": "https://x", "name": "photo", "size": 4},
+        {"mimetype": "image/jpeg", "url_private": "https://files.slack.com/x", "name": "photo", "size": 4},
     )
     out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
     assert len(out) == 1
     assert out[0]["path"].lower().endswith(".jpg")
+
+
+# ── L9: url_private 호스트 확인 ─────────────────────────────────────────
+# 봇 토큰을 Authorization 헤더에 싣고 요청하므로, Slack 파일 호스트가 아니면 요청하지 않는다.
+
+@pytest.mark.parametrize("url", [
+    "https://evil.example.com/a.png",
+    "http://files.slack.com/a.png",               # 평문 HTTP
+    "https://files.slack.com.evil.com/a.png",     # 접두어만 닮은 호스트
+    "https://files.slack.com@evil.com/a.png",     # userinfo 로 호스트 바꿔치기
+    "https://evil.com/https://files.slack.com/a.png",
+    "files.slack.com/a.png",
+])
+def test_non_slack_file_host_is_not_requested(slack_files, tmp_dir, monkeypatch, url):
+    called = {"n": 0}
+
+    def fake_get(*a, **kw):
+        called["n"] += 1
+        return _make_resp(b"data")
+
+    monkeypatch.setattr(slack_files.requests, "get", fake_get)
+    event = _img_event({"mimetype": "image/png", "url_private": url, "name": "a.png", "size": 10})
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert out == []
+    assert called["n"] == 0
+
+
+def test_rejected_host_does_not_block_other_files(slack_files, tmp_dir, monkeypatch):
+    seen = []
+
+    def fake_get(url, headers=None, timeout=None):
+        seen.append(url)
+        return _make_resp(b"data")
+
+    monkeypatch.setattr(slack_files.requests, "get", fake_get)
+    event = _img_event(
+        {"mimetype": "image/png", "url_private": "https://evil.example.com/a.png", "name": "a.png", "size": 10},
+        {"mimetype": "image/png", "url_private": "https://files.slack.com/files-pri/T1-F1/b.png", "name": "b.png", "size": 10},
+    )
+    out = slack_files.extract_attachments(event, "xoxb-token", tmp_dir)
+    assert [a["name"] for a in out] == ["b.png"]
+    assert seen == ["https://files.slack.com/files-pri/T1-F1/b.png"]

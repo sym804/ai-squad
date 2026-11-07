@@ -26,6 +26,7 @@ import logging
 import os
 import re
 import uuid
+from urllib.parse import urlsplit
 
 import requests
 
@@ -109,6 +110,21 @@ _SUPPORTED: dict[str, tuple[str, str, int]] = {
 }
 
 
+# url_private 는 봇 토큰을 실어 요청한다. Slack 파일 호스트가 아니면 요청하지 않는다(L9).
+_SLACK_FILE_URL_PREFIX = "https://files.slack.com/"
+
+
+def _is_slack_file_url(url: str) -> bool:
+    """https://files.slack.com/ 로 시작하고 파싱한 호스트도 files.slack.com 인지."""
+    if not isinstance(url, str) or not url.startswith(_SLACK_FILE_URL_PREFIX):
+        return False
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return False
+    return parts.scheme == "https" and parts.hostname == "files.slack.com" and not parts.username
+
+
 def _safe_basename(name: str | None, fallback: str) -> str:
     """원본 파일명에서 디렉토리/이상 문자 제거. 비어있으면 fallback 반환."""
     if not name:
@@ -165,6 +181,12 @@ def extract_attachments(event: dict, slack_token: str, tmp_dir: str) -> list[dic
         kind, ext, max_bytes = spec
         url = f.get("url_private")
         if not url:
+            continue
+        if not _is_slack_file_url(url):
+            logger.warning(
+                "[slack_files] %s url_private 호스트가 files.slack.com 이 아님, 스킵",
+                f.get("name"),
+            )
             continue
         size = f.get("size") or 0
         if size and size > max_bytes:

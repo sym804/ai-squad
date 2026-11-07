@@ -8,7 +8,7 @@
 import asyncio
 import os
 
-from config import CLI_TIMEOUT, make_filtered_env
+from config import CLI_TIMEOUT, env_profile_for_command, make_filtered_env
 from cancel import is_cancelled, cleanup, register_process
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
 
@@ -124,7 +124,8 @@ class BridgeMode:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=self.work_dir,
-            env=make_filtered_env(),
+            # 띄우는 CLI 에 맞는 env 프로파일(SYM-203). 경로·확장자가 붙어도 같은 프로파일.
+            env=make_filtered_env(env_profile_for_command(cmd[0]), cwd=self.work_dir),
             **subprocess_kwargs(),
         )
         thread_ts = getattr(self, '_thread_ts', None)

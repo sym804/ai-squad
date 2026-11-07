@@ -4,7 +4,7 @@ import os
 import time
 from agents.base import AgentBase
 from process import kill_process_tree, platform_cmd, subprocess_kwargs
-from config import make_filtered_env
+from config import CLAUDE_EFFORT, CLAUDE_MODEL
 
 # stream-json 한 라인 최대 크기. asyncio 기본은 64KB 인데, Claude Code 가
 # Read 도구로 이미지를 읽으면 user/tool_result 블록 한 줄에 base64 또는
@@ -12,6 +12,25 @@ from config import make_filtered_env
 # `LimitOverrunError: Separator is not found, and chunk exceed the limit`
 # 으로 죽고 에이전트가 통째로 실패. 이미지 멀티모달 입력에 대비해 16MB 로 확대.
 _STREAM_LINE_LIMIT = 16 * 1024 * 1024
+
+# --restricted 호출 전용 settings. 작업·첨부 폴더 안의 비밀 파일 Read deny 규칙(M2 2차).
+_RESTRICTED_SETTINGS_PATH = os.path.join(
+    os.path.dirname(os.path.abspath(__file__)), "claude_restricted_settings.json")
+
+
+def _restricted_settings_ok(path: str | None = None) -> bool:
+    """차단 설정 파일이 있고, JSON 이고, 핵심 deny 규칙을 담고 있는지 본다."""
+    path = path or _RESTRICTED_SETTINGS_PATH
+    try:
+        with open(path, encoding="utf-8") as f:
+            deny = json.load(f).get("permissions", {}).get("deny", [])
+    except (OSError, ValueError, AttributeError):
+        return False
+    return isinstance(deny, list) and "Read(**/.env)" in deny
+
+# claude 는 platform_cmd 가 `cmd /c` 로 감싼다. --add-dir 경로에 cmd 메타문자가 있으면
+# cmd.exe 가 명령을 끊거나 변수로 펼친다. 그런 폴더는 읽기 범위에 넣지 않는다.
+_CMD_META_CHARS = frozenset('&|^%<>"!')
 
 
 def _format_token_usage(data: dict) -> str:
@@ -47,12 +66,45 @@ class ClaudeAgent(AgentBase):
     name = "Claude"
     emoji = "🟠"
     base_family = "claude"
+    env_profile = "claude"
 
     def __init__(self, continue_mode=False):
         self.continue_mode = continue_mode
         self.last_usage = ""
 
-    def _permission_args(self) -> list[str]:
+    def _file_dirs(self, attachments: list[dict] | None) -> list[str]:
+        """토론·리서치에서 Read/Glob/Grep 을 허용할 폴더: 검증된 작업 폴더 + 첨부 폴더.
+
+        작업 폴더(_cwd)는 debate._bind_thread 가 ALLOWED_WORK_DIRS 로 검증한 값이다.
+        """
+        cands: list[str] = []
+        if self._cwd:
+            cands.append(self._cwd)
+        for a in attachments or []:
+            path = a.get("path")
+            if path:
+                cands.append(os.path.dirname(os.path.abspath(path)))
+        dirs: list[str] = []
+        for d in cands:
+            if _CMD_META_CHARS.intersection(d):
+                print(f"[Claude] cmd 메타문자가 든 폴더는 읽기 범위에서 제외: {d!r}")
+                continue
+            if d not in dirs:
+                dirs.append(d)
+        return dirs
+
+    def _spawn_cwd(self, attachments: list[dict] | None) -> str | None:
+        """CLI 를 띄울 cwd. --restricted 는 cwd 도 읽기 허용 범위에 넣는다.
+
+        작업 폴더 없이 첨부만 있으면 첨부 폴더에서 띄운다. cwd 가 None 이면 봇 폴더를
+        물려받는데, 거기에는 .env 가 있다.
+        """
+        if self._allow_shell:
+            return self._cwd
+        dirs = self._file_dirs(attachments)
+        return dirs[0] if dirs else self._cwd
+
+    def _permission_args(self, attachments: list[dict] | None = None) -> list[str]:
         """권한을 호출 인자로 명시한다. 전역 settings 의 defaultMode 에 기대지 않는다(SYM-202).
 
         전역이 bypassPermissions 면 --allowedTools 는 허용 범위를 좁히지 못한다.
@@ -63,34 +115,69 @@ class ClaudeAgent(AgentBase):
         - --tools 로 쓸 수 있는 도구 자체를 지정하면 같은 조건에서도 셸 도구가 없었다
         그래서 --tools 허용 목록이 주 방어이고 --disallowedTools 는 보조다.
         코딩 모드와 브릿지만 코드 수정과 실행이 필요하다.
+
+        파일 읽기(M2): 전역 settings 가 Read(*)/Glob(*)/Grep(*) 를 allow 해서 --tools 에 Read 가
+        있으면 경로 제한 없이 .env, ~/.claude/.credentials.json 까지 읽는다.
+        - 읽을 폴더(첨부·작업 폴더)가 없으면 Read/Glob/Grep 을 아예 뺀다
+        - 있으면 --restricted 로 cwd + --add-dir 안에 가둔다. 실측(2026-11-07, CLI 2.1.319):
+          폴더 안 파일은 읽혔고 밖의 파일은 "is outside ... --restricted confines the file
+          tools to the working directory" 로 거부됐다. WebSearch/WebFetch 는 --allowedTools 로
+          정상 동작했다. --restricted 는 사용자 settings 를 무시하므로 model/effortLevel 을
+          두 분기 모두 --model/--effort 로 명시한다(config.CLAUDE_MODEL/CLAUDE_EFFORT).
+        - --no-session-persistence: 첨부 폴더마다 ~/.claude/projects 에 대화 기록이 쌓이지
+          않게 한다. 이 분기는 continue_mode 를 쓰지 않는다(ClaudeAgent 생성처 전부 False).
+        - 폴더 안 비밀 파일(.env, *.pem, *.key, credentials*.json, auth.json, id_rsa* 등)은
+          claude_restricted_settings.json 의 Read deny 로 막는다. 실측(2026-11-07): 이 규칙이
+          없으면 작업 폴더 안 더미 .env 등 8개가 Read·Grep·Glob 으로 전부 읽혔다.
+        Read(<경로>/**) 허용 규칙은 쓰지 않는다. 사용자 settings 의 Read(*) 가 이미 다 허용해서
+        더 좁은 allow 규칙으로는 못 좁힌다.
         """
         if self._allow_shell:
             return ["--permission-mode", "bypassPermissions"]
-        return ["--tools", "WebSearch,WebFetch,Read,Glob,Grep",
-                "--disallowedTools", "Bash", "PowerShell", "Write", "Edit", "NotebookEdit"]
+        denied = ["--disallowedTools", "Bash", "PowerShell", "Write", "Edit", "NotebookEdit"]
+        common = ["--model", CLAUDE_MODEL, "--effort", CLAUDE_EFFORT]
+        # --continue 와 함께 쓰면 이어 갈 세션이 저장되지 않으므로 continue_mode 일 때는 붙이지 않는다
+        if not self.continue_mode:
+            common.append("--no-session-persistence")
+        dirs = self._file_dirs(attachments)
+        # 차단 설정 파일이 없거나 깨졌으면 CLI 동작에 기대지 않고 파일 도구를 뺀다(닫힌 쪽 실패)
+        if dirs and not _restricted_settings_ok():
+            print("[Claude] restricted settings 파일이 없거나 형식이 틀려 이번 호출은 Read/Glob/Grep 없이 진행")
+            dirs = []
+        if not dirs:
+            return [*common, "--tools", "WebSearch,WebFetch", *denied, "Read", "Glob", "Grep"]
+        # --restricted 는 폴더 밖만 막는다. 폴더 안 .env·키·자격 증명 파일은 호출 전용
+        # --settings 의 deny 규칙으로 막는다(--restricted 에서도 --settings 는 적용된다).
+        # 인라인 JSON 은 cmd /c 를 거치며 따옴표가 깨질 수 있어 레포의 파일 경로로 넘긴다.
+        # --restricted 가 사용자 settings 를 무시해 모델·effort 가 CLI 기본값으로 바뀌므로
+        # 사용자 설정과 같은 값을 명시한다.
+        # --add-dir 는 가변 인자라 맨 뒤에 둔다. 프롬프트는 stdin 으로 간다.
+        return ["--restricted", "--settings", _RESTRICTED_SETTINGS_PATH, *common,
+                "--tools", "WebSearch,WebFetch,Read,Glob,Grep",
+                *denied, "--add-dir", *dirs]
 
-    def _build_cmd(self, tmp: str) -> list[str]:
+    def _build_cmd(self, tmp: str, attachments: list[dict] | None = None) -> list[str]:
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
-        # Read 를 allowedTools 에 추가: 첨부 (이미지/PDF) 시 prompt 안의 절대경로를
-        # Claude Code 가 Read 도구로 읽어 vision/문서 입력으로 처리한다.
+        # --allowedTools 에 Read 를 넣지 않는다. Read 는 "모든 경로 자동 승인" 이 된다(M2).
+        # 첨부 (이미지/PDF) 를 읽는 Read 는 _permission_args 가 첨부 폴더로 가둬서 연다.
         # --strict-mcp-config: 사용자 전역 MCP(context7 등 npx/stdio) 로딩 차단.
         #   봇 답변엔 MCP 불필요하고, 매 호출마다 npx MCP 서버가 cmd 콘솔을
         #   새로 띄워 깜빡이는 문제(Windows)를 제거 + 에이전트 부팅도 빨라짐.
         cmd.extend(["-p", "--strict-mcp-config", "--output-format", "json",
-                    "--allowedTools", "WebSearch", "WebFetch", "Read"])
-        cmd.extend(self._permission_args())
+                    "--allowedTools", "WebSearch", "WebFetch"])
+        cmd.extend(self._permission_args(attachments))
         return cmd
 
-    def _build_stream_cmd(self) -> list[str]:
+    def _build_stream_cmd(self, attachments: list[dict] | None = None) -> list[str]:
         cmd = ["claude"]
         if self.continue_mode:
             cmd.append("--continue")
         # --strict-mcp-config: 전역 MCP(context7 npx 등) 미로드 → cmd 창 깜빡임 제거.
         cmd.extend(["-p", "--strict-mcp-config", "--output-format", "stream-json", "--verbose",
-                    "--allowedTools", "WebSearch", "WebFetch", "Read"])
-        cmd.extend(self._permission_args())
+                    "--allowedTools", "WebSearch", "WebFetch"])
+        cmd.extend(self._permission_args(attachments))
         return cmd
 
     @staticmethod
@@ -136,12 +223,12 @@ class ClaudeAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *platform_cmd(self._build_cmd(tmp)),
+                *platform_cmd(self._build_cmd(tmp, attachments=attachments)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=make_filtered_env(),
-                cwd=self._cwd,
+                env=self._child_env(),
+                cwd=self._spawn_cwd(attachments),
                 limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
@@ -184,12 +271,12 @@ class ClaudeAgent(AgentBase):
         try:
             stdin_data = open(tmp, "r", encoding="utf-8").read().encode("utf-8")
             proc = await asyncio.create_subprocess_exec(
-                *platform_cmd(self._build_stream_cmd()),
+                *platform_cmd(self._build_stream_cmd(attachments=attachments)),
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
-                env=make_filtered_env(),
-                cwd=self._cwd,
+                env=self._child_env(),
+                cwd=self._spawn_cwd(attachments),
                 limit=_STREAM_LINE_LIMIT,
                 **subprocess_kwargs(),
             )
