@@ -505,8 +505,8 @@
   <p>그래서 세운 원칙은 두 가지였다.</p>
 
   <ul>
-    <li><strong>API 비용 0원</strong> &mdash; 이미 구독 중인 Claude Code CLI, Codex CLI, Gemini CLI를 subprocess로 호출. API 키도 필요 없고, 토큰 비용도 없다.</li>
-    <li><strong>Slack 기반</strong> &mdash; 이미 매일 쓰는 Slack에서 동작하면 별도 UI를 만들 필요가 없다. 스레드가 자연스러운 토론 구조를 제공한다.</li>
+    <li>API 비용 0원: 이미 구독 중인 Claude Code CLI, Codex CLI, Gemini CLI를 subprocess로 호출. API 키도 필요 없고, 토큰 비용도 없다.</li>
+    <li>Slack 기반: 이미 매일 쓰는 Slack에서 동작하면 별도 UI를 만들 필요가 없다. 스레드가 자연스러운 토론 구조를 제공한다.</li>
   </ul>
 
   <p>결과적으로 Slack 채널에 메시지 하나 쓰면 3개 AI가 스레드에서 자유 토론을 시작하고, 합의에 도달하면 결론을 채널에 공지해주는 시스템이 만들어졌다.</p>
@@ -705,7 +705,7 @@ proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
   <ul>
     <li>매 라운드마다 <strong>발언 순서를 랜덤 셔플</strong>하여 특정 AI가 항상 먼저 말하는 편향을 방지</li>
     <li>"생각 중..." 메시지를 표시했다가 응답 후 삭제하여 UX 개선</li>
-    <li>라운드 시작 전 <strong>스레드에서 사용자 메시지를 수집</strong>하여 히스토리에 반영 &mdash; 토론 중간에 사용자가 개입 가능</li>
+    <li>라운드 시작 전 <strong>스레드에서 사용자 메시지를 수집</strong>하여 히스토리에 반영. 토론 중간에 사용자가 개입 가능</li>
     <li>이전 발언은 최근 10개만 프롬프트에 포함하여 컨텍스트 오버플로 방지</li>
   </ul>
 </section>
@@ -761,7 +761,7 @@ proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
 <section id="backup">
   <h2 class="section-title"><span class="num">05</span> 타임아웃 백업 시스템</h2>
 
-  <p>��� 에이전트에게 <strong>120초(토론) / 300초(코딩) 타임아웃</strong>이 설정되어 있다. 응답하지 못하면 자동으로 백업 에이전트가 투입된다. 코딩 모드는 도구 호출 중에도 60초 단위로 프로세스 생존을 확인하고, 전체 600초까지 대기한다. 핵심은 백업 에이전트가 <strong>다른 관점</strong>을 갖도록 설계된 것이다.</p>
+  <p>각 에이전트에게 <strong>120초(토론) / 300초(코딩) 타임아웃</strong>이 설정되어 있다. 응답하지 못하면 자동으로 백업 에이전트가 투입된다. 코딩 모드는 도구 호출 중에도 60초 단위로 프로세스 생존을 확인하고, 전체 600초까지 대기한다. 핵심은 백업 에이전트가 <strong>다른 관점</strong>을 갖도록 설계된 것이다.</p>
 
   <table>
     <thead>
@@ -821,7 +821,7 @@ proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
 
   <div class="slack-mock">
     <div class="slack-mock-header">
-      <span>#</span> ai-debate &mdash; Thread
+      <span>#</span> ai-debate - Thread
     </div>
     <div class="slack-mock-body">
       <div class="slack-msg">
@@ -879,8 +879,8 @@ proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
   <p>내부적으로 <code>followup()</code> 메서드가 호출되면:</p>
 
   <ol>
-    <li><code>_fetch_original_topic()</code> &mdash; 스레드의 첫 메시지(원래 주제)를 가져온다</li>
-    <li><code>_fetch_thread_history()</code> &mdash; 스레드 전체 대화를 히스토리로 변환한다</li>
+    <li><code>_fetch_original_topic()</code>: 스레드의 첫 메시지(원래 주제)를 가져온다</li>
+    <li><code>_fetch_thread_history()</code>: 스레드 전체 대화를 히스토리로 변환한다</li>
     <li>프롬프트에 <code>[원래 토론 주제]</code>와 <code>[사용자 추가 질문]</code>을 모두 포함시킨다</li>
     <li>합의에 도달할 때까지 동일한 라운드 로직을 실행한다</li>
   </ol>
@@ -1151,7 +1151,7 @@ proc = <span class="kw">await</span> asyncio.create_subprocess_shell(
 
 <footer>
   <div class="container">
-    <p>Built with Claude Code CLI, Codex CLI, Gemini CLI &mdash; No API costs</p>
+    <p>Built with Claude Code CLI, Codex CLI, Gemini CLI - No API costs</p>
     <p style="margin-top: 8px; color: var(--text-dim);">2026-04-04 (updated)</p>
   </div>
 </footer>
